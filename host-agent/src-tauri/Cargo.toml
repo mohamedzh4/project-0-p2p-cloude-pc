@@ -1,0 +1,38 @@
+[package]
+name = "host-agent"
+version = "0.1.0"
+description = "Distributed Compute Lab host agent"
+authors = ["Distributed Compute Lab"]
+edition = "2021"
+rust-version = "1.95"
+
+[lib]
+name = "host_agent_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+# Only the "system" feature is enabled: disk, network, component and user probing
+# would pull in extra platform APIs the agent never reads.
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+
+# NVML only ships for Windows and Linux, so the GPU probe falls back to
+# "no GPU detected" everywhere else.
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+nvml-wrapper = "0.12"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

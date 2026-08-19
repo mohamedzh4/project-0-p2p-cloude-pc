@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+target/
+src-tauri/gen/schemas/
+
+# Secrets - never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+service-account.json
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+*.log
+.playwright-mcp/

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Baseline capability for the host agent window. Hardware and configuration access go through explicit commands, so no extra plugin permissions are granted.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
