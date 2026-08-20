@@ -83,6 +83,11 @@ mod tests {
             assert!(physical >= 1);
             assert!(physical <= snapshot.cpu.logical_cores);
         }
+
+        let mut ids: Vec<&str> = snapshot.gpus.iter().map(|gpu| gpu.id.as_str()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), snapshot.gpus.len(), "each GPU needs a unique id");
     }
 
     #[test]

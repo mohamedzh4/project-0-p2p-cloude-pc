@@ -3,7 +3,8 @@
  * attached. It exists so the UI can be worked on without a Rust toolchain, and
  * is compiled out of production builds by the `import.meta.env.DEV` guard in
  * api.ts. The window always shows a banner in this mode: these numbers describe
- * nobody's real machine.
+ * nobody's real machine. Two GPUs are listed so the exclusive-GPU picker can
+ * be exercised without a dual-GPU host.
  */
 
 import { BYTES_PER_GIB } from "./format";
@@ -22,7 +23,14 @@ export const previewHardware: HardwareSnapshot = {
   memory: { totalBytes: 64 * BYTES_PER_GIB },
   gpus: [
     {
+      id: "GPU-TEST-4070",
       model: "NVIDIA GeForce RTX 4070",
+      vendor: "nvidia",
+      vramBytes: 12 * BYTES_PER_GIB,
+    },
+    {
+      id: "GPU-TEST-3060",
+      model: "NVIDIA GeForce RTX 3060",
       vendor: "nvidia",
       vramBytes: 12 * BYTES_PER_GIB,
     },
@@ -31,9 +39,10 @@ export const previewHardware: HardwareSnapshot = {
 };
 
 export const previewConfig: SharingConfig = {
-  version: 1,
+  version: 2,
   sharingEnabled: false,
   sharedLogicalCores: 16,
   sharedMemoryBytes: 32 * BYTES_PER_GIB,
   shareGpu: false,
+  sharedGpuId: "GPU-TEST-4070",
 };

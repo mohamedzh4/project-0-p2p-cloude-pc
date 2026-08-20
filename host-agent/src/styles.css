@@ -224,6 +224,40 @@ body {
   color: var(--muted);
 }
 
+.field .hint.gpu-warning {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.gpu-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.gpu-picker label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+select {
+  width: 100%;
+  max-width: 420px;
+  padding: 8px 10px;
+  font-family: var(--body);
+  font-size: 14px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
 .slider-row {
   display: flex;
   align-items: center;
@@ -303,7 +337,7 @@ button.secondary {
   border-color: var(--line);
 }
 
-:where(button, input, a):focus-visible {
+:where(button, input, a, select):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

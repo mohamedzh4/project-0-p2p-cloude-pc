@@ -16,9 +16,14 @@ pub fn snapshot(logical_cores: u32, total_bytes: u64, gpus: Vec<GpuInfo>) -> Har
 }
 
 pub fn nvidia_gpu() -> GpuInfo {
+    nvidia_gpu_with("NVIDIA GeForce RTX 4070", "GPU-TEST-4070", 12)
+}
+
+pub fn nvidia_gpu_with(model: &str, id: &str, vram_gib: u64) -> GpuInfo {
     GpuInfo {
-        model: "NVIDIA GeForce RTX 4070".to_string(),
+        id: id.to_string(),
+        model: model.to_string(),
         vendor: GpuVendor::Nvidia,
-        vram_bytes: Some(12 * BYTES_PER_GIB),
+        vram_bytes: Some(vram_gib * BYTES_PER_GIB),
     }
 }

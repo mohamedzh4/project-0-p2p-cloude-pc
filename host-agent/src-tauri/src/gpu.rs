@@ -18,11 +18,25 @@ pub fn probe() -> GpuProbe {
     not(any(target_os = "windows", target_os = "linux", test)),
     allow(dead_code)
 )]
-fn nvidia_gpu(raw_name: &str, vram_bytes: u64) -> GpuInfo {
+fn nvidia_gpu(raw_name: &str, vram_bytes: u64, id: impl Into<String>) -> GpuInfo {
     GpuInfo {
+        id: id.into(),
         model: normalize_model(raw_name, GpuVendor::Nvidia),
         vendor: GpuVendor::Nvidia,
         vram_bytes: (vram_bytes > 0).then_some(vram_bytes),
+    }
+}
+
+/// NVML UUID when the driver reports one; otherwise a per-index fallback so
+/// two unnamed cards are still distinguishable in the config file.
+#[cfg_attr(
+    not(any(target_os = "windows", target_os = "linux", test)),
+    allow(dead_code)
+)]
+pub fn gpu_identity(uuid: Option<&str>, index: u32) -> String {
+    match uuid {
+        Some(id) if !id.trim().is_empty() => id.trim().to_string(),
+        _ => format!("nvidia:{index}"),
     }
 }
 
@@ -45,7 +59,7 @@ fn normalize_model(raw: &str, vendor: GpuVendor) -> String {
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod platform {
-    use super::nvidia_gpu;
+    use super::{gpu_identity, nvidia_gpu};
     use crate::models::GpuProbe;
     use nvml_wrapper::error::NvmlError;
     use nvml_wrapper::Nvml;
@@ -81,7 +95,8 @@ mod platform {
 
             let name = device.name().unwrap_or_default();
             let vram_bytes = device.memory_info().map(|memory| memory.total).unwrap_or(0);
-            gpus.push(nvidia_gpu(&name, vram_bytes));
+            let id = gpu_identity(device.uuid().ok().as_deref(), index);
+            gpus.push(nvidia_gpu(&name, vram_bytes, id));
         }
 
         if gpus.is_empty() {
@@ -107,21 +122,25 @@ mod tests {
 
     #[test]
     fn keeps_the_reported_nvidia_model_name() {
-        let gpu = nvidia_gpu("NVIDIA GeForce RTX 4070", 12_884_901_888);
+        let gpu = nvidia_gpu("NVIDIA GeForce RTX 4070", 12_884_901_888, "GPU-4070");
 
         assert_eq!(gpu.model, "NVIDIA GeForce RTX 4070");
+        assert_eq!(gpu.id, "GPU-4070");
         assert_eq!(gpu.vendor, GpuVendor::Nvidia);
         assert_eq!(gpu.vram_bytes, Some(12_884_901_888));
     }
 
     #[test]
     fn treats_zero_vram_as_unknown() {
-        assert_eq!(nvidia_gpu("NVIDIA GeForce RTX 4070", 0).vram_bytes, None);
+        assert_eq!(
+            nvidia_gpu("NVIDIA GeForce RTX 4070", 0, "GPU-4070").vram_bytes,
+            None
+        );
     }
 
     #[test]
     fn falls_back_when_the_driver_reports_no_name() {
-        assert_eq!(nvidia_gpu("   ", 0).model, "Unknown NVIDIA GPU");
+        assert_eq!(nvidia_gpu("   ", 0, "nvidia:0").model, "Unknown NVIDIA GPU");
         assert_eq!(normalize_model("", GpuVendor::Unknown), "Unknown GPU");
     }
 
@@ -140,7 +159,37 @@ mod tests {
         if probe.gpus.is_empty() {
             assert!(probe.note.is_some(), "an empty probe must say why");
         } else {
+            let mut ids: Vec<&str> = probe.gpus.iter().map(|gpu| gpu.id.as_str()).collect();
             assert!(probe.gpus.iter().all(|gpu| !gpu.model.is_empty()));
+            assert!(ids.iter().all(|id| !id.is_empty()));
+            ids.sort();
+            ids.dedup();
+            assert_eq!(ids.len(), probe.gpus.len(), "each GPU needs a unique id");
         }
+    }
+
+    #[test]
+    fn prefers_the_driver_uuid_over_an_index_fallback() {
+        assert_eq!(gpu_identity(Some("GPU-ABCDEF"), 0), "GPU-ABCDEF");
+        assert_eq!(gpu_identity(Some("  GPU-ABCDEF  "), 0), "GPU-ABCDEF");
+    }
+
+    #[test]
+    fn enumerates_multiple_gpus_with_distinct_fallback_ids() {
+        let first = gpu_identity(None, 0);
+        let second = gpu_identity(Some(""), 1);
+        let third = gpu_identity(Some("   "), 2);
+
+        assert_eq!(first, "nvidia:0");
+        assert_eq!(second, "nvidia:1");
+        assert_eq!(third, "nvidia:2");
+
+        let gpus = [
+            nvidia_gpu("NVIDIA GeForce RTX 4070", 1, first),
+            nvidia_gpu("NVIDIA GeForce RTX 3060", 1, second),
+            nvidia_gpu("NVIDIA RTX A4000", 1, third),
+        ];
+        let ids: std::collections::HashSet<_> = gpus.iter().map(|gpu| gpu.id.as_str()).collect();
+        assert_eq!(ids.len(), 3);
     }
 }

@@ -102,6 +102,7 @@ mod tests {
             shared_logical_cores: 4,
             shared_memory_bytes: 8 * BYTES_PER_GIB,
             share_gpu: true,
+            shared_gpu_id: Some("GPU-TEST-4070".to_string()),
         }
     }
 
@@ -202,5 +203,39 @@ mod tests {
         assert_eq!(loaded.shared_logical_cores, 2);
         assert_eq!(loaded.shared_memory_bytes, 4 * BYTES_PER_GIB);
         assert!(!loaded.share_gpu);
+        assert!(loaded.shared_gpu_id.is_none());
+    }
+
+    #[test]
+    fn restores_a_v1_file_onto_a_multi_gpu_machine() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            config_file_path(dir.path()),
+            r#"{
+                "version": 1,
+                "sharingEnabled": true,
+                "sharedLogicalCores": 4,
+                "sharedMemoryBytes": 8589934592,
+                "shareGpu": true
+            }"#,
+        )
+        .unwrap();
+
+        let hardware = snapshot(
+            8,
+            16 * BYTES_PER_GIB,
+            vec![
+                nvidia_gpu(),
+                crate::test_support::nvidia_gpu_with(
+                    "NVIDIA GeForce RTX 3060",
+                    "GPU-TEST-3060",
+                    12,
+                ),
+            ],
+        );
+        let loaded = load_for_hardware(dir.path(), &hardware).unwrap();
+
+        assert_eq!(loaded.shared_gpu_id.as_deref(), Some("GPU-TEST-4070"));
+        assert!(loaded.share_gpu);
     }
 }

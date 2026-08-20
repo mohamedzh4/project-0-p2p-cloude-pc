@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 pub const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 
 /// Bumped whenever the on-disk shape of [`SharingConfig`] changes in a way that
-/// older files cannot be read as-is.
-pub const CONFIG_VERSION: u32 = 1;
+/// older files cannot be read as-is. v1 files (no `sharedGpuId`) still load
+/// because that field is serde-defaulted, then [`SharingConfig::clamped_to`]
+/// fills in a GPU that exists on this machine.
+pub const CONFIG_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +34,10 @@ pub enum GpuVendor {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GpuInfo {
+    /// Stable identity for this card (NVML UUID, or `nvidia:{index}` if the
+    /// driver did not report one). Stored in the config so a later availability
+    /// schedule can name the same GPU without another schema break.
+    pub id: String,
     pub model: String,
     pub vendor: GpuVendor,
     /// `None` when the driver reports a device but not its memory size.
@@ -75,6 +81,14 @@ impl HardwareSnapshot {
     pub fn has_gpu(&self) -> bool {
         !self.gpus.is_empty()
     }
+
+    pub fn gpu_id_exists(&self, id: &str) -> bool {
+        self.gpus.iter().any(|gpu| gpu.id == id)
+    }
+
+    pub fn first_gpu_id(&self) -> Option<String> {
+        self.gpus.first().map(|gpu| gpu.id.clone())
+    }
 }
 
 /// How much of the machine the host is willing to lend out.
@@ -85,12 +99,19 @@ pub struct SharingConfig {
     pub sharing_enabled: bool,
     pub shared_logical_cores: u32,
     pub shared_memory_bytes: u64,
+    /// Exclusive for the session on consumer hardware — not a concurrent slice.
     pub share_gpu: bool,
+    /// Which card to dedicate when [`Self::share_gpu`] is true. Absent on v1
+    /// files and on machines with no supported GPU. Kept even while sharing is
+    /// off so a later schedule can name the same card.
+    #[serde(default)]
+    pub shared_gpu_id: Option<String>,
 }
 
 impl SharingConfig {
     /// Conservative starting point: half the machine, GPU opt-in, sharing off
-    /// until the host turns it on.
+    /// until the host turns it on. Pre-selects the first GPU so the picker has
+    /// a value before anyone opts in.
     pub fn recommended_for(hardware: &HardwareSnapshot) -> Self {
         let half_memory = hardware.memory.total_bytes / 2;
         let whole_gib = floor_to_gib(half_memory);
@@ -105,6 +126,7 @@ impl SharingConfig {
                 whole_gib
             },
             share_gpu: false,
+            shared_gpu_id: hardware.first_gpu_id(),
         }
     }
 
@@ -112,12 +134,18 @@ impl SharingConfig {
     /// with backups and profile syncs, so the stored numbers cannot be trusted
     /// to match the current hardware.
     pub fn clamped_to(&self, hardware: &HardwareSnapshot) -> Self {
+        let shared_gpu_id = match &self.shared_gpu_id {
+            Some(id) if hardware.gpu_id_exists(id) => Some(id.clone()),
+            _ => hardware.first_gpu_id(),
+        };
+
         Self {
             version: CONFIG_VERSION,
             sharing_enabled: self.sharing_enabled,
             shared_logical_cores: self.shared_logical_cores.min(hardware.cpu.logical_cores),
             shared_memory_bytes: self.shared_memory_bytes.min(hardware.memory.total_bytes),
             share_gpu: self.share_gpu && hardware.has_gpu(),
+            shared_gpu_id,
         }
     }
 }
@@ -129,7 +157,11 @@ pub fn floor_to_gib(bytes: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{nvidia_gpu, snapshot};
+    use crate::test_support::{nvidia_gpu, nvidia_gpu_with, snapshot};
+
+    fn second_gpu() -> GpuInfo {
+        nvidia_gpu_with("NVIDIA GeForce RTX 3060", "GPU-TEST-3060", 12)
+    }
 
     #[test]
     fn recommends_half_the_machine_with_sharing_off() {
@@ -141,6 +173,7 @@ mod tests {
         assert_eq!(config.shared_memory_bytes, 16 * BYTES_PER_GIB);
         assert!(!config.sharing_enabled);
         assert!(!config.share_gpu, "GPU sharing is opt-in");
+        assert_eq!(config.shared_gpu_id.as_deref(), Some("GPU-TEST-4070"));
     }
 
     #[test]
@@ -173,6 +206,7 @@ mod tests {
             shared_logical_cores: 64,
             shared_memory_bytes: 512 * BYTES_PER_GIB,
             share_gpu: true,
+            shared_gpu_id: Some("GPU-GONE".to_string()),
         };
 
         let clamped = stored.clamped_to(&hardware);
@@ -180,6 +214,7 @@ mod tests {
         assert_eq!(clamped.shared_logical_cores, 8);
         assert_eq!(clamped.shared_memory_bytes, 16 * BYTES_PER_GIB);
         assert!(!clamped.share_gpu, "no GPU on this machine to share");
+        assert!(clamped.shared_gpu_id.is_none());
         assert!(clamped.sharing_enabled, "host intent is preserved");
     }
 
@@ -192,9 +227,67 @@ mod tests {
             shared_logical_cores: 4,
             shared_memory_bytes: 8 * BYTES_PER_GIB,
             share_gpu: true,
+            shared_gpu_id: Some("GPU-TEST-4070".to_string()),
         };
 
         assert_eq!(stored.clamped_to(&hardware), stored);
+    }
+
+    #[test]
+    fn keeps_the_selected_gpu_when_several_are_present() {
+        let hardware = snapshot(8, 16 * BYTES_PER_GIB, vec![nvidia_gpu(), second_gpu()]);
+        let stored = SharingConfig {
+            version: CONFIG_VERSION,
+            sharing_enabled: true,
+            shared_logical_cores: 4,
+            shared_memory_bytes: 8 * BYTES_PER_GIB,
+            share_gpu: true,
+            shared_gpu_id: Some("GPU-TEST-3060".to_string()),
+        };
+
+        assert_eq!(
+            stored.clamped_to(&hardware).shared_gpu_id.as_deref(),
+            Some("GPU-TEST-3060")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_first_gpu_when_the_stored_id_is_gone() {
+        let hardware = snapshot(8, 16 * BYTES_PER_GIB, vec![nvidia_gpu(), second_gpu()]);
+        let stored = SharingConfig {
+            version: 1,
+            sharing_enabled: true,
+            shared_logical_cores: 4,
+            shared_memory_bytes: 8 * BYTES_PER_GIB,
+            share_gpu: true,
+            shared_gpu_id: Some("GPU-REMOVED".to_string()),
+        };
+
+        let clamped = stored.clamped_to(&hardware);
+
+        assert_eq!(clamped.version, CONFIG_VERSION);
+        assert_eq!(clamped.shared_gpu_id.as_deref(), Some("GPU-TEST-4070"));
+        assert!(clamped.share_gpu);
+    }
+
+    #[test]
+    fn loads_a_v1_config_that_has_no_gpu_id() {
+        let json = r#"{
+            "version": 1,
+            "sharingEnabled": true,
+            "sharedLogicalCores": 4,
+            "sharedMemoryBytes": 8589934592,
+            "shareGpu": true
+        }"#;
+
+        let stored: SharingConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(stored.shared_gpu_id, None);
+
+        let hardware = snapshot(8, 16 * BYTES_PER_GIB, vec![nvidia_gpu(), second_gpu()]);
+        let clamped = stored.clamped_to(&hardware);
+
+        assert_eq!(clamped.shared_gpu_id.as_deref(), Some("GPU-TEST-4070"));
+        assert!(clamped.share_gpu);
     }
 
     #[test]

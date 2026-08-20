@@ -113,15 +113,23 @@ The window shows the exact path at the bottom. Values are re-clamped to the
 detected hardware every time the file is read, because a config file can travel
 to a different machine through a backup or profile sync.
 
+v2 of the file adds `sharedGpuId` (the NVML UUID, or `nvidia:{index}` if the
+driver hid it). v1 files that only have `shareGpu` still load; the missing id
+is filled with the first detected GPU. An availability schedule is not stored
+yet — that field can be added later without renaming the GPU id.
+
 ## Platform support
 
 Windows and Linux are the real targets. macOS builds and runs for development,
 but GPU detection there always reports "No GPU detected" because NVML is
 Windows/Linux only. Hosting on macOS is a larger question than detection: the
-Standard Lab depends on Firecracker, which is Linux/KVM only, so a Mac host
-would need a second provisioning path (QEMU, or Tart on Apple Silicon) and a
-second set of logic to maintain. That decision belongs to the phase that adds
-provisioning, not this one.
+Standard Lab is Firecracker on Linux and QEMU+WHPX on Windows, so a Mac host
+would need a third provisioning path (QEMU, or Tart on Apple Silicon). That
+decision belongs to the phase that adds provisioning, not this one.
+
+GPU sharing in this UI is exclusive for the session: the selected card is
+handed to the guest, and the host loses it until logout. CPU/RAM sliders are
+a concurrent slice. Do not present them as the same kind of control.
 
 ## Notes for the next phase
 

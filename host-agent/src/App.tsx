@@ -8,8 +8,9 @@ import {
   saveSharingConfig,
 } from "./api";
 import { HardwareCard } from "./components/HardwareCard";
+import { GpuShareField } from "./components/GpuShareField";
 import { ResourceSlider } from "./components/ResourceSlider";
-import { BYTES_PER_GIB, formatCores, formatGib } from "./format";
+import { BYTES_PER_GIB, formatCores, formatGib, formatGpuLabel } from "./format";
 import type { HardwareSnapshot, SharingConfig } from "./types";
 
 type SaveState = { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { kind: "error"; message: string };
@@ -49,7 +50,8 @@ export default function App() {
 
   const maxMemoryGib = hardware ? Math.floor(hardware.memory.totalBytes / BYTES_PER_GIB) : 0;
   const sharedMemoryGib = config ? Math.min(Math.round(config.sharedMemoryBytes / BYTES_PER_GIB), maxMemoryGib) : 0;
-  const gpu = hardware?.gpus[0] ?? null;
+  const gpus = hardware?.gpus ?? [];
+  const primaryGpu = gpus[0] ?? null;
 
   const isDirty = useMemo(
     () => JSON.stringify(config) !== JSON.stringify(savedConfig),
@@ -110,7 +112,7 @@ export default function App() {
       <header className="header reveal" data-reveal={0}>
         <div>
           <h1>Host Agent</h1>
-          <p>Choose how much of this machine you are willing to lend out. Nothing is shared until you turn sharing on.</p>
+          <p>Choose how much of this machine you can spare while you keep using it. Nothing is shared until you turn sharing on.</p>
         </div>
         <span className="pill" data-active={config.sharingEnabled}>
           {config.sharingEnabled ? "Sharing on" : "Sharing paused"}
@@ -138,9 +140,19 @@ export default function App() {
           <HardwareCard title="Memory" value={formatGib(hardware.memory.totalBytes)} detail="Total installed RAM" />
           <HardwareCard
             title="GPU"
-            value={gpu ? gpu.model : "No GPU detected"}
-            detail={gpu ? (gpu.vramBytes ? `${formatGib(gpu.vramBytes)} VRAM` : "VRAM not reported") : hardware.gpuNote}
-            empty={!gpu}
+            value={
+              gpus.length === 0
+                ? "No GPU detected"
+                : gpus.length === 1
+                  ? primaryGpu?.model ?? "No GPU detected"
+                  : `${gpus.length} GPUs`
+            }
+            detail={
+              gpus.length === 0
+                ? hardware.gpuNote
+                : gpus.map((gpu) => formatGpuLabel(gpu.model, gpu.vramBytes)).join(" · ")
+            }
+            empty={gpus.length === 0}
           />
         </div>
       </section>
@@ -155,7 +167,7 @@ export default function App() {
               checked={config.sharingEnabled}
               onChange={(event) => update({ sharingEnabled: event.target.checked })}
             />
-            Make this machine available for sessions
+            Make this machine available for sessions while I keep using it
           </label>
         </div>
 
@@ -182,17 +194,14 @@ export default function App() {
           onChange={(value) => update({ sharedMemoryBytes: value * BYTES_PER_GIB })}
         />
 
-        <div className="field">
-          <label className="switch" data-disabled={!gpu}>
-            <input
-              type="checkbox"
-              checked={config.shareGpu}
-              disabled={!gpu}
-              onChange={(event) => update({ shareGpu: event.target.checked })}
-            />
-            {gpu ? `Share the GPU (${gpu.model})` : "Share the GPU — unavailable, no GPU detected"}
-          </label>
-        </div>
+        <GpuShareField
+          gpus={gpus}
+          shareGpu={config.shareGpu}
+          sharedGpuId={config.sharedGpuId}
+          disabled={gpus.length === 0}
+          onShareChange={(shareGpu) => update({ shareGpu })}
+          onGpuChange={(sharedGpuId) => update({ sharedGpuId })}
+        />
       </section>
 
       <section className="panel reveal" data-reveal={3}>

@@ -14,3 +14,7 @@ export function formatGib(bytes: number): string {
 export function formatCores(count: number): string {
   return `${count} ${count === 1 ? "core" : "cores"}`;
 }
+
+export function formatGpuLabel(model: string, vramBytes: number | null): string {
+  return vramBytes ? `${model} · ${formatGib(vramBytes)} VRAM` : model;
+}

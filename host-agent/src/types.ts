@@ -13,6 +13,8 @@ export interface MemoryInfo {
 }
 
 export interface GpuInfo {
+  /** NVML UUID, or `nvidia:{index}` if the driver did not report one. */
+  id: string;
   model: string;
   vendor: GpuVendor;
   vramBytes: number | null;
@@ -32,4 +34,6 @@ export interface SharingConfig {
   sharedLogicalCores: number;
   sharedMemoryBytes: number;
   shareGpu: boolean;
+  /** Which card to dedicate. Null when no supported GPU is present. */
+  sharedGpuId: string | null;
 }
