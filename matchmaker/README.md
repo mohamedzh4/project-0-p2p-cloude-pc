@@ -1,12 +1,12 @@
 # Matchmaker
 
-Control-plane service for the Distributed Compute Lab: auth, host inventory,
-heartbeats, and session occupancy. Hosts register declared caps and start
-**pending**; sessions book a manually approved host whose last heartbeat is
-fresh (within 45s). After occupancy commit, the Matchmaker calls a Host Agent
-**provision port** (HTTP, or a test double) for a stub connection URL. Occupancy
-stays on session indexes, not a host flag. No matching algorithm, no billing,
-no real hypervisor, no Tailscale.
+Control-plane service for the Distributed Compute Lab (software MVP after
+execution phase 7): auth, host inventory, heartbeats, and session occupancy.
+Hosts register declared caps and start **pending**; sessions book a manually
+approved host whose last heartbeat is fresh (within 45s). After occupancy
+commit, the Matchmaker calls a Host Agent **provision port** (HTTP, or a test
+double) for a stub connection URL. Occupancy stays on session indexes, not a
+host flag. No matching algorithm, no billing, no real hypervisor, no Tailscale.
 
 How Matchmaker finds the agent: `hosts.agent_url` from inventory, else optional
 `HOST_AGENT_PROVISION_URL`. If neither is usable, the seeded/placeholder
@@ -139,6 +139,9 @@ Needs the test database in `TEST_DATABASE_URL` (created by compose).
 ```bash
 pytest
 ```
+
+Expect 66 passed on the phase-7 baseline (plus the existing Starlette/httpx
+deprecation warning).
 
 ## API
 

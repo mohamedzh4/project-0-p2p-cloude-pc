@@ -13,7 +13,7 @@ interface SessionPanelProps {
 function noticeText(notice: Notice): string {
   switch (notice.kind) {
     case "occupied":
-      return "Another user already holds the seeded host. End that session (or wait) before requesting again.";
+      return "Another user already holds the host. End that session (or wait) before requesting again.";
     case "ended":
       return "Session ended. The host is free to request again.";
     case "existing":
@@ -23,14 +23,16 @@ function noticeText(notice: Notice): string {
   }
 }
 
-/** Placeholder from matchmaker/.env.example — not a desktop on the Phase 0 host. */
+/** Live desktop vs RFC 2606 `.invalid` placeholders (seed + provision stubs). */
 export function isLiveKasmUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return false;
     }
-    return parsed.hostname !== "example.invalid";
+    const labels = parsed.hostname.split(".");
+    const tld = labels[labels.length - 1];
+    return tld !== "invalid";
   } catch {
     return false;
   }
@@ -68,8 +70,8 @@ export function SessionPanel({
         <>
           <span className="placeholder-flag">
             {live
-              ? "Phase 0 session — opens on the host PC"
-              : "Seed is still a placeholder URL"}
+              ? "Live session URL — opens on the host PC"
+              : "Connection URL is a placeholder, not a live desktop"}
           </span>
           <dl>
             <dt>Session id</dt>
@@ -92,9 +94,10 @@ export function SessionPanel({
             </p>
           ) : (
             <p className="hint">
-              Set <code>SEED_HOST_KASM_URL</code> in <code>matchmaker/.env</code> to
-              the live session on the Phase 0 host, then run{" "}
-              <code>python -m matchmaker.seed</code> and request again.
+              Seed and mock-provision URLs use the <code>.invalid</code> TLD. A real
+              Kasm URL from <code>docs/runbooks/gate-fc.md</code> or{" "}
+              <code>docs/runbooks/gate-whpx.md</code> is required before Open
+              desktop appears.
             </p>
           )}
           <div className="row end-row">

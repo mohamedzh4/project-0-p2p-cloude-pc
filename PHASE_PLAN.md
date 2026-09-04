@@ -34,9 +34,10 @@ Handoffs for the next agent: `docs/phase-logs/`.
   `matching.py` / `deps.py`.
 - Do not regress Host Agent CSP, `freezePrototype`, narrowed Tauri capabilities,
   Argon2id, or JWT-from-env.
-- Keep the existing 23 pytest tests passing unless you are deliberately changing
-  behavior they cover — and if so, say so in the commit, the handoff, and
-  `PROJECT_STATUS.md`.
+- Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
+  vitest + typecheck green unless you are deliberately changing behavior they
+  cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
+  Counts after phase 7: pytest 66, cargo test 77, vitest 16.
 
 ## Contracts to keep stable
 
@@ -94,10 +95,10 @@ iframe it in early phases.
 | Cahier | This plan |
 | --- | --- |
 | 0 Manual compute pipeline | Hardware gates below — open, not evidenced in-repo |
-| 1 MVP Standard Lab, hosts approved manually | Execution phases 1–6, then orchestrator pass |
-| 2 Matching + billing + auto onboarding | Deferred |
-| 3 Pro/Gamer + latency | Deferred |
-| 4 Hardening | Deferred |
+| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs). Live desktop still GATE-FC / GATE-WHPX |
+| 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
+| 3 Pro/Gamer + latency | Execution phase 16 + GATE-PRO |
+| 4 Hardening | Execution phase 13 (images); Tailscale/Storj phases ask human first |
 
 ## Execution phases
 
@@ -196,9 +197,37 @@ result; double-book still 409.
 ### Phase 7 — Orchestrator MVP pass
 
 Only after phases 1–6 each have a handoff. Read plan + status + all phase-logs.
-Run Rust, pytest, and web tests. Smoke: signup → book → harness shows
-connection → end. Fix cross-phase contract drift. Rewrite `PROJECT_STATUS.md`
-from integration evidence. Record what is still manual (hardware gates).
+Run Rust, pytest, and web tests. Smoke: host registers (pending) → approve →
+heartbeat → book → stub provision sets `kasmUrl` → end. Fix cross-phase
+contract drift. Rewrite `PROJECT_STATUS.md` from integration evidence. Record
+what is still manual (hardware gates). Extend this plan with numbered phases
+for remaining cahier FRs; do not implement those FRs here.
+
+**Exit:** Suites green; handoff `docs/phase-logs/phase-7-orchestrator-mvp.md`;
+living status rewritten; GATE-* still open.
+
+## Cahier FR gap (after phase 7)
+
+Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
+
+| FR | Status | Next |
+| --- | --- | --- |
+| FR1 signup/login | Implemented (Matchmaker + `web/`) | — |
+| FR2 intent prompt → lab tier | Missing | Phase 8 |
+| FR3 match to most suitable host | Partial: one approved live host | Phase 9 (swap selector) |
+| FR4 encrypted persistent files | Missing | Phase 15 — **ask human first** (Storj account) |
+| FR5 live streamed desktop | Partial: harness opens a URL; no live Kasm | GATE-FC / GATE-WHPX |
+| FR6 logout final save + “saved as of” | Missing | Phase 15 — **ask human first** |
+| FR7 session history + billing/credits | Missing | Phase 11 |
+| FR8 declare CPU/RAM slice + exclusive GPU | Implemented except availability schedule | Schedule can wait; do not break `sharedGpuId` |
+| FR9 auto mesh join + signed image pull | Missing | Phase 13 (images); phase 14 mesh — **ask human first** |
+| FR10 tray status (idle / in-session / earnings) | Missing | Phase 10 |
+| FR11 pause/stop sharing | Partial: local `sharingEnabled` stops heartbeats | Phase 10 (tray); no Matchmaker pause field yet |
+| FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; no load/score | Phase 9 / 12 |
+| FR13 match on tier, latency, reliability | Missing (single approved host) | Phase 9 |
+| FR14 provision, heartbeat, auto teardown | Partial: mock provision + 45s stale for **new** books; no live hypervisor; silence does not end an active session | Phase 6 stubs; GATE-* for real VMs; phase 12 for teardown |
+| FR15 re-match on host disconnect | Missing | Phase 12 |
+| FR16 meter usage / payouts | Missing | Phase 11 |
 
 ## Hardware gates (human — this Mac cannot host)
 
@@ -218,22 +247,72 @@ When a gate is actually run, the operator fills the result template in the
 runbook (`docs/phase-logs/gate-*-result.md`) and a human closes the gate in
 `PROJECT_STATUS.md`. Do not invent a pass.
 
-## Deferred (after phase 7)
+## Execution phases after 7
 
-Do not start these in an MVP phase session. Ask the human first if the work
-needs a new account (Tailscale/Headscale, Storj, paid GPU cloud).
+Do not start these in the phase-7 session. **Ask the human first** before any
+phase that needs a new account (Tailscale/Headscale, Storj, paid GPU cloud).
 
-- FR2 intent prompt (“what do you want to do today?”) mapping to lab tier
-- Real `HostSelector` ranking (latency, reliability, multi-host) — **swap the
-  class**, do not rewrite the session router
-- Billing / credits (FR7, FR16)
-- Automated image pull, mesh join (FR9), tray status / pause / earnings
-  (FR10–FR11)
-- Storj + rclone inside the guest (FR4, FR6)
-- Tailscale/Headscale per-session identity and **exit-node egress** (architecture
-  §9 item 5 — legal exposure if skipped at public launch)
-- Pro/Gamer automation (cahier 3)
-- Image signing, reliability scoring, confidential-computing routing (cahier 4)
+### Phase 8 — Intent capture (FR2)
+
+**Do:** In `web/` (still a harness), ask “what do you want to do today?” and map
+the answer to `labTier` already accepted by `POST /v1/sessions`. Keep camelCase.
+
+**Do not:** Change `HostSelector`. Do not add billing. Do not iframe Kasm.
+
+### Phase 9 — Ranking `HostSelector` swap (FR3, FR12 load/score slice, FR13)
+
+**Do:** Replace `SingleApprovedHostSelector` with a ranking implementation
+(tier fit, then latency/reliability when those fields exist). Inject via
+`get_host_selector()`. Session router still calls
+`select(db, *, lab_tier) -> Host | None` only.
+
+**Do not:** Inline ranking in `sessions.py`. Do not import the new class there.
+
+### Phase 10 — Host Agent tray, pause, status (FR10–FR11)
+
+**Do:** Tray idle / in-session (earnings can be placeholder copy until phase 11).
+Pause remains local `sharingEnabled` → stop heartbeats unless a later field is
+designed. Keep CSP / `freezePrototype` / narrowed capabilities.
+
+**Do not:** Real hypervisor. Do not `fetch` Matchmaker from the webview.
+
+### Phase 11 — Session history + billing/credits (FR7, FR16)
+
+**Do:** Metering and ledger behind the session lifecycle. Plug-in comments in
+`sessions.py` already mark the spot.
+
+**Do not:** Start this if the human has not chosen a payments approach.
+
+### Phase 12 — Heartbeat-silence teardown + re-match (FR14 remainder, FR15)
+
+**Do:** After ~45s of silence, end (or interrupt) the active session and re-match
+the user within a bounded window. Occupancy stays on session indexes.
+
+**Do not:** Fake a live desktop. Still no hypervisor names in `sessions.py`.
+
+### Phase 13 — Signed base-image pipeline (FR9 image part, cahier 4 slice)
+
+**Do:** Sign/verify guest images; Host Agent rejects a mismatch. Needs an image
+registry the human can point at.
+
+**Do not:** Close GATE-* from this work.
+
+### Phase 14 — Tailscale/Headscale mesh + exit-node egress (FR9 network)
+
+**Ask human first — needs accounts / a Headscale host.** Per-session identity and
+**exit-node egress** (architecture §9 item 5). Legal exposure if skipped at
+public launch.
+
+### Phase 15 — Storj + rclone in the guest (FR4, FR6)
+
+**Ask human first — needs a Storj account.** Mount inside the guest; final save
+on logout; “saved as of HH:MM”.
+
+### Phase 16 — Pro/Gamer automation (cahier 3)
+
+Wire Pro backends beyond stubs (VFIO / Hyper-V GPU + Sunshine/Moonlight). Blocked
+on **GATE-PRO** for a real session. Latency-aware ranking belongs in the phase 9
+selector, not a second matcher.
 
 ## Handoff template
 

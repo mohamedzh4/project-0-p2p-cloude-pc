@@ -1,9 +1,10 @@
 # Lab console (Matchmaker harness)
 
 A small Vite + React + TypeScript page whose only job is to exercise the
-Phase 1 Matchmaker API against a Phase 0 Kasm session that is already
-running on the host PC. It is **not** the product: no intent prompt, no
-billing, no Kasm iframe (the desktop opens in a new tab).
+Matchmaker API (auth, session book/end). It is **not** the product: no FR2
+intent prompt, no billing, no Kasm iframe (a live desktop would open in a
+new tab). Seed and mock-provision URLs use the `.invalid` TLD; Open desktop
+stays hidden until GATE-FC / GATE-WHPX produce a real Kasm URL.
 
 ## File structure
 
@@ -30,17 +31,18 @@ web/
 1. **Auth** — signup or login. Token lives in memory.
 2. **Ready** — logged in, no session; "Request session".
 3. **Held** — 201 (new) or 200 (you already have one). **Open desktop** if
-   `kasmUrl` is a live `http(s)` URL (not `example.invalid`). Token is shown,
-   not stuffed into the URL.
+   `kasmUrl` is a live `http(s)` URL whose host is not RFC 2606 `.invalid`
+   (seed `example.invalid` and stub `provision.invalid` are placeholders).
+   Token is shown, not stuffed into the URL.
 4. **Occupied** — 409; another user holds the host. Specific copy, not a
    generic error.
 5. **Ended** — after `POST /v1/sessions/{id}/end`, back to Ready.
 
 ## Manual steps
 
-The Matchmaker must already be running. From `matchmaker/` (see that
-README): Docker Postgres, `.env`, `alembic upgrade head`,
-`python -m matchmaker.seed`, then:
+The Matchmaker must already be running (host inventory, heartbeats, mock
+provision). From `matchmaker/` (see that README): Docker Postgres, `.env`
+with host tokens, `alembic upgrade head`, `python -m matchmaker.seed`, then:
 
 ```bash
 uvicorn matchmaker.main:app --reload --app-dir src
@@ -67,6 +69,7 @@ npm test
 npm run typecheck
 ```
 
-Vitest covers `isLiveKasmUrl`, occupied 409 vs existing-session 200, and
-Matchmaker error mapping (`detail` string, validation array, network failure).
-These are unit tests with a mocked `fetch`; they do not start Postgres.
+Vitest covers `isLiveKasmUrl` (including `.invalid` stubs), occupied 409 vs
+existing-session 200, and Matchmaker error mapping (`detail` string,
+validation array, network failure). These are unit tests with a mocked
+`fetch`; they do not start Postgres.

@@ -101,8 +101,9 @@ export default function App() {
         <p className="kicker">Matchmaker harness</p>
         <h1>Standard Lab loop</h1>
         <p className="lede">
-          Sign in, request the one seeded host, open the Phase 0 Kasm desktop, then
-          end the session. This is not the product UI.
+          Sign in, request a session, and end it. Open desktop appears only for a
+          live Kasm URL — seed and mock-provision use <code>.invalid</code> placeholders.
+          This is not the product UI.
         </p>
       </header>
 

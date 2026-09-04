@@ -24,12 +24,12 @@ From `docs/cahier-des-charges-distributed-compute-lab.md` §11.
 | Phase | Content | Status |
 | --- | --- | --- |
 | 0 | Manual Firecracker+Kasm (Linux) and QEMU+WHPX+Kasm (Windows), plus one Pro GPU session | **Open / not evidenced in-repo** — runbooks in `docs/runbooks/`; no human result file, guest image, or live Kasm URL. This Mac cannot host. |
-| 1 | MVP Standard Lab, hosts approved manually | **In progress (software):** Matchmaker auth + host inventory (pending → manual approve) + occupancy + heartbeats (45s stale through `HostSelector`); Host Agent Rust client registers clamped v2 caps and pings from Rust; OS-conditional **provisioner stubs** + Matchmaker-triggered mock provision (`HostProvisioner` port / `POST /v1/provision`); `web/` signup/request/open-desktop/end, on local `main` (not pushed). Next software: execution phase 7 (orchestrator MVP pass). |
-| 2 | Full Matchmaker (matching + billing), automated host onboarding | Host Agent: detection + caps only. Matching is `SingleApprovedHostSelector`, not a real algorithm |
-| 3 | Pro/Gamer Lab, latency-aware matching | Not started |
-| 4 | Hardening: image signing, exit nodes, reliability scoring | Not started |
+| 1 | MVP Standard Lab, hosts approved manually | **Software loop done (execution phases 1–7):** Matchmaker auth + host inventory (pending → manual approve) + occupancy + heartbeats; Host Agent Rust client; OS-conditional **provisioner stubs** + Matchmaker `HostProvisioner`; `web/` harness. **Not a usable desktop** until GATE-FC / GATE-WHPX. Next software: execution phase 8 (FR2 intent). |
+| 2 | Full Matchmaker (matching + billing), automated host onboarding | Matching is still `SingleApprovedHostSelector`. Plan phases 9–12, 14–15. |
+| 3 | Pro/Gamer Lab, latency-aware matching | Stubs only (Pro backends in `provision.rs`). Phase 16 + GATE-PRO. |
+| 4 | Hardening: image signing, exit nodes, reliability scoring | Not started (phases 13–14). |
 
-**FR1** (signup/login) done in Matchmaker + `web/`. **FR8** (CPU/RAM slice + optional dedicated GPU) done in the Host Agent except schedule. **FR5** (streamed desktop) needs a live `SEED_HOST_KASM_URL`; the seed example is still `example.invalid`. The harness opens that URL; it does not embed Kasm. **FR12** has register/update of declared caps from both Matchmaker API and the Host Agent Rust client; hosts start pending and are approved manually. **FR14** has host heartbeats + last-seen; selector skips stale/never-seen hosts; occupancy is still session indexes. **FR3** still has one bookable approved live host; Matchmaker calls a Host Agent provision port after select (stub URL or host-row fallback). **FR2, FR4, FR6–FR7, FR9–FR11, FR16** untouched.
+**FR1** signup/login: done. **FR8** CPU/RAM + optional dedicated GPU: done except schedule. **FR5** streamed desktop: harness can open a URL; seed is still `example.invalid`. **FR12** inventory: caps + heartbeats; no load/reliability score. **FR14**: mock provision + heartbeats; no live hypervisor; silence does not tear down an active session. **FR2, FR4, FR6–FR7, FR9–FR11, FR13, FR15–FR16** not implemented (see `PHASE_PLAN.md` phases 8–16).
 
 ## Layout
 
@@ -46,14 +46,14 @@ project-0-p2p-cloude-pc/
 | Decision | Status |
 | --- | --- |
 | Only the Matchmaker is custom glue; everything else is reused | Adopted |
-| Standard Lab backend is OS-conditional: Firecracker on Linux, QEMU+WHPX on Windows | Adopted on paper; hardware validation not recorded (runbooks exist, gates open) |
-| Pro needs VFIO / Hyper-V GPU assignment — Firecracker has no PCI passthrough | Forced |
-| Hosts keep using the PC. CPU/RAM is a concurrent slice; GPU is exclusive for the session | Adopted |
+| Standard Lab backend is OS-conditional: Firecracker on Linux, QEMU+WHPX on Windows | Adopted in **stubs**; hardware validation not recorded (runbooks exist, gates open) |
+| Pro needs VFIO / Hyper-V GPU assignment — Firecracker has no PCI passthrough | Forced; Pro stubs exist, no live passthrough |
+| Hosts keep using the PC. CPU/RAM is a concurrent slice; GPU is exclusive for the session | Adopted in Host Agent UI + config v2 |
 | Kasm runs *inside* the guest; the hypervisor is the isolation boundary | Adopted on paper; not evidenced in-repo |
-| Guest egress via platform exit nodes, never the host's home IP | On paper |
+| Guest egress via platform exit nodes, never the host's home IP | On paper (phase 14 — ask human first) |
 | Host Agent is Rust + Tauri v2; detection/config take plain paths, no Tauri types | Implemented |
 | Webview is untrusted — config writes are re-clamped in Rust | Implemented |
-| Matchmaker is a separate FastAPI+SQLAlchemy+Alembic+Postgres service | Implemented (Phase 1 slice) |
+| Matchmaker is a separate FastAPI+SQLAlchemy+Alembic+Postgres service | Implemented |
 | Argon2id passwords, JWT HS256, secrets from env, fail fast if missing | Implemented |
 | Occupancy from active sessions (partial unique indexes), not a host flag | Implemented |
 | Matching behind `HostSelector` so a later algorithm does not rewrite the session router | Implemented (`SingleApprovedHostSelector`) |
@@ -73,20 +73,21 @@ Live in workspace `../.cursor/`.
 
 ## Current state
 
-**Host Agent (`host-agent/`)** — CPU/RAM via `sysinfo` 0.39; NVIDIA GPUs via `nvml-wrapper` (Windows/Linux), graceful empty list otherwise. UI: sliders + GPU picker with exclusivity copy. Config v2 (`sharedGpuId`) in the OS app-config dir; v1 files still load. Rust Matchmaker client registers clamped caps (`POST`/`PUT /v1/hosts`) and pings `POST /v1/hosts/{id}/heartbeat` every 10s while sharing is on; host id in `host-identity.json`. Provisioner stubs: `plan_provision` / `provision::plan` (Linux→Firecracker, Windows→QEMU+WHPX, Pro→VFIO/Hyper-V GPU, macOS unsupported) plus opt-in `POST /v1/provision`. `--print-hardware` for headless dump. 77 Rust tests; clippy `-D warnings`. M1 reported 8 cores / 8 GiB / no GPU. Not built: mesh join, images, real VMs, tray, earnings.
+**Host Agent (`host-agent/`)** — CPU/RAM via `sysinfo` 0.39; NVIDIA GPUs via `nvml-wrapper` (Windows/Linux), graceful empty list otherwise. UI: sliders + GPU picker with exclusivity copy. Config v2 (`sharedGpuId`); v1 files still load. Rust Matchmaker client registers clamped caps and pings every 10s while sharing is on. Provisioner stubs: `plan_provision` (Linux→Firecracker, Windows→QEMU+WHPX, Pro→VFIO/Hyper-V GPU, macOS unsupported) plus opt-in `POST /v1/provision`. 77 Rust tests; clippy `-D warnings`. Not built: mesh join, images, real VMs, tray, earnings.
 
-**Matchmaker (`matchmaker/`)** — signup/login/me; host register/update (pending) + manual approve; heartbeats stamp `lastSeenAt`; selector skips stale hosts; `POST /v1/sessions` calls a `HostProvisioner` after occupancy commit; camelCase JSON; `python -m matchmaker.seed` (upsert by display name, stamps last-seen, `--approve-host-id`). **66 pytest cases**. Optional `agentUrl` / `HOST_AGENT_PROVISION_URL`. `SEED_HOST_KASM_URL` is still the `example.invalid` placeholder until a real session exists. Needs `HOST_BOOTSTRAP_TOKEN` and `HOST_APPROVE_TOKEN` in `.env` to boot. How to run: `matchmaker/README.md`.
+**Matchmaker (`matchmaker/`)** — signup/login/me; host register/update (pending) + manual approve; heartbeats stamp `lastSeenAt`; selector skips stale hosts; `POST /v1/sessions` calls a `HostProvisioner` after occupancy commit; camelCase JSON; Alembic through `0003_host_agent_url`. **66 pytest cases**. `SEED_HOST_KASM_URL` is still the `example.invalid` placeholder. Needs `HOST_BOOTSTRAP_TOKEN` and `HOST_APPROVE_TOKEN` in `.env` to boot.
 
-**Web (`web/`)** — Vite/React harness: signup/login, request session, open the seeded Kasm URL in a new tab, end session. Needs `VITE_MATCHMAKER_URL`. Vitest for URL/placeholder, 200/409 session mapping, and API errors. Not FR2 intent capture, not billing, not an iframe (Kasm is opened, not embedded).
+**Web (`web/`)** — Vite/React harness: signup/login, request session, open a **live** Kasm URL in a new tab (not `.invalid`), end session. Needs `VITE_MATCHMAKER_URL`. Vitest for placeholders, 200/409 mapping, API errors. Not FR2 intent capture, not billing, not an iframe.
 
 **Known issues**
 
-- Matchmaker / `web/` / Host Agent are on local `main` after execution phase 6; `origin/main` is still Host Agent v0 + specs until someone pushes.
+- Matchmaker / `web/` / Host Agent are on local `main` after execution phase 7; `origin/main` is still Host Agent v0 + specs until someone pushes.
 - Aikido MCP still fails here; use `security-reviewer` until `/aikido:setup` works.
-- This Mac cannot *host*: Firecracker is Linux/KVM; Windows Standard needs QEMU+WHPX. Hosting needs a Linux or Windows PC; follow `docs/runbooks/` — do not mark GATE-* closed without a human result.
+- This Mac cannot *host*: Firecracker is Linux/KVM; Windows Standard needs QEMU+WHPX. Follow `docs/runbooks/` — do not mark GATE-* closed without a human result.
 
 ## Recent changes
 
-Execution phase 6 adds Matchmaker-triggered mock provision (`HostProvisioner`
-port + Host Agent `POST /v1/provision` stubs). Hardware gates remain open. See
-`PROJECT_STATUS.md`.
+Execution phase 7 is the orchestrator MVP pass: full suites, curl smoke of
+register → approve → heartbeat → stub provision → end, harness `.invalid` URL
+handling, and numbered plan phases 8–16 for remaining FRs. Hardware gates
+remain open. See `PROJECT_STATUS.md`.

@@ -2,7 +2,8 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is execution phase 6. It does seven things and nothing else:
+This is the Host Agent after execution phase 7 (orchestrator MVP pass). It
+does seven things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU.
 2. Lets the host cap how much of each they are willing to share.
@@ -193,10 +194,10 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 7: Orchestrator MVP pass. Do not start it in a session that is still
-  wrapping phase 6. Hardware gates stay OPEN. Still do not invoke a real
-  hypervisor from this agent. On macOS, `POST /v1/provision` returns 400
-  (`UnsupportedHostOs`); Matchmaker then keeps the seeded `kasmUrl`.
+- Phase 8 is intent capture in `web/` (FR2), not more Host Agent networking.
+  Hardware gates stay OPEN. Still do not invoke a real hypervisor from this
+  agent. On macOS, `POST /v1/provision` returns 400 (`UnsupportedHostOs`);
+  Matchmaker then keeps the seeded `kasmUrl`. Tray / pause UI is phase 10.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.
