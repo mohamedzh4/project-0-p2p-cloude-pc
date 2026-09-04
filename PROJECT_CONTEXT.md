@@ -24,12 +24,12 @@ From `docs/cahier-des-charges-distributed-compute-lab.md` §11.
 | Phase | Content | Status |
 | --- | --- | --- |
 | 0 | Manual Firecracker+Kasm (Linux) and QEMU+WHPX+Kasm (Windows), plus one Pro GPU session | **Open / not evidenced in-repo** — runbooks in `docs/runbooks/`; no human result file, guest image, or live Kasm URL. This Mac cannot host. |
-| 1 | MVP Standard Lab, hosts approved manually | **In progress (software):** Matchmaker auth + one seeded host + occupancy; `web/` signup/request/open-desktop/end, now on local `main` (not pushed). Next software: execution phase 2 (host registration), then Host Agent ↔ Matchmaker (no real hypervisor). |
+| 1 | MVP Standard Lab, hosts approved manually | **In progress (software):** Matchmaker auth + host inventory (pending → manual approve) + occupancy; `web/` signup/request/open-desktop/end, on local `main` (not pushed). Next software: execution phase 3 (Host Agent Rust Matchmaker client). |
 | 2 | Full Matchmaker (matching + billing), automated host onboarding | Host Agent: detection + caps only. Matching is `SingleApprovedHostSelector`, not a real algorithm |
 | 3 | Pro/Gamer Lab, latency-aware matching | Not started |
 | 4 | Hardening: image signing, exit nodes, reliability scoring | Not started |
 
-**FR1** (signup/login) done in Matchmaker + `web/`. **FR8** (CPU/RAM slice + optional dedicated GPU) done in the Host Agent except schedule. **FR5** (streamed desktop) needs a live `SEED_HOST_KASM_URL`; the seed example is still `example.invalid`. The harness opens that URL; it does not embed Kasm. **FR3/FR12–FR14** have schema and occupancy, one seeded host, no VM boot/heartbeat from the Matchmaker. **FR2, FR4, FR6–FR7, FR9–FR11, FR16** untouched.
+**FR1** (signup/login) done in Matchmaker + `web/`. **FR8** (CPU/RAM slice + optional dedicated GPU) done in the Host Agent except schedule. **FR5** (streamed desktop) needs a live `SEED_HOST_KASM_URL`; the seed example is still `example.invalid`. The harness opens that URL; it does not embed Kasm. **FR12** has register/update of declared caps; hosts start pending and are approved manually. No heartbeat/load/reliability yet. **FR3/FR14** still have occupancy + one bookable approved host, no VM boot from the Matchmaker. **FR2, FR4, FR6–FR7, FR9–FR11, FR16** untouched.
 
 ## Layout
 
@@ -75,19 +75,17 @@ Live in workspace `../.cursor/`.
 
 **Host Agent (`host-agent/`)** — CPU/RAM via `sysinfo` 0.39; NVIDIA GPUs via `nvml-wrapper` (Windows/Linux), graceful empty list otherwise. UI: sliders + GPU picker with exclusivity copy. Config v2 (`sharedGpuId`) in the OS app-config dir; v1 files still load. `--print-hardware` for headless dump. 30 Rust tests; clippy `-D warnings`; ~2.9 MB release binary. M1 reported 8 cores / 8 GiB / no GPU. Not built: mesh join, Matchmaker registration, heartbeats, images, VMs, tray, pause, earnings.
 
-**Matchmaker (`matchmaker/`)** — signup/login/me; `POST /v1/sessions` and `…/end`; camelCase JSON; `python -m matchmaker.seed`. 23 pytest cases. Does not call the Host Agent. `SEED_HOST_KASM_URL` is still the `example.invalid` placeholder until a real session exists. How to run: `matchmaker/README.md`.
+**Matchmaker (`matchmaker/`)** — signup/login/me; host register/update (pending) + manual approve; `POST /v1/sessions` and `…/end`; camelCase JSON; `python -m matchmaker.seed` (upsert by display name, `--approve-host-id`). **37 pytest cases**. Does not call the Host Agent. `SEED_HOST_KASM_URL` is still the `example.invalid` placeholder until a real session exists. Needs `HOST_BOOTSTRAP_TOKEN` and `HOST_APPROVE_TOKEN` in `.env` to boot. How to run: `matchmaker/README.md`.
 
 **Web (`web/`)** — Vite/React harness: signup/login, request session, open the seeded Kasm URL in a new tab, end session. Needs `VITE_MATCHMAKER_URL`. Vitest for URL/placeholder, 200/409 session mapping, and API errors. Not FR2 intent capture, not billing, not an iframe (Kasm is opened, not embedded).
 
 **Known issues**
 
-- Matchmaker / `web/` are on local `main` after execution phase 1; `origin/main` is still Host Agent + specs until someone pushes.
+- Matchmaker / `web/` are on local `main` after execution phase 2; `origin/main` is still Host Agent + specs until someone pushes.
 - Aikido MCP still fails here; use `security-reviewer` until `/aikido:setup` works.
 - This Mac cannot *host*: Firecracker is Linux/KVM; Windows Standard needs QEMU+WHPX. Hosting needs a Linux or Windows PC; follow `docs/runbooks/` — do not mark GATE-* closed without a human result.
 
 ## Recent changes
 
-Execution phase 1 locks `matchmaker/` and `web/` on local `main` (vitest on the
-harness; pytest still 23). Hardware-gate runbooks are in `docs/runbooks/`.
-`origin/main` stays at `5425ccf` until someone pushes. Hardware gates remain
-open. See `PROJECT_STATUS.md`.
+Execution phase 2 adds host inventory registration (pending → manual approve)
+on the Matchmaker. Hardware gates remain open. See `PROJECT_STATUS.md`.

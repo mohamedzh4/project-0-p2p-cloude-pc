@@ -25,6 +25,11 @@ os.environ["DATABASE_URL"] = _test_url
 if not os.environ.get("JWT_SECRET"):
     raise RuntimeError("JWT_SECRET is required")
 
+if not os.environ.get("HOST_BOOTSTRAP_TOKEN"):
+    os.environ["HOST_BOOTSTRAP_TOKEN"] = "test-host-bootstrap-token"
+if not os.environ.get("HOST_APPROVE_TOKEN"):
+    os.environ["HOST_APPROVE_TOKEN"] = "test-host-approve-token"
+
 from matchmaker.db import get_engine, get_session_factory  # noqa: E402
 from matchmaker.main import app  # noqa: E402
 from matchmaker.models import Host, HostStatus, LabTier  # noqa: E402
@@ -89,6 +94,25 @@ def seeded_host(db: Session) -> Host:
         kasm_url=KASM_URL,
         kasm_token=KASM_TOKEN,
         status=HostStatus.APPROVED,
+    )
+    db.add(host)
+    db.commit()
+    db.refresh(host)
+    return host
+
+
+@pytest.fixture
+def pending_host(db: Session) -> Host:
+    host = Host(
+        display_name="pending-host",
+        lab_tier=LabTier.STANDARD,
+        shared_logical_cores=2,
+        shared_memory_bytes=4 * 1024 * 1024 * 1024,
+        share_gpu=False,
+        shared_gpu_id=None,
+        kasm_url=KASM_URL,
+        kasm_token=KASM_TOKEN,
+        status=HostStatus.PENDING,
     )
     db.add(host)
     db.commit()

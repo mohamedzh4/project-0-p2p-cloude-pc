@@ -29,6 +29,8 @@ class Settings:
     database_url: str
     jwt_secret: str
     jwt_expire_minutes: int
+    host_bootstrap_token: str
+    host_approve_token: str
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -40,10 +42,17 @@ class Settings:
         if expire_minutes <= 0:
             raise RuntimeError("JWT_EXPIRE_MINUTES must be positive")
 
+        host_bootstrap_token = _require_env("HOST_BOOTSTRAP_TOKEN")
+        host_approve_token = _require_env("HOST_APPROVE_TOKEN")
+        if host_bootstrap_token == host_approve_token:
+            raise RuntimeError("HOST_BOOTSTRAP_TOKEN and HOST_APPROVE_TOKEN must differ")
+
         return cls(
             database_url=_require_env("DATABASE_URL"),
             jwt_secret=_require_env("JWT_SECRET"),
             jwt_expire_minutes=expire_minutes,
+            host_bootstrap_token=host_bootstrap_token,
+            host_approve_token=host_approve_token,
         )
 
 

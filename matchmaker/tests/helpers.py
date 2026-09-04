@@ -2,8 +2,31 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from matchmaker.config import get_settings
+
 KASM_URL = "https://kasm.test.example/session"
 KASM_TOKEN = "test-kasm-token"
+
+
+def host_auth_header() -> dict[str, str]:
+    return {"Authorization": f"Bearer {get_settings().host_bootstrap_token}"}
+
+
+def approve_auth_header() -> dict[str, str]:
+    return {"Authorization": f"Bearer {get_settings().host_approve_token}"}
+
+
+def inventory_payload(**overrides: object) -> dict:
+    body: dict = {
+        "displayName": "lab-pc",
+        "labTier": "standard",
+        "sharedLogicalCores": 4,
+        "sharedMemoryBytes": 8 * 1024 * 1024 * 1024,
+        "shareGpu": False,
+        "sharedGpuId": None,
+    }
+    body.update(overrides)
+    return body
 
 
 def signup(

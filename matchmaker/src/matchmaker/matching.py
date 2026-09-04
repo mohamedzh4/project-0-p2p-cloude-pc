@@ -1,4 +1,4 @@
-"""Host selection. Phase 1 is one approved host; replace this class later."""
+"""Host selection. Pending hosts are never booked; replace this class later."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class HostSelector(Protocol):
 
 
 class SingleApprovedHostSelector:
-    """Phase 1 matcher: the single approved host, if it has no active session.
+    """Matcher: an approved host with no active session. Pending hosts are skipped.
 
     Later this is where ranking belongs: filter by lab tier and inventory, then
     score remaining hosts by latency (critical for Pro) and reliability. Do not

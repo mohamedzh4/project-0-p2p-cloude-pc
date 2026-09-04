@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from matchmaker.config import get_settings
-from matchmaker.routers import auth, sessions
+from matchmaker.routers import auth, hosts, sessions
 
 
 def create_app() -> FastAPI:
@@ -23,6 +23,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(auth.router, prefix="/v1/auth", tags=["auth"])
+    app.include_router(hosts.router, prefix="/v1", tags=["hosts"])
     app.include_router(sessions.router, prefix="/v1", tags=["sessions"])
     return app
 

@@ -17,6 +17,7 @@ class LabTier(StrEnum):
 
 
 class HostStatus(StrEnum):
+    PENDING = "pending"
     APPROVED = "approved"
 
 

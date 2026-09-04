@@ -34,3 +34,20 @@ def test_selector_returns_none_for_a_different_tier(db: Session, seeded_host: Ho
     selected = SingleApprovedHostSelector().select(db, lab_tier="pro")
     assert selected is None
     assert seeded_host.status == HostStatus.APPROVED
+
+
+def test_selector_returns_none_when_only_pending_host_exists(
+    db: Session, pending_host: Host
+) -> None:
+    selected = SingleApprovedHostSelector().select(db, lab_tier=LabTier.STANDARD)
+    assert selected is None
+    assert pending_host.status == HostStatus.PENDING
+
+
+def test_selector_picks_approved_host_not_pending(
+    db: Session, seeded_host: Host, pending_host: Host
+) -> None:
+    selected = SingleApprovedHostSelector().select(db, lab_tier=LabTier.STANDARD)
+    assert selected is not None
+    assert selected.id == seeded_host.id
+    assert selected.id != pending_host.id

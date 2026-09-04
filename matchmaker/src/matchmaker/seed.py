@@ -1,14 +1,17 @@
-"""Insert or update the single Phase 1 approved host from environment variables."""
+"""Insert or update the approved seed host, or manually approve a pending host."""
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
+from uuid import UUID
 
 from sqlalchemy import select
 
 from matchmaker.config import get_settings, load_env_files
 from matchmaker.db import get_session_factory
+from matchmaker.inventory import approve_host
 from matchmaker.models import Host, HostStatus, LabTier
 
 
@@ -54,7 +57,7 @@ def seed_host() -> Host:
 
     db = get_session_factory()()
     try:
-        existing = db.scalars(select(Host).limit(1)).first()
+        existing = db.scalars(select(Host).where(Host.display_name == display_name)).first()
         if existing is None:
             host = Host(
                 display_name=display_name,
@@ -88,15 +91,39 @@ def seed_host() -> Host:
         db.close()
 
 
-def main() -> None:
+def approve_seed_host(host_id: UUID) -> Host:
+    load_env_files()
+    get_settings()
+    db = get_session_factory()()
     try:
-        host = seed_host()
+        host = approve_host(db, host_id)
+        if host is None:
+            raise RuntimeError(f"host {host_id} not found")
+        return host
+    finally:
+        db.close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Seed or approve a Matchmaker host")
+    parser.add_argument(
+        "--approve-host-id",
+        help="Set an existing host to approved (manual onboarding). Does not create a host.",
+    )
+    args = parser.parse_args()
+    try:
+        if args.approve_host_id:
+            host = approve_seed_host(UUID(args.approve_host_id))
+            action = "approved"
+        else:
+            host = seed_host()
+            action = "seeded"
     except Exception as exc:
         print(f"seed failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     token_note = "present" if host.kasm_token else "absent"
     print(
-        f"seeded host {host.id} ({host.display_name}) "
+        f"{action} host {host.id} ({host.display_name}) status={host.status} "
         f"kasmUrl={host.kasm_url} kasmToken={token_note}"
     )
 

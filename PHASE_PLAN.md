@@ -47,10 +47,18 @@ Matchmaker JSON is camelCase.
 | POST | `/v1/auth/signup` | 201 `{ accessToken, tokenType, user }` |
 | POST | `/v1/auth/login` | 200, same shape |
 | GET | `/v1/auth/me` | `{ id, email }` |
+| POST | `/v1/hosts` | Host bootstrap Bearer; body declared caps; 201 `{ hostId, status: pending, ... }` |
+| PUT | `/v1/hosts/{id}` | Host bootstrap Bearer; update caps (status unchanged); 201 if the id was new |
+| POST | `/v1/hosts/{id}/approve` | Approve Bearer (not the bootstrap token); 200 `status: approved` |
 | POST | `/v1/sessions` | body `{ labTier }` (default `standard`); 201 new, 200 existing, 409 occupied/unavailable |
 | POST | `/v1/sessions/{id}/end` | owner only |
 
 Session response: `{ sessionId, hostId, labTier, startedAt, connection: { kasmUrl, kasmToken } }`.
+
+Host register/update body: `{ displayName, labTier?, sharedLogicalCores, sharedMemoryBytes,
+shareGpu, sharedGpuId, kasmUrl? }`. Host response: `{ hostId, displayName, labTier,
+status, sharedLogicalCores, sharedMemoryBytes, shareGpu, sharedGpuId, kasmUrl }`.
+New hosts are `pending`. `kasmToken` is not returned on host inventory.
 
 Host Agent on-disk config is **v2**: `version`, `sharingEnabled`,
 `sharedLogicalCores`, `sharedMemoryBytes`, `shareGpu`, `sharedGpuId`. v1 files
