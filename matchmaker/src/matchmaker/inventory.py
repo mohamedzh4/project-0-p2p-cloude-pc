@@ -26,6 +26,7 @@ def host_response(host: Host) -> HostResponse:
         share_gpu=host.share_gpu,
         shared_gpu_id=host.shared_gpu_id,
         kasm_url=host.kasm_url or None,
+        agent_url=host.agent_url,
         last_seen_at=host.last_seen_at,
     )
 
@@ -35,6 +36,7 @@ def apply_declared_caps(
     payload: HostInventoryRequest,
     *,
     replace_kasm_url: bool,
+    replace_agent_url: bool,
 ) -> None:
     host.display_name = payload.display_name
     host.lab_tier = payload.lab_tier
@@ -44,6 +46,8 @@ def apply_declared_caps(
     host.shared_gpu_id = payload.shared_gpu_id
     if replace_kasm_url:
         host.kasm_url = kasm_url_for_storage(payload.kasm_url)
+    if replace_agent_url:
+        host.agent_url = payload.agent_url
 
 
 def new_pending_host(
@@ -60,6 +64,7 @@ def new_pending_host(
         shared_gpu_id=payload.shared_gpu_id,
         kasm_url=kasm_url_for_storage(payload.kasm_url),
         kasm_token=None,
+        agent_url=payload.agent_url,
         status=HostStatus.PENDING,
     )
     if host_id is not None:

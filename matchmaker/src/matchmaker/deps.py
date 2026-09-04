@@ -14,6 +14,7 @@ from matchmaker.config import get_settings
 from matchmaker.db import get_db
 from matchmaker.matching import HostSelector, SingleApprovedHostSelector
 from matchmaker.models import User
+from matchmaker.provision import HostProvisioner, HttpHostProvisioner
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -62,6 +63,14 @@ def get_current_user(
 
 def get_host_selector() -> HostSelector:
     return SingleApprovedHostSelector()
+
+
+def get_host_provisioner() -> HostProvisioner:
+    settings = get_settings()
+    return HttpHostProvisioner(
+        fallback_base_url=settings.host_agent_provision_url,
+        bearer_token=settings.host_bootstrap_token,
+    )
 
 
 def require_host_bootstrap(

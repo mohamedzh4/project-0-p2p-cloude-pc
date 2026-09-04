@@ -51,6 +51,7 @@ def seed_host() -> Host:
     display_name = _optional_env("SEED_HOST_DISPLAY_NAME") or "phase1-lab-1"
     kasm_url = _require_env("SEED_HOST_KASM_URL")
     kasm_token = _optional_env("SEED_HOST_KASM_TOKEN")
+    agent_url = _optional_env("SEED_HOST_AGENT_URL")
     shared_logical_cores = _int_env("SEED_HOST_SHARED_LOGICAL_CORES", 4)
     shared_memory_bytes = _int_env("SEED_HOST_SHARED_MEMORY_BYTES", 8 * 1024 * 1024 * 1024)
     share_gpu = _bool_env("SEED_HOST_SHARE_GPU", False)
@@ -69,6 +70,7 @@ def seed_host() -> Host:
                 shared_gpu_id=shared_gpu_id,
                 kasm_url=kasm_url,
                 kasm_token=kasm_token,
+                agent_url=agent_url,
                 status=HostStatus.APPROVED,
                 last_seen_at=datetime.now(timezone.utc),
             )
@@ -80,6 +82,7 @@ def seed_host() -> Host:
         existing.display_name = display_name
         existing.kasm_url = kasm_url
         existing.kasm_token = kasm_token
+        existing.agent_url = agent_url
         existing.shared_logical_cores = shared_logical_cores
         existing.shared_memory_bytes = shared_memory_bytes
         existing.share_gpu = share_gpu

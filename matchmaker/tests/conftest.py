@@ -30,11 +30,14 @@ if not os.environ.get("HOST_BOOTSTRAP_TOKEN"):
     os.environ["HOST_BOOTSTRAP_TOKEN"] = "test-host-bootstrap-token"
 if not os.environ.get("HOST_APPROVE_TOKEN"):
     os.environ["HOST_APPROVE_TOKEN"] = "test-host-approve-token"
+# A local .env must not point pytest at a live agent; tests inject a fake or bind one.
+os.environ.pop("HOST_AGENT_PROVISION_URL", None)
 
 from matchmaker.db import get_engine, get_session_factory  # noqa: E402
+from matchmaker.deps import get_host_provisioner  # noqa: E402
 from matchmaker.main import app  # noqa: E402
 from matchmaker.models import Host, HostStatus, LabTier  # noqa: E402
-from tests.helpers import KASM_TOKEN, KASM_URL  # noqa: E402
+from tests.helpers import KASM_TOKEN, KASM_URL, FakeHostProvisioner, PROVISION_URL  # noqa: E402
 
 
 def _ensure_database(url: str) -> None:
@@ -81,6 +84,16 @@ def db() -> Generator[Session, None, None]:
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(app)
+
+
+@pytest.fixture
+def fake_provisioner() -> Generator[FakeHostProvisioner, None, None]:
+    fake = FakeHostProvisioner(connection_url=PROVISION_URL)
+    app.dependency_overrides[get_host_provisioner] = lambda: fake
+    try:
+        yield fake
+    finally:
+        app.dependency_overrides.pop(get_host_provisioner, None)
 
 
 @pytest.fixture

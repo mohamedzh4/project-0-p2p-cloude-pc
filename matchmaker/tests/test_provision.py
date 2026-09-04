@@ -1,0 +1,211 @@
+from __future__ import annotations
+
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
+from uuid import uuid4
+
+from fastapi.testclient import TestClient
+
+from matchmaker.models import Host, HostStatus, LabTier
+from matchmaker.provision import HttpHostProvisioner, agent_origin
+from tests.helpers import (
+    PROVISION_URL,
+    inventory_payload,
+    host_auth_header,
+)
+
+
+def _host(*, agent_url: str | None, shared_gpu_id: str | None = None) -> Host:
+    return Host(
+        id=uuid4(),
+        display_name="agent-host",
+        lab_tier=LabTier.STANDARD,
+        shared_logical_cores=4,
+        shared_memory_bytes=8 * 1024 * 1024 * 1024,
+        share_gpu=shared_gpu_id is not None,
+        shared_gpu_id=shared_gpu_id,
+        kasm_url="https://kasm.test.example/session",
+        kasm_token="test-kasm-token",
+        agent_url=agent_url,
+        status=HostStatus.APPROVED,
+    )
+
+
+def test_agent_origin_rejects_non_http_and_embedded_credentials() -> None:
+    assert agent_origin(None) is None
+    assert agent_origin("  ") is None
+    assert agent_origin("ftp://127.0.0.1:9") is None
+    assert agent_origin("http://user:pass@127.0.0.1:9") is None
+    assert agent_origin("http://127.0.0.1:7842/") == "http://127.0.0.1:7842"
+
+
+def test_http_provisioner_returns_none_without_an_agent_url() -> None:
+    provisioner = HttpHostProvisioner(bearer_token="test-host-bootstrap-token")
+    assert provisioner.provision(_host(agent_url=None), lab_tier="standard") is None
+
+
+def test_http_provisioner_posts_to_the_agent_and_reads_connection_url() -> None:
+    captured: dict[str, object] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            captured["path"] = self.path
+            captured["authorization"] = self.headers.get("Authorization")
+            captured["body"] = json.loads(self.rfile.read(length))
+            payload = json.dumps(
+                {
+                    "connectionUrl": PROVISION_URL,
+                    "hypervisorInvoked": False,
+                    "connectionToken": "stub-token",
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        provisioner = HttpHostProvisioner(bearer_token="test-host-bootstrap-token")
+        result = provisioner.provision(_host(agent_url=origin), lab_tier="standard")
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert result is not None
+    assert result.connection_url == PROVISION_URL
+    assert result.connection_token == "stub-token"
+    assert captured["path"] == "/v1/provision"
+    assert captured["authorization"] == "Bearer test-host-bootstrap-token"
+    assert captured["body"] == {"labTier": "standard", "sharedGpuId": None}
+
+
+def test_http_provisioner_uses_fallback_origin_when_host_has_none() -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            payload = json.dumps(
+                {"connectionUrl": PROVISION_URL, "hypervisorInvoked": False}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        provisioner = HttpHostProvisioner(
+            fallback_base_url=origin,
+            bearer_token="test-host-bootstrap-token",
+        )
+        result = provisioner.provision(_host(agent_url=None), lab_tier="standard")
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert result is not None
+    assert result.connection_url == PROVISION_URL
+
+
+def test_http_provisioner_treats_agent_errors_as_unavailable() -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            self.send_response(401)
+            self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        provisioner = HttpHostProvisioner(bearer_token="wrong-token")
+        result = provisioner.provision(_host(agent_url=origin), lab_tier="standard")
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert result is None
+
+
+def test_http_provisioner_refuses_a_response_that_claims_a_hypervisor() -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            payload = json.dumps(
+                {"connectionUrl": PROVISION_URL, "hypervisorInvoked": True}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        provisioner = HttpHostProvisioner(bearer_token="test-host-bootstrap-token")
+        result = provisioner.provision(_host(agent_url=origin), lab_tier="standard")
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert result is None
+
+
+def test_agent_url_round_trips_on_register(client: TestClient) -> None:
+    response = client.post(
+        "/v1/hosts",
+        headers=host_auth_header(),
+        json=inventory_payload(agentUrl="http://127.0.0.1:7842"),
+    )
+    assert response.status_code == 201
+    assert response.json()["agentUrl"] == "http://127.0.0.1:7842"
+    assert response.json()["status"] == "pending"
+
+
+def test_put_without_agent_url_does_not_wipe_it(client: TestClient) -> None:
+    created = client.post(
+        "/v1/hosts",
+        headers=host_auth_header(),
+        json=inventory_payload(agentUrl="http://127.0.0.1:7842"),
+    )
+    host_id = created.json()["hostId"]
+    updated = client.put(
+        f"/v1/hosts/{host_id}",
+        headers=host_auth_header(),
+        json=inventory_payload(sharedLogicalCores=8),
+    )
+    assert updated.status_code == 200
+    assert updated.json()["agentUrl"] == "http://127.0.0.1:7842"
+    assert updated.json()["sharedLogicalCores"] == 8
+
+
+def test_invalid_agent_url_is_rejected(client: TestClient) -> None:
+    response = client.post(
+        "/v1/hosts",
+        headers=host_auth_header(),
+        json=inventory_payload(agentUrl="not-a-url"),
+    )
+    assert response.status_code == 422

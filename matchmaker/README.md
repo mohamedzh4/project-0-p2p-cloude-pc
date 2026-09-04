@@ -3,34 +3,43 @@
 Control-plane service for the Distributed Compute Lab: auth, host inventory,
 heartbeats, and session occupancy. Hosts register declared caps and start
 **pending**; sessions book a manually approved host whose last heartbeat is
-fresh (within 45s). Occupancy stays on session indexes, not a host flag. No
-matching algorithm, no billing, no VM provisioning, no Tailscale.
+fresh (within 45s). After occupancy commit, the Matchmaker calls a Host Agent
+**provision port** (HTTP, or a test double) for a stub connection URL. Occupancy
+stays on session indexes, not a host flag. No matching algorithm, no billing,
+no real hypervisor, no Tailscale.
 
-The Host Agent is a separate app and is not called from here. OS-conditional
-provision stubs live in `host-agent/src-tauri/src/provision.rs`
-(`plan_provision`); phase 6 will call that port after `HostSelector.select`.
+How Matchmaker finds the agent: `hosts.agent_url` from inventory, else optional
+`HOST_AGENT_PROVISION_URL`. If neither is usable, the seeded/placeholder
+`kasmUrl` on the host row is kept. OS/backend selection stays in Host Agent
+Rust (`plan_provision`); this service does not name Firecracker/QEMU/WHPX.
 
 ## What it does
 
 - Signup / login with Argon2id password hashes and JWT access tokens
 - `POST /v1/hosts` / `PUT /v1/hosts/{id}` register or update declared caps
   (`sharedLogicalCores`, `sharedMemoryBytes`, `shareGpu`, `sharedGpuId`,
-  optional `kasmUrl`). New hosts are `pending`. GPU identity round-trips;
-  sharing a GPU is exclusive for the session, not a concurrent slice.
+  optional `kasmUrl`, optional `agentUrl`). New hosts are `pending`. GPU
+  identity round-trips; sharing a GPU is exclusive for the session, not a
+  concurrent slice. `agentUrl` is the origin of the Host Agent provision
+  listener. Omit it on PUT to leave a stored value alone.
 - `POST /v1/hosts/{id}/heartbeat` (Host Agent bootstrap Bearer) stamps
   `lastSeenAt`. Register/update does **not** count as a ping. Never-seen or
   stale approved hosts are not booked.
 - `POST /v1/hosts/{id}/approve` (or `python -m matchmaker.seed --approve-host-id`)
   is the manual approval path. The Host Agent bootstrap token cannot approve.
 - `POST /v1/sessions` assigns the logged-in user to an approved host if it is
-  free and returns the Kasm URL (and optional token) already stored on that host
+  free, then calls the Host Agent provision port. `connection.kasmUrl` comes
+  from that stub result when the agent is reachable; otherwise the URL already
+  stored on the host row. Session JSON shape is unchanged.
 - `POST /v1/sessions/{id}/end` frees the host so another user can take it
 
 Matching is isolated in `SingleApprovedHostSelector` (`status == approved`,
 fresh `last_seen_at`, and no active session). Staleness lives in the selector
 (and helpers it calls), not the session router. Swap that class later for real
-ranking (latency, reliability, inventory). Comments in the session router mark
-where provisioning, Headscale, Storj, and billing will plug in.
+ranking (latency, reliability, inventory). Provisioning is a `HostProvisioner`
+injected via `get_host_provisioner()` — tests swap a fake; production POSTs
+`/v1/provision` on the agent. Comments in the session router mark where
+Headscale, Storj, and billing will plug in.
 
 ## Manual steps
 
@@ -74,8 +83,8 @@ pip install -e ".[dev]"
 alembic upgrade head
 ```
 
-Head includes `0002_host_last_seen` (`hosts.last_seen_at`, nullable). Do not
-rewrite `0001_initial`.
+Head includes `0003_host_agent_url` (`hosts.agent_url`, nullable). Do not
+rewrite `0001_initial` or `0002_host_last_seen`.
 
 ### 4. Seed or approve a host
 
@@ -142,18 +151,25 @@ pytest
 | PUT | `/v1/hosts/{id}` | Host bootstrap Bearer | 200 update caps; 201 if that id is new; status unchanged |
 | POST | `/v1/hosts/{id}/heartbeat` | Host bootstrap Bearer | 200 stamps `lastSeenAt`; 404 if unknown; does not approve |
 | POST | `/v1/hosts/{id}/approve` | Approve Bearer | 200 `approved`; bootstrap token is rejected |
-| POST | `/v1/sessions` | User Bearer | 201 new, 200 if you already have one, 409 if no approved host is free |
+| POST | `/v1/sessions` | User Bearer | 201 new, 200 if you already have one, 409 if no approved host is free. New bookings call the provision port after occupancy commit. |
 | POST | `/v1/sessions/{id}/end` | User Bearer | owner only; frees the host |
 
 JSON is camelCase. Passwords and host tokens are never returned. Host inventory
 does not include `kasmToken`. Host responses include `lastSeenAt` (null until a
-heartbeat).
+heartbeat) and `agentUrl` (null until the agent advertises a listen origin).
+
+Optional Matchmaker env: `HOST_AGENT_PROVISION_URL` (http/https origin, no path)
+when the booked host has no `agentUrl`. Not required; missing means fallback to
+the host row `kasmUrl`. Invalid non-empty values fail fast at startup.
+
+The Host Agent provision listener (not this process) is `POST /v1/provision`
+with the host bootstrap Bearer. It is not fetched from the webview.
 
 ## Out of scope
 
 - Real matching across many hosts
 - Billing / credits
-- Calling the Host Agent to boot a VM
+- Invoking Firecracker, QEMU, Kasm, Sunshine, or VFIO
 - Interrupting an active session when heartbeats go silent
 - Tailscale / Headscale identities
 - Storj mounts

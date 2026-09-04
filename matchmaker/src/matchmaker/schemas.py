@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
+from urllib.parse import urlparse
+
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
@@ -66,6 +68,7 @@ class HostInventoryRequest(CamelModel):
     share_gpu: bool
     shared_gpu_id: str | None = None
     kasm_url: str | None = Field(default=None, max_length=2048)
+    agent_url: str | None = Field(default=None, max_length=2048)
 
     @field_validator("display_name", "lab_tier")
     @classmethod
@@ -82,6 +85,21 @@ class HostInventoryRequest(CamelModel):
             return None
         stripped = value.strip()
         return stripped or None
+
+    @field_validator("agent_url")
+    @classmethod
+    def normalize_agent_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip().rstrip("/")
+        if not stripped:
+            return None
+        parsed = urlparse(stripped)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("agentUrl must be an http or https URL")
+        if parsed.username or parsed.password:
+            raise ValueError("agentUrl must not include credentials")
+        return stripped
 
     @model_validator(mode="after")
     def require_named_gpu_when_sharing(self) -> HostInventoryRequest:
@@ -103,4 +121,5 @@ class HostResponse(CamelModel):
     share_gpu: bool
     shared_gpu_id: str | None = None
     kasm_url: str | None = None
+    agent_url: str | None = None
     last_seen_at: datetime | None = None

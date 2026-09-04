@@ -51,6 +51,7 @@ class Host(Base):
     shared_gpu_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     kasm_url: Mapped[str] = mapped_column(Text, nullable=False)
     kasm_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

@@ -10,9 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from matchmaker.db import get_db
-from matchmaker.deps import get_current_user, get_host_selector
+from matchmaker.deps import get_current_user, get_host_provisioner, get_host_selector
 from matchmaker.matching import HostSelector
 from matchmaker.models import Host, LabSession, SessionStatus, User
+from matchmaker.provision import HostProvisioner, ProvisionResult
 from matchmaker.schemas import (
     ConnectionInfo,
     EndSessionResponse,
@@ -31,6 +32,28 @@ def _session_response(session: LabSession, host: Host) -> SessionResponse:
         started_at=session.started_at,
         connection=ConnectionInfo(kasm_url=host.kasm_url, kasm_token=host.kasm_token),
     )
+
+
+def _apply_provision_result(db: Session, host: Host, result: ProvisionResult) -> None:
+    """Keep existing-session 200 on the same connection URL without a new field."""
+    host.kasm_url = result.connection_url
+    if result.connection_token is not None:
+        host.kasm_token = result.connection_token
+    db.commit()
+    db.refresh(host)
+
+
+def _provision_new_session(
+    db: Session,
+    host: Host,
+    provisioner: HostProvisioner,
+    *,
+    lab_tier: str,
+) -> None:
+    result = provisioner.provision(host, lab_tier=lab_tier)
+    if result is None or not result.connection_url.strip():
+        return
+    _apply_provision_result(db, host, result)
 
 
 def _active_session_for_user(db: Session, user_id: UUID) -> LabSession | None:
@@ -58,6 +81,7 @@ def request_session(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
     selector: Annotated[HostSelector, Depends(get_host_selector)],
+    provisioner: Annotated[HostProvisioner, Depends(get_host_provisioner)],
     payload: SessionRequest | None = None,
 ) -> SessionResponse:
     req = payload or SessionRequest()
@@ -68,15 +92,10 @@ def request_session(
         return _session_response(existing, _host_or_error(db, existing.host_id))
 
     # --- later plug-ins (do not implement here) ---
-    # 1. Real matching: swap SingleApprovedHostSelector for latency/reliability ranking.
-    # 2. Host Agent provision (phase 6): after select, call the Host Agent provision
-    #    port. The OS-conditional stub is `provision::plan` in
-    #    host-agent/src-tauri/src/provision.rs — do not put Firecracker/QEMU/WHPX
-    #    names in this router. Until that port exists, assume a Kasm URL already
-    #    on the host row.
-    # 3. Headscale/Tailscale: mint a per-session mesh identity and scoped ACLs.
-    # 4. Storj/rclone: mount the user's bucket inside the guest.
-    # 5. Billing: start metering once the session is actually ready.
+    # 1. Real matching: swap the HostSelector implementation for latency/reliability ranking.
+    # 2. Headscale/Tailscale: mint a per-session mesh identity and scoped ACLs.
+    # 3. Storj/rclone: mount the user's bucket inside the guest.
+    # 4. Billing: start metering once the session is actually ready.
     host = selector.select(db, lab_tier=req.lab_tier)
     if host is None:
         raise HTTPException(
@@ -105,6 +124,10 @@ def request_session(
         ) from None
 
     db.refresh(session)
+    # Occupancy is already held by the session row. Provision is a port on the
+    # selected host (HTTP to its agent, or a test double). If the agent is
+    # unreachable, keep the seeded/placeholder URL on the host row.
+    _provision_new_session(db, host, provisioner, lab_tier=req.lab_tier)
     response.status_code = status.HTTP_201_CREATED
     return _session_response(session, host)
 

@@ -57,10 +57,12 @@ Matchmaker JSON is camelCase.
 Session response: `{ sessionId, hostId, labTier, startedAt, connection: { kasmUrl, kasmToken } }`.
 
 Host register/update body: `{ displayName, labTier?, sharedLogicalCores, sharedMemoryBytes,
-shareGpu, sharedGpuId, kasmUrl? }`. Host response: `{ hostId, displayName, labTier,
+shareGpu, sharedGpuId, kasmUrl?, agentUrl? }`. Host response: `{ hostId, displayName, labTier,
 status, sharedLogicalCores, sharedMemoryBytes, shareGpu, sharedGpuId, kasmUrl,
-lastSeenAt }`. New hosts are `pending`. `lastSeenAt` is null until a heartbeat.
-`kasmToken` is not returned on host inventory.
+agentUrl, lastSeenAt }`. New hosts are `pending`. `lastSeenAt` is null until a heartbeat.
+`kasmToken` is not returned on host inventory. `agentUrl` is the origin Matchmaker uses
+to POST the Host Agent provision port (`http://127.0.0.1:7842`). Omit it on PUT to leave
+the stored value alone (same as `kasmUrl`).
 
 Host Agent on-disk config is **v2**: `version`, `sharingEnabled`,
 `sharedLogicalCores`, `sharedMemoryBytes`, `shareGpu`, `sharedGpuId`. v1 files
@@ -69,14 +71,20 @@ still load. Matchmaker `hosts` already has `shared_gpu_id`.
 Host Agent Matchmaker calls belong in **Rust**, not `fetch` from the webview
 (CSP allows no remote origins).
 
-Host Agent provisioner (stubs, phase 5): `host_agent_lib::plan_provision(os,
+Host Agent provisioner (stubs, phase 5–6): `host_agent_lib::plan_provision(os,
 request) -> Result<ProvisionPlan, ProvisionError>` in
 `host-agent/src-tauri/src/provision.rs`. Linux Standard → Firecracker, Windows
 Standard → QEMU+WHPX, Linux Pro → QEMU+VFIO, Windows Pro → Hyper-V GPU; macOS
 is unsupported (not a Firecracker fallback). Pro requires `sharedGpuId` and
 sets `gpuExclusive` plus an exclusivity warning. Never invokes a hypervisor.
-Phase 6 should call this after `HostSelector.select`; do not duplicate OS
-selection in the session router.
+The Host Agent HTTP port is `POST /v1/provision` (`provision_http.rs`); it calls
+`plan` and returns `{ connectionUrl, hypervisorInvoked, gpuExclusive }`.
+Matchmaker session booking, after `HostSelector.select` and occupancy commit,
+calls a `HostProvisioner` port (`get_host_provisioner()`), not a hypervisor and
+not `SingleApprovedHostSelector`. Origin: `host.agentUrl`, else optional
+`HOST_AGENT_PROVISION_URL`. If that call is unavailable, the seeded/placeholder
+`kasmUrl` on the host row is kept. Do not put Firecracker/QEMU/WHPX names in
+`sessions.py`.
 
 `web/` is a harness, not the product dashboard. Kasm opens in a new tab; do not
 iframe it in early phases.

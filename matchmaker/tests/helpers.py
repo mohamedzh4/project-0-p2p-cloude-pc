@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from uuid import UUID
+
 from fastapi.testclient import TestClient
 
 from matchmaker.config import get_settings
+from matchmaker.models import Host
+from matchmaker.provision import ProvisionResult
+
+KASM_URL = "https://kasm.test.example/session"
+KASM_TOKEN = "test-kasm-token"
+PROVISION_URL = "https://provision.invalid/mock"
 
 KASM_URL = "https://kasm.test.example/session"
 KASM_TOKEN = "test-kasm-token"
@@ -45,3 +54,19 @@ def auth_header(token: str) -> dict[str, str]:
 
 def heartbeat(client: TestClient, host_id: str):
     return client.post(f"/v1/hosts/{host_id}/heartbeat", headers=host_auth_header())
+
+
+@dataclass
+class FakeHostProvisioner:
+    """Test double for the Host Agent provision port. Swap via FastAPI Depends."""
+
+    connection_url: str
+    connection_token: str | None = None
+    calls: list[tuple[UUID, str]] = field(default_factory=list)
+
+    def provision(self, host: Host, *, lab_tier: str) -> ProvisionResult | None:
+        self.calls.append((host.id, lab_tier))
+        return ProvisionResult(
+            connection_url=self.connection_url,
+            connection_token=self.connection_token,
+        )

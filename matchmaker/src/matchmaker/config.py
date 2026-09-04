@@ -24,6 +24,16 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _optional_http_url(name: str) -> str | None:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    value = raw.strip().rstrip("/")
+    if not (value.startswith("http://") or value.startswith("https://")):
+        raise RuntimeError(f"{name} must be an http or https URL")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
@@ -31,6 +41,7 @@ class Settings:
     jwt_expire_minutes: int
     host_bootstrap_token: str
     host_approve_token: str
+    host_agent_provision_url: str | None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -53,6 +64,7 @@ class Settings:
             jwt_expire_minutes=expire_minutes,
             host_bootstrap_token=host_bootstrap_token,
             host_approve_token=host_approve_token,
+            host_agent_provision_url=_optional_http_url("HOST_AGENT_PROVISION_URL"),
         )
 
 

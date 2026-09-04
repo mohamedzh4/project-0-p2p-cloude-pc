@@ -36,6 +36,8 @@ pub enum MatchmakerError {
     MissingEnv(&'static str),
     #[error("MATCHMAKER_URL must be an http or https URL (origin only, no /v1 suffix required)")]
     InvalidUrl,
+    #[error("HOST_AGENT_URL must be an http or https URL (Matchmaker must be able to reach this agent)")]
+    InvalidAgentUrl,
     #[error("shareGpu is true but sharedGpuId is missing; GPU assignment is exclusive for the session, not a concurrent slice")]
     GpuIdRequired,
     #[error("sharedLogicalCores must be at least 1 to register with the Matchmaker")]
@@ -106,6 +108,9 @@ pub struct HostInventoryBody {
     pub shared_memory_bytes: u64,
     pub share_gpu: bool,
     pub shared_gpu_id: Option<String>,
+    /// Omitted when unset so a PUT does not wipe a URL stored earlier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_url: Option<String>,
 }
 
 impl HostInventoryBody {
@@ -137,6 +142,7 @@ impl HostInventoryBody {
             shared_memory_bytes: clamped.shared_memory_bytes,
             share_gpu: clamped.share_gpu,
             shared_gpu_id: clamped.shared_gpu_id,
+            agent_url: None,
         })
     }
 }
@@ -228,12 +234,13 @@ pub fn register_from_env(
 pub fn register_declared_caps(
     dir: &Path,
     hardware: &HardwareSnapshot,
-    lookup: impl FnMut(&str) -> Option<String>,
+    mut lookup: impl FnMut(&str) -> Option<String>,
     transport: &impl Transport,
 ) -> Result<HostRegistration, MatchmakerError> {
     let config = config::load_for_hardware(dir, hardware)?;
-    let credentials = MatchmakerCredentials::from_lookup(lookup)?;
-    sync_inventory(transport, &credentials, dir, &config, hardware)
+    let credentials = MatchmakerCredentials::from_lookup(&mut lookup)?;
+    let agent_url = advertised_agent_url(&mut lookup)?;
+    sync_inventory(transport, &credentials, dir, &config, hardware, agent_url)
 }
 
 pub fn sync_inventory(
@@ -242,8 +249,10 @@ pub fn sync_inventory(
     dir: &Path,
     config: &SharingConfig,
     hardware: &HardwareSnapshot,
+    agent_url: Option<String>,
 ) -> Result<HostRegistration, MatchmakerError> {
-    let body = HostInventoryBody::from_sharing(config, hardware, &credentials.display_name)?;
+    let mut body = HostInventoryBody::from_sharing(config, hardware, &credentials.display_name)?;
+    body.agent_url = agent_url;
     let payload =
         serde_json::to_value(&body).map_err(|error| MatchmakerError::Network(error.to_string()))?;
     let existing = identity::load(dir)?;
@@ -353,6 +362,35 @@ fn require_named_gpu(
         Err(MatchmakerError::GpuIdRequired)
     } else {
         Ok(())
+    }
+}
+
+fn advertised_agent_url<F>(lookup: &mut F) -> Result<Option<String>, MatchmakerError>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    if let Some(url) = lookup("HOST_AGENT_URL")
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return validate_agent_url(&url);
+    }
+    match lookup("HOST_AGENT_LISTEN_ADDR")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        Some(addr) if !addr.eq_ignore_ascii_case("off") => {
+            validate_agent_url(&format!("http://{addr}"))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn validate_agent_url(value: &str) -> Result<Option<String>, MatchmakerError> {
+    if value.starts_with("http://") || value.starts_with("https://") {
+        Ok(Some(value.to_string()))
+    } else {
+        Err(MatchmakerError::InvalidAgentUrl)
     }
 }
 
@@ -648,6 +686,7 @@ mod tests {
         assert_eq!(call.body["sharedGpuId"], "GPU-TEST-4070");
         assert_eq!(call.body["sharedLogicalCores"], 4);
         assert!(call.body.get("kasmUrl").is_none());
+        assert!(call.body.get("agentUrl").is_none());
         assert!(!format!("{call:?}").contains(TEST_BOOTSTRAP_TOKEN));
         assert_eq!(registration.host_id, "11111111-2222-3333-4444-555555555555");
         assert_eq!(registration.status, "pending");
@@ -655,6 +694,37 @@ mod tests {
             identity::load(dir.path()).unwrap().unwrap().host_id,
             registration.host_id
         );
+    }
+
+    #[test]
+    fn inventory_json_includes_agent_url_when_listen_env_is_set() {
+        let dir = tempdir().unwrap();
+        let hardware = snapshot(8, 16 * BYTES_PER_GIB, vec![nvidia_gpu()]);
+        let config = sharing(4, 8 * BYTES_PER_GIB, false, None);
+        config::save(dir.path(), &config).unwrap();
+        let transport = RecordingTransport::ok(
+            "11111111-2222-3333-4444-555555555555",
+            false,
+            None,
+        );
+
+        register_declared_caps(
+            dir.path(),
+            &hardware,
+            |key| match key {
+                "MATCHMAKER_URL" => Some("http://matchmaker.test".to_string()),
+                "HOST_BOOTSTRAP_TOKEN" => Some(TEST_BOOTSTRAP_TOKEN.to_string()),
+                "HOST_DISPLAY_NAME" => Some("lab-pc".to_string()),
+                "HOST_AGENT_LISTEN_ADDR" => Some("127.0.0.1:7842".to_string()),
+                _ => None,
+            },
+            &transport,
+        )
+        .unwrap();
+
+        let call = transport.last();
+        assert_eq!(call.body["agentUrl"], "http://127.0.0.1:7842");
+        assert!(call.body.get("kasmUrl").is_none());
     }
 
     #[test]
@@ -730,6 +800,7 @@ mod tests {
             dir.path(),
             &config,
             &hardware,
+            None,
         )
         .unwrap();
 

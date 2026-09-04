@@ -1,6 +1,6 @@
 //! Detect the machine, persist local sharing caps, register those caps with
 //! the Matchmaker from Rust, and ping while sharing is on. Provisioning is a
-//! stub contract only (OS × tier → peer backend); tray mode is still out of
+//! stub HTTP port that calls `plan_provision`; tray mode is still out of
 //! scope.
 
 mod commands;
@@ -11,13 +11,14 @@ mod identity;
 mod matchmaker;
 mod models;
 mod provision;
+mod provision_http;
 
 #[cfg(test)]
 mod test_support;
 
 pub use models::HardwareSnapshot;
-/// Phase 6 should call [`plan_provision`] after matching. Selection takes
-/// plain types (no Tauri) so a later HTTP port can reuse it.
+/// Phase 6: Matchmaker calls the HTTP port; that port calls [`plan_provision`].
+/// Selection takes plain types (no Tauri) so the listener can reuse it.
 pub use provision::{
     plan as plan_provision, HostOs, LabTier as ProvisionLabTier, ProvisionError, ProvisionPlan,
     ProvisionRequest,
@@ -73,8 +74,26 @@ fn tick_heartbeat(
     matchmaker::heartbeat_from_env(&dir, &UreqTransport)
 }
 
+fn spawn_provision_listener() {
+    match provision_http::listen_config_from_env(|key| std::env::var(key).ok()) {
+        Ok(None) => {}
+        Ok(Some(config)) => {
+            std::thread::Builder::new()
+                .name("host-agent-provision".into())
+                .spawn(move || {
+                    if let Err(error) = provision_http::serve(&config, HostOs::current()) {
+                        eprintln!("host-agent provision listener: {error}");
+                    }
+                })
+                .expect("could not start host provision listener");
+        }
+        Err(error) => panic!("{error}"),
+    }
+}
+
 pub fn run() {
     load_local_env();
+    spawn_provision_listener();
 
     tauri::Builder::default()
         .manage(AgentState {

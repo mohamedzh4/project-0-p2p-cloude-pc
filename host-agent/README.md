@@ -2,7 +2,7 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is execution phase 5. It does six things and nothing else:
+This is execution phase 6. It does seven things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU.
 2. Lets the host cap how much of each they are willing to share.
@@ -10,13 +10,16 @@ This is execution phase 5. It does six things and nothing else:
 4. Registers those **clamped** caps with the Matchmaker from **Rust**
    (`POST /v1/hosts` or `PUT /v1/hosts/{id}`). New hosts stay `pending` until an
    operator approves them with `HOST_APPROVE_TOKEN`. This agent never sends that
-   token.
+   token. When `HOST_AGENT_LISTEN_ADDR` is set, registration includes `agentUrl`.
 5. While local `sharingEnabled` is on and a host id exists, pings
    `POST /v1/hosts/{id}/heartbeat` from Rust every 10 seconds. Pause sharing to
    stop pings so the host goes stale in matching.
 6. Selects a **stub** provision target from host OS × lab tier (Linux Standard
    → Firecracker, Windows Standard → QEMU+WHPX, Pro → QEMU+VFIO / Hyper-V GPU).
    macOS is an explicit unsupported variant. No hypervisor is invoked.
+7. Optionally listens for `POST /v1/provision` from the Matchmaker
+   (`HOST_AGENT_LISTEN_ADDR`). The handler calls `plan_provision` and returns
+   `https://provision.invalid/{backend}`. The webview does not `fetch` this.
 
 There is no real Firecracker, QEMU, or tray mode yet. See
 `../docs/distributed-compute-lab-architecture.md` for where those land.
@@ -54,9 +57,10 @@ host-agent/
     │   ├── gpu.rs            NVIDIA detection with graceful fallback
     │   ├── config.rs         load/save the sharing config
     │   ├── identity.rs       persisted Matchmaker host id
-    │   ├── matchmaker.rs     inventory + heartbeat client (clamp, POST/PUT/ping, fail-fast env)
-    │   ├── provision.rs      OS-conditional stub backends (peers; no hypervisor)
-    │   ├── commands.rs       the command surface exposed to the UI
+│   ├── matchmaker.rs     inventory + heartbeat client (clamp, POST/PUT/ping, fail-fast env)
+│   ├── provision.rs      OS-conditional stub backends (peers; no hypervisor)
+│   ├── provision_http.rs POST /v1/provision → plan_provision (Bearer; no hypervisor)
+│   ├── commands.rs       the command surface exposed to the UI
     │   └── lib.rs            app setup and state
     └── tauri.conf.json
 ```
@@ -85,6 +89,8 @@ Copy `.env.example` to `.env` on the host machine (never commit `.env`):
 | `MATCHMAKER_URL` | yes | Matchmaker origin, e.g. `http://127.0.0.1:8000` |
 | `HOST_BOOTSTRAP_TOKEN` | yes | Same Bearer token as Matchmaker `HOST_BOOTSTRAP_TOKEN` |
 | `HOST_DISPLAY_NAME` | no | Defaults to this machine's hostname |
+| `HOST_AGENT_LISTEN_ADDR` | no | Bind `host:port` for `POST /v1/provision`. Omit to disable. If set, the bootstrap token is required (fail fast). |
+| `HOST_AGENT_URL` | no | Origin advertised as `agentUrl`. Defaults to `http://$HOST_AGENT_LISTEN_ADDR` when listening. |
 
 The agent fails registration and heartbeats if the URL or bootstrap token is
 missing when it would send. It does not read `HOST_APPROVE_TOKEN`. Operators
@@ -136,7 +142,9 @@ Covers CPU model normalization, the GPU fallback path, recommended defaults,
 clamping a stored config to a smaller machine, the config file round trip,
 inventory payload clamping (including GPU id when `shareGpu` is true), fail-fast
 credentials, POST vs PUT once a host id is persisted, heartbeat skip/send paths,
-and token redaction in `Debug`.
+and token redaction in `Debug`. Provision HTTP: Linux/Windows stub URLs,
+401 without Bearer, macOS rejected, bind round-trip with `hypervisorInvoked`
+false.
 
 ```bash
 npm run typecheck
@@ -185,9 +193,10 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 6: Matchmaker-triggered mock provision. After `HostSelector.select`,
-  call `host_agent_lib::plan_provision` (`provision::plan`) — do not put
-  hypervisor names in the session router. Still do not invoke a real hypervisor.
+- Phase 7: Orchestrator MVP pass. Do not start it in a session that is still
+  wrapping phase 6. Hardware gates stay OPEN. Still do not invoke a real
+  hypervisor from this agent. On macOS, `POST /v1/provision` returns 400
+  (`UnsupportedHostOs`); Matchmaker then keeps the seeded `kasmUrl`.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

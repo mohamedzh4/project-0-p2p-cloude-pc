@@ -55,6 +55,7 @@ def update_host(
         existing,
         payload,
         replace_kasm_url="kasm_url" in payload.model_fields_set,
+        replace_agent_url="agent_url" in payload.model_fields_set,
     )
     db.commit()
     db.refresh(existing)

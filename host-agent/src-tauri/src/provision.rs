@@ -5,9 +5,9 @@
 //! assignment), not Firecracker with a GPU bolted on. GPU assignment is
 //! exclusive for the session; CPU/RAM stay a concurrent slice.
 //!
-//! Nothing in this module invokes a hypervisor. Phase 6 should call [`plan`]
-//! after matching; do not put Firecracker/QEMU details in the session router.
-//! Real boots are GATE-FC / GATE-WHPX / GATE-PRO.
+//! Nothing in this module invokes a hypervisor. The HTTP port in
+//! `provision_http` calls [`plan`] after matching; do not put Firecracker/QEMU
+//! details in the session router. Real boots are GATE-FC / GATE-WHPX / GATE-PRO.
 
 use std::fmt;
 
