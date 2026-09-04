@@ -21,7 +21,7 @@ from matchmaker.ledger import (
 )
 from matchmaker.matching import HostSelector
 from matchmaker.models import Host, LabSession, SessionStatus, User
-from matchmaker.provision import HostProvisioner, ProvisionResult
+from matchmaker.provision import HostProvisioner, provision_booked_host
 from matchmaker.schemas import (
     ConnectionInfo,
     EndSessionResponse,
@@ -30,6 +30,7 @@ from matchmaker.schemas import (
     SessionRequest,
     SessionResponse,
 )
+from matchmaker.silence import reclaim_stale_sessions
 
 router = APIRouter()
 
@@ -44,26 +45,13 @@ def _session_response(session: LabSession, host: Host) -> SessionResponse:
     )
 
 
-def _apply_provision_result(db: Session, host: Host, result: ProvisionResult) -> None:
-    """Keep existing-session 200 on the same connection URL without a new field."""
-    host.kasm_url = result.connection_url
-    if result.connection_token is not None:
-        host.kasm_token = result.connection_token
-    db.commit()
-    db.refresh(host)
-
-
-def _provision_new_session(
-    db: Session,
-    host: Host,
-    provisioner: HostProvisioner,
-    *,
-    lab_tier: str,
-) -> None:
-    result = provisioner.provision(host, lab_tier=lab_tier)
-    if result is None or not result.connection_url.strip():
-        return
-    _apply_provision_result(db, host, result)
+def _reclaim_stale(db: Session, selector: HostSelector, provisioner: HostProvisioner) -> None:
+    reclaim_stale_sessions(
+        db,
+        selector,
+        provisioner,
+        credits_per_minute=get_settings().credits_per_minute,
+    )
 
 
 def _active_session_for_user(db: Session, user_id: UUID) -> LabSession | None:
@@ -95,6 +83,7 @@ def request_session(
     payload: SessionRequest | None = None,
 ) -> SessionResponse:
     req = payload or SessionRequest()
+    _reclaim_stale(db, selector, provisioner)
 
     existing = _active_session_for_user(db, user.id)
     if existing is not None:
@@ -107,8 +96,9 @@ def request_session(
     #    inline it here — swap the injected class.
     # 2. Headscale/Tailscale: mint a per-session mesh identity and scoped ACLs.
     # 3. Storj/rclone: mount the user's bucket inside the guest.
-    # 4. Billing: duration is metered at end (startedAt → endedAt) into
-    #    ledger_entries. Occupancy start is the clock; no payment processor.
+    # 4. Billing: duration is metered at end or silence interrupt (startedAt →
+    #    endedAt) into ledger_entries. Occupancy start is the clock; no
+    #    payment processor. Stale occupied hosts are reclaimed in silence.py.
     host = selector.select(db, lab_tier=req.lab_tier)
     if host is None:
         raise HTTPException(
@@ -140,7 +130,7 @@ def request_session(
     # Occupancy is already held by the session row. Provision is a port on the
     # selected host (HTTP to its agent, or a test double). If the agent is
     # unreachable, keep the seeded/placeholder URL on the host row.
-    _provision_new_session(db, host, provisioner, lab_tier=req.lab_tier)
+    provision_booked_host(db, host, provisioner, lab_tier=req.lab_tier)
     response.status_code = status.HTTP_201_CREATED
     return _session_response(session, host)
 
@@ -155,7 +145,7 @@ def end_session(
     if session is None or session.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
-    if session.status != SessionStatus.ENDED:
+    if session.status == SessionStatus.ACTIVE:
         session.status = SessionStatus.ENDED
         session.ended_at = datetime.now(timezone.utc)
         settle_ended_session(
@@ -194,7 +184,10 @@ def end_session(
 def list_sessions(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
+    selector: Annotated[HostSelector, Depends(get_host_selector)],
+    provisioner: Annotated[HostProvisioner, Depends(get_host_provisioner)],
 ) -> SessionHistoryResponse:
+    _reclaim_stale(db, selector, provisioner)
     rows = db.scalars(
         select(LabSession)
         .where(LabSession.user_id == user.id)

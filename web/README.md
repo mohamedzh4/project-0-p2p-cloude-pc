@@ -40,7 +40,8 @@ web/
    Token is shown, not stuffed into the URL. Pro sessions keep the exclusivity
    note.
 4. **History** — `GET /v1/sessions` under the booking panel: past sessions and
-   lifetime credits on the internal ledger (not a card charge).
+   lifetime credits on the internal ledger (not a card charge). `status` is
+   `active`, `ended`, or `interrupted` (host went silent ~45s).
 4. **Occupied** — 409 on Standard; another user holds the host.
 5. **Unavailable** — 409 on Pro; no approved live Pro host (or GPU already
    assigned). Expected while inventory is Standard-only.

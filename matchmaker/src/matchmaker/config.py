@@ -43,6 +43,7 @@ class Settings:
     host_approve_token: str
     host_agent_provision_url: str | None
     credits_per_minute: int
+    stale_session_sweep_interval_seconds: int
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -67,6 +68,18 @@ class Settings:
         if host_bootstrap_token == host_approve_token:
             raise RuntimeError("HOST_BOOTSTRAP_TOKEN and HOST_APPROVE_TOKEN must differ")
 
+        sweep_raw = os.environ.get("STALE_SESSION_SWEEP_INTERVAL_SECONDS", "15").strip()
+        if sweep_raw == "":
+            sweep_raw = "15"
+        try:
+            sweep_interval = int(sweep_raw)
+        except ValueError as exc:
+            raise RuntimeError(
+                "STALE_SESSION_SWEEP_INTERVAL_SECONDS must be an integer"
+            ) from exc
+        if sweep_interval < 0:
+            raise RuntimeError("STALE_SESSION_SWEEP_INTERVAL_SECONDS must be non-negative")
+
         return cls(
             database_url=_require_env("DATABASE_URL"),
             jwt_secret=_require_env("JWT_SECRET"),
@@ -75,6 +88,7 @@ class Settings:
             host_approve_token=host_approve_token,
             host_agent_provision_url=_optional_http_url("HOST_AGENT_PROVISION_URL"),
             credits_per_minute=credits_per_minute,
+            stale_session_sweep_interval_seconds=sweep_interval,
         )
 
 

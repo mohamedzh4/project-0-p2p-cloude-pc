@@ -38,7 +38,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 11: pytest 94, cargo test 93, vitest 27.
+  Counts after phase 12: pytest 105, cargo test 93, vitest 27.
 
 ## Contracts to keep stable
 
@@ -60,6 +60,12 @@ Matchmaker JSON is camelCase.
 
 Session response: `{ sessionId, hostId, labTier, startedAt, connection: { kasmUrl, kasmToken } }`.
 End response: `{ sessionId, status, endedAt, creditsDebited }`.
+History `status` is `active` | `ended` (user end) | `interrupted` (heartbeat
+silence). End response is `ended` or already-`interrupted`. Occupied silent
+hosts are reclaimed on book, history, heartbeat (after stamping last-seen),
+and an optional background sweep (`STALE_SESSION_SWEEP_INTERVAL_SECONDS`,
+default 15, `0` disables the loop). No new HTTP routes. Rematch uses
+`HostSelector.select` only.
 
 Host register/update body: `{ displayName, labTier?, sharedLogicalCores, sharedMemoryBytes,
 shareGpu, sharedGpuId, kasmUrl?, agentUrl? }`. Host response: `{ hostId, displayName, labTier,
@@ -226,11 +232,11 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR8 declare CPU/RAM slice + exclusive GPU | Implemented except availability schedule | Schedule can wait; do not break `sharedGpuId` |
 | FR9 auto mesh join + signed image pull | Missing | Phase 13 (images); phase 14 mesh — **ask human first** |
 | FR10 tray status (idle / in-session / earnings) | Window + Rust tray; earnings from ledger | Accrued, not paid out |
-| FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | no Matchmaker pause field |
-| FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Phase 12 / later telemetry |
+| FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | After 45s Matchmaker treats skip as silence (interrupts). No pause field |
+| FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Later telemetry |
 | FR13 match on tier, latency, reliability | Partial: tier fit + declared caps; latency/reliability not measured | Phase 16 |
-| FR14 provision, heartbeat, auto teardown | Partial: mock provision + 45s stale for **new** books; no live hypervisor; silence does not end an active session | Phase 6 stubs; GATE-* for real VMs; phase 12 for teardown |
-| FR15 re-match on host disconnect | Missing | Phase 12 |
+| FR14 provision, heartbeat, auto teardown | Partial: mock provision + 45s stale for new books and occupied teardown; no live hypervisor | GATE-* for real VMs |
+| FR15 re-match on host disconnect | Implemented: `interrupted` + one `HostSelector.select`; 409 if none | No Storj follow-along |
 | FR16 meter usage / payouts | Metering + ledger; payouts deferred | Phase 11 metering done; no Stripe |
 
 ## Hardware gates (human — this Mac cannot host)

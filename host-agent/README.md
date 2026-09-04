@@ -189,10 +189,11 @@ id is filled with the first detected GPU. An availability schedule is not stored
 yet — that field can be added later without renaming the GPU id.
 
 Local `sharingEnabled` is not a Matchmaker field. Pause stops heartbeats on the
-next tick; after 45s of silence the Matchmaker will not select this host.
-Occupancy stays on session indexes — pause does not end an active session. The
-window and tray can still show in-session after a successful stub provision
-until a later teardown path clears that local flag.
+next tick; after 45s of silence the Matchmaker will not select this host and
+will interrupt an occupied session (same as disconnect). Occupancy on the
+Matchmaker stays on session indexes. The window and tray can still show
+in-session after a successful stub provision — Matchmaker silence teardown does
+not call the agent, so the local occupancy flag is not cleared.
 
 ## Platform support
 
@@ -208,12 +209,12 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 12 is heartbeat-silence teardown + re-match (FR14 remainder, FR15).
-  Hardware gates stay OPEN. Still do not invoke a real hypervisor from this
-  agent. On macOS, `POST /v1/provision` returns 400 (`UnsupportedHostOs`);
-  Matchmaker then keeps the seeded `kasmUrl`. Local in-session occupancy is
-  not cleared here — that is phase 12. Real host payouts are not in this
-  agent; the ledger only accrues credits.
+- Phase 13 is signed base-image pipeline (FR9 image part). Hardware gates stay
+  OPEN. Still do not invoke a real hypervisor from this agent. On macOS,
+  `POST /v1/provision` returns 400 (`UnsupportedHostOs`); Matchmaker then keeps
+  the seeded `kasmUrl`. Local in-session occupancy is still not cleared when
+  Matchmaker interrupts a session (no teardown port). Real host payouts are not
+  in this agent; the ledger only accrues credits.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

@@ -6,8 +6,14 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
+from matchmaker.config import get_settings
 from matchmaker.db import get_db
-from matchmaker.deps import require_host_approver, require_host_bootstrap
+from matchmaker.deps import (
+    get_host_provisioner,
+    get_host_selector,
+    require_host_approver,
+    require_host_bootstrap,
+)
 from matchmaker.inventory import (
     approve_host,
     apply_declared_caps,
@@ -16,8 +22,11 @@ from matchmaker.inventory import (
     record_heartbeat,
 )
 from matchmaker.ledger import host_credits_accrued
+from matchmaker.matching import HostSelector
 from matchmaker.models import Host
+from matchmaker.provision import HostProvisioner
 from matchmaker.schemas import HostEarningsResponse, HostInventoryRequest, HostResponse
+from matchmaker.silence import reclaim_stale_sessions
 
 router = APIRouter()
 
@@ -68,11 +77,21 @@ def update_host(
 def heartbeat_host(
     host_id: UUID,
     db: Annotated[Session, Depends(get_db)],
+    selector: Annotated[HostSelector, Depends(get_host_selector)],
+    provisioner: Annotated[HostProvisioner, Depends(get_host_provisioner)],
     _: Annotated[None, Depends(require_host_bootstrap)],
 ) -> HostResponse:
     host = record_heartbeat(db, host_id)
     if host is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Host not found")
+    # Stamp first so a late ping keeps its own session. Then reclaim others.
+    reclaim_stale_sessions(
+        db,
+        selector,
+        provisioner,
+        credits_per_minute=get_settings().credits_per_minute,
+    )
+    db.refresh(host)
     return host_response(host)
 
 

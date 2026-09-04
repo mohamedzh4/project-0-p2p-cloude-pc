@@ -1,7 +1,7 @@
 # Matchmaker
 
 Control-plane service for the Distributed Compute Lab (software MVP after
-execution phase 11): auth, host inventory, heartbeats, session occupancy, and
+execution phase 12): auth, host inventory, heartbeats, session occupancy, and
 an internal credits ledger. Hosts register declared caps and start **pending**;
 sessions book a manually approved host whose last heartbeat is fresh (within
 45s). Among eligible hosts, `RankedHostSelector` prefers more declared CPU,
@@ -9,9 +9,12 @@ then more RAM, then host id. Pro bookings also require a dedicated GPU id.
 After occupancy commit, the Matchmaker calls a Host Agent **provision port**
 (HTTP, or a test double) for a stub connection URL. Occupancy stays on session
 indexes, not a host flag. Ending a session meters `startedAt` → `endedAt` into
-`ledger_entries` (user debit / host credit). FR2 intent mapping lives in
-`web/`; this API still takes `labTier`. No measured latency/reliability scores,
-no payment processor, no real hypervisor, no Tailscale.
+`ledger_entries` (user debit / host credit). A host silent for 45s with an
+active session is marked `interrupted`, billed once, and rematched via
+`HostSelector.select` when another eligible host is free. FR2 intent mapping
+lives in `web/`; this API still takes `labTier`. No measured
+latency/reliability scores, no payment processor, no real hypervisor, no
+Tailscale.
 
 How Matchmaker finds the agent: `hosts.agent_url` from inventory, else optional
 `HOST_AGENT_PROVISION_URL`. If neither is usable, the seeded/placeholder
@@ -29,28 +32,34 @@ Rust (`plan_provision`); this service does not name Firecracker/QEMU/WHPX.
   listener. Omit it on PUT to leave a stored value alone.
 - `POST /v1/hosts/{id}/heartbeat` (Host Agent bootstrap Bearer) stamps
   `lastSeenAt`. Register/update does **not** count as a ping. Never-seen or
-  stale approved hosts are not booked.
+  stale approved hosts are not booked. A live ping is stamped **before**
+  silence reclaim, so a late heartbeat keeps that host's own session.
 - `POST /v1/hosts/{id}/approve` (or `python -m matchmaker.seed --approve-host-id`)
   is the manual approval path. The Host Agent bootstrap token cannot approve.
 - `POST /v1/sessions` assigns the logged-in user to an approved host if it is
   free, then calls the Host Agent provision port. `connection.kasmUrl` comes
   from that stub result when the agent is reachable; otherwise the URL already
-  stored on the host row. Session JSON shape is unchanged.
+  stored on the host row. Session JSON shape is unchanged. Before booking, the
+  router reclaims sessions on silent hosts (same as history and heartbeat).
 - `POST /v1/sessions/{id}/end` frees the host so another user can take it and
-  writes ledger rows (user debit, host credit) from session duration
-- `GET /v1/sessions` lists the caller's sessions and lifetime `creditsDebited`
+  writes ledger rows (user debit, host credit) from session duration. Ending an
+  already-`interrupted` session is idempotent and does not rename the status.
+- `GET /v1/sessions` lists the caller's sessions and lifetime `creditsDebited`.
+  Status is `active`, `ended` (user end), or `interrupted` (heartbeat silence).
 - `GET /v1/hosts/{id}/earnings` (host bootstrap Bearer) returns
   `creditsAccrued` (not paid out)
 
 Matching is isolated in `RankedHostSelector` (`status == approved`, matching
 tier, fresh `last_seen_at`, no active session, then declared CPU/RAM). Pro
 requires `shareGpu` plus a non-empty `sharedGpuId`. Staleness lives in the
-selector (and helpers it calls), not the session router. Latency/reliability
+selector (and helpers it calls), not the session router. Silence teardown and
+rematch live in `silence.py` and call `HostSelector.select` only. Latency/reliability
 scores wait until they can be measured — extend this class, do not inline
 ranking in the session router. Provisioning is a `HostProvisioner`
 injected via `get_host_provisioner()` — tests swap a fake; production POSTs
 `/v1/provision` on the agent. Comments in the session router mark where
-Headscale and Storj will plug in. Metering is in `ledger.py`, called at end.
+Headscale and Storj will plug in. Metering is in `ledger.py`, called at user
+end and on silence interrupt.
 
 ## Manual steps
 
@@ -152,7 +161,7 @@ Needs the test database in `TEST_DATABASE_URL` (created by compose).
 pytest
 ```
 
-Expect 94 passed on the phase-11 baseline (plus the existing Starlette/httpx
+Expect 105 passed on the phase-12 baseline (plus the existing Starlette/httpx
 deprecation warning).
 
 ## API
@@ -164,11 +173,11 @@ deprecation warning).
 | GET | `/v1/auth/me` | Bearer | `{ id, email }` |
 | POST | `/v1/hosts` | Host bootstrap Bearer | 201 pending host |
 | PUT | `/v1/hosts/{id}` | Host bootstrap Bearer | 200 update caps; 201 if that id is new; status unchanged |
-| POST | `/v1/hosts/{id}/heartbeat` | Host bootstrap Bearer | 200 stamps `lastSeenAt`; 404 if unknown; does not approve |
+| POST | `/v1/hosts/{id}/heartbeat` | Host bootstrap Bearer | 200 stamps `lastSeenAt`; 404 if unknown; does not approve. Then reclaims other silent occupied hosts. |
 | POST | `/v1/hosts/{id}/approve` | Approve Bearer | 200 `approved`; bootstrap token is rejected |
-| POST | `/v1/sessions` | User Bearer | 201 new, 200 if you already have one, 409 if no approved host is free. New bookings call the provision port after occupancy commit. |
-| POST | `/v1/sessions/{id}/end` | User Bearer | owner only; frees the host; meters duration into ledger rows |
-| GET | `/v1/sessions` | User Bearer | session history + lifetime `creditsDebited` |
+| POST | `/v1/sessions` | User Bearer | 201 new, 200 if you already have one (including a silence rematch), 409 if no approved host is free. New bookings call the provision port after occupancy commit. Reclaims silent occupied hosts first. |
+| POST | `/v1/sessions/{id}/end` | User Bearer | owner only; frees the host; meters duration into ledger rows. `status` is `ended` or already-`interrupted`. |
+| GET | `/v1/sessions` | User Bearer | session history + lifetime `creditsDebited`; reclaims silent occupied hosts (may rematch) |
 | GET | `/v1/hosts/{id}/earnings` | Host bootstrap Bearer | `{ hostId, creditsAccrued }` — accrued, not paid out |
 
 JSON is camelCase. Passwords and host tokens are never returned. Host inventory
@@ -179,7 +188,10 @@ Optional Matchmaker env: `HOST_AGENT_PROVISION_URL` (http/https origin, no path)
 when the booked host has no `agentUrl`. Not required; missing means fallback to
 the host row `kasmUrl`. Invalid non-empty values fail fast at startup.
 `CREDITS_PER_MINUTE` is required (non-negative integer). It is a ledger rate,
-not a payment-processor key.
+not a payment-processor key. Optional
+`STALE_SESSION_SWEEP_INTERVAL_SECONDS` (default 15, `0` disables the
+background loop only). Invalid or negative values fail fast. Book, history,
+and heartbeat paths still reclaim when the loop is off.
 
 The Host Agent provision listener (not this process) is `POST /v1/provision`
 with the host bootstrap Bearer. It is not fetched from the webview.
@@ -189,7 +201,6 @@ with the host bootstrap Bearer. It is not fetched from the webview.
 - Real measured latency / reliability scoring (declared-cap ranking is in)
 - Payment processors / host payouts (internal ledger only)
 - Invoking Firecracker, QEMU, Kasm, Sunshine, or VFIO
-- Interrupting an active session when heartbeats go silent
 - Tailscale / Headscale identities
 - Storj mounts
 - The user-facing web app

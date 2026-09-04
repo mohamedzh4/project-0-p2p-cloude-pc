@@ -16,6 +16,7 @@ from matchmaker.models import Host, HostStatus, LabSession, LabTier, SessionStat
 
 # Architecture §10: ping every few seconds; ~30–60s of silence is stale.
 # 45s is the midpoint. Occupancy stays on session indexes, not this cutoff.
+# New books skip stale hosts here; silence.py interrupts occupied stale hosts.
 HEARTBEAT_STALE_AFTER = timedelta(seconds=45)
 
 

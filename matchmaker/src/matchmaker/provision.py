@@ -11,6 +11,7 @@ from typing import Protocol
 from urllib.parse import urlparse
 
 import httpx
+from sqlalchemy.orm import Session
 
 from matchmaker.models import Host
 
@@ -29,6 +30,28 @@ class ProvisionResult:
 class HostProvisioner(Protocol):
     def provision(self, host: Host, *, lab_tier: str) -> ProvisionResult | None:
         """Ask the selected host's agent to become ready, or None to use the host row."""
+
+
+def apply_provision_result(db: Session, host: Host, result: ProvisionResult) -> None:
+    """Keep existing-session 200 on the same connection URL without a new field."""
+    host.kasm_url = result.connection_url
+    if result.connection_token is not None:
+        host.kasm_token = result.connection_token
+    db.commit()
+    db.refresh(host)
+
+
+def provision_booked_host(
+    db: Session,
+    host: Host,
+    provisioner: HostProvisioner,
+    *,
+    lab_tier: str,
+) -> None:
+    result = provisioner.provision(host, lab_tier=lab_tier)
+    if result is None or not result.connection_url.strip():
+        return
+    apply_provision_result(db, host, result)
 
 
 def agent_origin(value: str | None) -> str | None:

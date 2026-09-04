@@ -33,6 +33,8 @@ if not os.environ.get("HOST_APPROVE_TOKEN"):
     os.environ["HOST_APPROVE_TOKEN"] = "test-host-approve-token"
 if not os.environ.get("CREDITS_PER_MINUTE"):
     os.environ["CREDITS_PER_MINUTE"] = "1"
+# Pytest drives reclaim from the request path; do not race TRUNCATE with a loop.
+os.environ["STALE_SESSION_SWEEP_INTERVAL_SECONDS"] = "0"
 # A local .env must not point pytest at a live agent; tests inject a fake or bind one.
 os.environ.pop("HOST_AGENT_PROVISION_URL", None)
 

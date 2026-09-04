@@ -35,6 +35,10 @@ class HostStatus(StrEnum):
 class SessionStatus(StrEnum):
     ACTIVE = "active"
     ENDED = "ended"
+    # Silence teardown (host heartbeat older than HEARTBEAT_STALE_AFTER).
+    # Partial unique indexes only treat `active` as occupying; interrupted
+    # frees the host the same way ended does.
+    INTERRUPTED = "interrupted"
 
 
 class LedgerParty(StrEnum):
