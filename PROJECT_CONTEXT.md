@@ -1,119 +1,96 @@
 # Distributed Compute Lab — project context
 
+Living snapshot: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+Agent execution plan: [`PHASE_PLAN.md`](PHASE_PLAN.md).
+Handoffs: [`docs/phase-logs/`](docs/phase-logs/). Prefer those over this file
+for “where we are.”
+
 ## Overview
 
 A peer-to-peer compute platform: people with idle high-performance PCs ("Hosts")
-rent out CPU/RAM/GPU to users who need more power, delivered as an on-demand
-virtual desktop in a browser rather than from a centralized datacenter.
+share a CPU/RAM slice (and optionally one exclusive GPU) while they keep using
+the machine. Guests get an on-demand virtual desktop in a browser. Stack so far:
+Host Agent (Rust + Tauri v2 + React), Matchmaker (Python FastAPI + Postgres),
+and a thin React harness in `web/`. Manual Firecracker/QEMU+Kasm validation is
+**not evidenced in this repo** (open hardware gate). No Tailscale, Storj, or
+Matchmaker-triggered provision yet.
 
-Four planes: a custom **Matchmaker** (auth, matching, billing, session
-lifecycle), a **compute** plane on host PCs the owner still uses (Standard Lab:
-Firecracker on Linux, QEMU+WHPX on Windows; Pro Lab: exclusive GPU assignment
-via VFIO or Hyper-V), a **network** plane (Tailscale/Headscale), and a
-**storage** plane (Storj via rclone).
-
-**Written so far:** two spec documents and one module — the Host Agent, in Rust +
-Tauri v2 + React/TypeScript (~800 lines Rust, ~460 lines UI).
+Remote: [github.com/mohamedzh4/project-0-p2p-cloude-pc](https://github.com/mohamedzh4/project-0-p2p-cloude-pc)
 
 ## Where we actually are
 
-Phases below come from `docs/cahier-des-charges-distributed-compute-lab.md` §11.
+From `docs/cahier-des-charges-distributed-compute-lab.md` §11.
 
 | Phase | Content | Status |
 | --- | --- | --- |
-| 0 | Manual proof of the compute pipeline — Standard on Linux (Firecracker+Kasm) and on Windows (QEMU+WHPX+Kasm), plus one Pro GPU session, by hand | **Not started — this is the real next step** |
-| 1 | MVP Standard Lab, single region, hosts approved manually | Not started |
-| 2 | Full Matchmaker (matching + billing), automated host onboarding | Host Agent begun: hardware detection + resource caps only |
+| 0 | Manual Firecracker+Kasm (Linux) and QEMU+WHPX+Kasm (Windows), plus one Pro GPU session | **Open / not evidenced in-repo** — no runbook, guest image, or live Kasm URL. This Mac cannot host. |
+| 1 | MVP Standard Lab, hosts approved manually | **In progress (software):** Matchmaker auth + one seeded host + occupancy; `web/` signup/request/open-desktop/end. Not on `origin/main` yet. Next software: land that slice (execution phase 1), then Host Agent ↔ Matchmaker (no real hypervisor). |
+| 2 | Full Matchmaker (matching + billing), automated host onboarding | Host Agent: detection + caps only. Matching is `SingleApprovedHostSelector`, not a real algorithm |
 | 3 | Pro/Gamer Lab, latency-aware matching | Not started |
 | 4 | Hardening: image signing, exit nodes, reliability scoring | Not started |
 
-Against the host-side requirements: **FR8** (declare a concurrent CPU/RAM slice,
-and optionally which GPU to dedicate — exclusive for the session) is done except
-the availability schedule. **FR9** (auto-join mesh, pull signed base image),
-**FR10** (idle/in-session/earnings view) and **FR11** (pause sharing) are
-untouched.
-
-The spec deliberately orders work by risk, not by layer: the Matchmaker is
-conventional backend work, while the compute pipeline feeling native is the
-actual technical bet. That bet is still unvalidated.
+**FR1** (signup/login) done in Matchmaker + `web/`. **FR8** (CPU/RAM slice + optional dedicated GPU) done in the Host Agent except schedule. **FR5** (streamed desktop) needs a live `SEED_HOST_KASM_URL`; the seed example is still `example.invalid`. The harness opens that URL; it does not embed Kasm. **FR3/FR12–FR14** have schema and occupancy, one seeded host, no VM boot/heartbeat from the Matchmaker. **FR2, FR4, FR6–FR7, FR9–FR11, FR16** untouched.
 
 ## Layout
 
 ```
 project-0-p2p-cloude-pc/
-├── docs/
-│   ├── distributed-compute-lab-architecture.md
-│   └── cahier-des-charges-distributed-compute-lab.md
-└── host-agent/
-    ├── src/          React UI — App, api, components, format, preview, types
-    └── src-tauri/    Rust — models, hardware, gpu, config, commands, lib
+├── docs/           architecture spec + cahier des charges
+├── host-agent/     Tauri tray-to-be: hardware probe, sharing UI, local config
+├── matchmaker/     FastAPI + Alembic + Postgres
+└── web/            React harness against the Matchmaker API
 ```
-
-Remote: [github.com/mohamedzh4/project-0-p2p-cloude-pc](https://github.com/mohamedzh4/project-0-p2p-cloude-pc)
 
 ## Architecture decisions still true today
 
 | Decision | Status |
 | --- | --- |
-| Integration over invention — only the Matchmaker is genuinely custom | Adopted (architecture §1) |
-| Two-tier split at the GPU boundary — Firecracker ships no PCI passthrough, so Pro needs QEMU+VFIO / Hyper-V GPU assignment | Forced by Firecracker's design, not a preference |
-| Standard Lab backend is OS-conditional: Firecracker on Linux, QEMU+WHPX (or Hyper-V) on Windows. Firecracker does not run on Windows | Adopted |
-| Hosts keep using the PC. CPU/RAM sharing is a concurrent slice; GPU sharing on consumer hardware is exclusive for the session | Adopted |
-| Kasm runs *inside* the guest VM; the hypervisor (Firecracker or QEMU/Hyper-V) is the isolation boundary | Adopted on paper |
-| Hosts are stateless and zero-trust; nothing survives a session | Adopted, not yet implemented |
-| Guest egress routes through platform-run exit nodes, never the host's home IP | Adopted on paper — real legal exposure if skipped |
-| Sync on a 5-10 min timer *plus* event-triggered flushes on save and logout | Adopted on paper |
-| Host Agent is Rust + Tauri v2, not Electron | Implemented |
-| Rust core takes plain paths and structs, no Tauri types in detection or storage | Implemented, so it can become a headless service |
-| Webview is untrusted — every config write is re-clamped in Rust | Implemented |
-| Windows + Linux are the real host targets; macOS is dev-only | Implemented (a Mac host would need QEMU/Tart as a second VM path) |
-| Matchmaker API, database, auth, user web app | Not started, not decided |
+| Only the Matchmaker is custom glue; everything else is reused | Adopted |
+| Standard Lab backend is OS-conditional: Firecracker on Linux, QEMU+WHPX on Windows | Adopted on paper; hardware validation not recorded in this repo |
+| Pro needs VFIO / Hyper-V GPU assignment — Firecracker has no PCI passthrough | Forced |
+| Hosts keep using the PC. CPU/RAM is a concurrent slice; GPU is exclusive for the session | Adopted |
+| Kasm runs *inside* the guest; the hypervisor is the isolation boundary | Adopted on paper; not evidenced in-repo |
+| Guest egress via platform exit nodes, never the host's home IP | On paper |
+| Host Agent is Rust + Tauri v2; detection/config take plain paths, no Tauri types | Implemented |
+| Webview is untrusted — config writes are re-clamped in Rust | Implemented |
+| Matchmaker is a separate FastAPI+SQLAlchemy+Alembic+Postgres service | Implemented (Phase 1 slice) |
+| Argon2id passwords, JWT HS256, secrets from env, fail fast if missing | Implemented |
+| Occupancy from active sessions (partial unique indexes), not a host flag | Implemented |
+| Matching behind `HostSelector` so a later algorithm does not rewrite the session router | Implemented (`SingleApprovedHostSelector`) |
+| `web/` is a Matchmaker test harness, not the product dashboard | Implemented |
 
 ## Active rules
 
-Rules live at the workspace root in `../.cursor/`, and apply here.
+Live in workspace `../.cursor/`.
 
-**Security** (`security.mdc`, always on)
-- Secrets from env vars only; fail fast when missing, never fall back to a literal.
-- Never commit `.env`, `service-account.json`, or `*.pem`; only `.env.example` placeholders.
-- Validate input before the DB layer; parameterized queries, never string concatenation.
+**Security** (`security.mdc`) — secrets from env only; never commit `.env` / keys / PEM; parameterized queries / ORM only.
 
-**Design & animation** (`design.mdc`, auto-attached to `*.tsx`/`*.jsx`/`*.css`)
-- A named 4-6 color palette; no Tailwind defaults shipped as the final look.
-- No generic AI aesthetics (cream+serif+terracotta, near-black+neon, newspaper hairlines).
-- One display font paired with one body font.
-- One orchestrated motion moment, using `transform`/`opacity` only.
-- Visible `:focus-visible` everywhere; honor `prefers-reduced-motion`.
-- Playwright screenshot after any UI change.
+**Design** (`design.mdc`, `*.tsx`/`*.jsx`/`*.css`) — named 4–6 color palette; one display + one body font; one motion beat with `transform`/`opacity`; `:focus-visible`; `prefers-reduced-motion`; Playwright screenshot after UI changes.
 
-**Enforcement** — `hooks.json` + `protect.py` fail-closed guard on shell and edits;
-`security-reviewer` agent reports findings read-only; `/security-audit` and
-`/sync-context` commands.
+**Git** (`git-commits.mdc`) — no AI attribution (`Co-authored-by`, "Generated with") in commits or PRs; imperative subject.
 
-## Current state of the Host Agent
+**Enforcement** — `hooks.json` + `protect.py`; `security-reviewer` (read-only); `/security-audit`, `/sync-context`.
 
-**Working**
+## Current state
 
-- CPU (model, logical + physical cores) and RAM via `sysinfo` 0.39, with `default-features = false, features = ["system"]` and the narrowest refresh available — no process list, disks, or networks.
-- GPU via `nvml-wrapper` 0.12, gated at the Cargo level to Windows/Linux. Every failure path returns an empty list plus a note saying which case it was, so the UI can show "No GPU detected" *and* the reason.
-- Window: hardware cards, sharing toggle, CPU/RAM sliders (concurrent slice), GPU picker with exclusivity warning when a card is present.
-- `sharing-config.json` in the OS app-config dir, written temp-file-then-rename, re-clamped to the current machine on every read, rejected above 64 KiB. v2 records `sharedGpuId`; v1 files still load.
-- `--print-hardware` prints detection as JSON with no window.
-- Icon generated from code (`scripts/generate-icon.mjs`), not a committed blob.
+**Host Agent (`host-agent/`)** — CPU/RAM via `sysinfo` 0.39; NVIDIA GPUs via `nvml-wrapper` (Windows/Linux), graceful empty list otherwise. UI: sliders + GPU picker with exclusivity copy. Config v2 (`sharedGpuId`) in the OS app-config dir; v1 files still load. `--print-hardware` for headless dump. 30 Rust tests; clippy `-D warnings`; ~2.9 MB release binary. M1 reported 8 cores / 8 GiB / no GPU. Not built: mesh join, Matchmaker registration, heartbeats, images, VMs, tray, pause, earnings.
 
-**Verified:** 30 Rust tests pass, clippy clean at `-D warnings`, rustfmt clean,
-frontend typechecks and builds, release binary 2.9 MB. Ran on an Apple M1 and
-correctly reported 8 cores / 8 GiB / no GPU.
+**Matchmaker (`matchmaker/`)** — signup/login/me; `POST /v1/sessions` and `…/end`; camelCase JSON; `python -m matchmaker.seed`. 23 pytest cases. Does not call the Host Agent. `SEED_HOST_KASM_URL` is still the `example.invalid` placeholder until a real session exists. How to run: `matchmaker/README.md`.
 
-**Not built:** networking, mesh join, Matchmaker registration, heartbeats, base
-images, VM provisioning, session lifecycle, earnings, schedule, tray/background
-mode, pause-sharing, and the entire user-facing web app.
+**Web (`web/`)** — Vite/React harness: signup/login, request session, open the seeded Kasm URL in a new tab, end session. Needs `VITE_MATCHMAKER_URL`. Not FR2 intent capture, not billing, not an iframe (Kasm is opened, not embedded).
 
 **Known issues**
 
-- The Aikido MCP scanner still fails to start in this Cursor workspace (plugin in `error` / no response). Local `security-reviewer` is the fallback until `/aikido:setup` works after Cursor reloads the plugin.
-- This Mac cannot be a Standard or Pro *host*: Firecracker is Linux/KVM only, Windows Standard Lab needs QEMU+WHPX. Phase 0 needs a Linux box and a Windows box with virtualization enabled (plus a spare GPU or iGPU for the Pro tier). macOS remains a development machine for the agent UI and logic.
+- Matchmaker / `web/` may still be uncommitted on `main`.
+- Aikido MCP still fails here; use `security-reviewer` until `/aikido:setup` works.
+- This Mac cannot *host*: Firecracker is Linux/KVM; Windows Standard needs QEMU+WHPX. Hosting needs a Linux or Windows PC; that pipeline is not recorded here yet.
 
 ## Recent changes
 
-See `git log --oneline -10` on `main`. Latest work (not yet summarized in older commits): OS-conditional Standard Lab (Firecracker on Linux, QEMU+WHPX on Windows), GPU sharing documented and UI'd as exclusive for the session, `sharedGpuId` in config v2, `freezePrototype` on, and capabilities narrowed off `core:default`.
+`git log --oneline -10` on `main` (2 commits):
+
+- `5425ccf` — GPU exclusivity (docs + Host Agent `sharedGpuId` + picker), OS-conditional Standard Lab, `freezePrototype`, capabilities off `core:default`
+- `6ce3ca4` — initial specs + Host Agent v0 (detection, caps, local persist)
+
+Working tree: Matchmaker, `web/` harness (opens Kasm when seeded with a real URL).
+Phase 0 / hardware gates remain open. See `PROJECT_STATUS.md`.
