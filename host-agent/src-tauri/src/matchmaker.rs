@@ -21,6 +21,10 @@ const DISPLAY_NAME_MAX: usize = 128;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const ERROR_BODY_MAX: usize = 400;
 
+/// How often the agent pings while sharing is on. Stale cutoff on the
+/// Matchmaker is 45s (architecture §10: 30–60s of silence).
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+
 /// Fixture token for unit tests. Not a production secret and never shipped as
 /// a default in the agent.
 #[cfg(test)]
@@ -240,8 +244,8 @@ pub fn sync_inventory(
     hardware: &HardwareSnapshot,
 ) -> Result<HostRegistration, MatchmakerError> {
     let body = HostInventoryBody::from_sharing(config, hardware, &credentials.display_name)?;
-    let payload = serde_json::to_value(&body)
-        .map_err(|error| MatchmakerError::Network(error.to_string()))?;
+    let payload =
+        serde_json::to_value(&body).map_err(|error| MatchmakerError::Network(error.to_string()))?;
     let existing = identity::load(dir)?;
 
     let (method, url) = match existing.as_ref() {
@@ -261,6 +265,69 @@ pub fn sync_inventory(
     Ok(registration)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeartbeatOutcome {
+    Sent,
+    SkippedNoConfig,
+    SkippedSharingPaused,
+    SkippedNotRegistered,
+}
+
+pub fn heartbeat_from_env(
+    dir: &Path,
+    transport: &impl Transport,
+) -> Result<HeartbeatOutcome, MatchmakerError> {
+    heartbeat_tick(dir, |key| std::env::var(key).ok(), transport)
+}
+
+/// Ping while sharing is on and this machine has a host id. Pause (local
+/// `sharingEnabled=false`) stops pings so the host goes stale in matching.
+/// Occupancy stays on session indexes.
+pub fn heartbeat_tick(
+    dir: &Path,
+    lookup: impl FnMut(&str) -> Option<String>,
+    transport: &impl Transport,
+) -> Result<HeartbeatOutcome, MatchmakerError> {
+    let Some(stored) = config::load(dir)? else {
+        return Ok(HeartbeatOutcome::SkippedNoConfig);
+    };
+    if !stored.sharing_enabled {
+        return Ok(HeartbeatOutcome::SkippedSharingPaused);
+    }
+    let Some(identity) = identity::load(dir)? else {
+        return Ok(HeartbeatOutcome::SkippedNotRegistered);
+    };
+    let credentials = MatchmakerCredentials::from_lookup(lookup)?;
+    send_heartbeat(transport, &credentials, &identity.host_id)?;
+    Ok(HeartbeatOutcome::Sent)
+}
+
+fn send_heartbeat(
+    transport: &impl Transport,
+    credentials: &MatchmakerCredentials,
+    host_id: &str,
+) -> Result<(), MatchmakerError> {
+    let request = HttpRequest {
+        method: "POST",
+        url: heartbeat_url(&credentials.base_url, host_id),
+        authorization: credentials.authorization_header(),
+        body: serde_json::json!({}),
+    };
+    let response = transport.send(&request)?;
+    parse_heartbeat(response.status, &response.body)
+}
+
+fn parse_heartbeat(status: u16, body: &str) -> Result<(), MatchmakerError> {
+    if status == 200 {
+        Ok(())
+    } else {
+        Err(MatchmakerError::Rejected {
+            status,
+            detail: truncate_detail(body),
+        })
+    }
+}
+
 fn parse_registration(status: u16, body: &str) -> Result<HostRegistration, MatchmakerError> {
     if status != 200 && status != 201 {
         return Err(MatchmakerError::Rejected {
@@ -276,7 +343,13 @@ fn require_named_gpu(
     share_gpu: bool,
     shared_gpu_id: &Option<String>,
 ) -> Result<(), MatchmakerError> {
-    if share_gpu && shared_gpu_id.as_deref().map(str::trim).unwrap_or("").is_empty() {
+    if share_gpu
+        && shared_gpu_id
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+    {
         Err(MatchmakerError::GpuIdRequired)
     } else {
         Ok(())
@@ -310,6 +383,10 @@ fn hosts_url(base: &str) -> String {
 
 fn host_url(base: &str, host_id: &str) -> String {
     format!("{base}/v1/hosts/{host_id}")
+}
+
+fn heartbeat_url(base: &str, host_id: &str) -> String {
+    format!("{base}/v1/hosts/{host_id}/heartbeat")
 }
 
 fn truncate_display_name(value: &str) -> String {
@@ -505,7 +582,10 @@ mod tests {
         })
         .unwrap_err();
 
-        assert!(matches!(error, MatchmakerError::MissingEnv("MATCHMAKER_URL")));
+        assert!(matches!(
+            error,
+            MatchmakerError::MissingEnv("MATCHMAKER_URL")
+        ));
         assert!(!error.to_string().contains(TEST_BOOTSTRAP_TOKEN));
     }
 
@@ -683,5 +763,153 @@ mod tests {
         .unwrap();
 
         assert_eq!(credentials.base_url, "https://mm.example");
+    }
+
+    struct PanicTransport;
+
+    impl Transport for PanicTransport {
+        fn send(&self, _request: &HttpRequest) -> Result<HttpResponse, MatchmakerError> {
+            panic!("heartbeat skip must not call the Matchmaker");
+        }
+    }
+
+    fn persist_registered_sharing(dir: &Path, enabled: bool) {
+        let config = SharingConfig {
+            sharing_enabled: enabled,
+            ..sharing(4, 8 * BYTES_PER_GIB, false, None)
+        };
+        config::save(dir, &config).unwrap();
+        identity::save(
+            dir,
+            &HostRegistration {
+                host_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string(),
+                display_name: "lab-pc".to_string(),
+                lab_tier: "standard".to_string(),
+                status: "pending".to_string(),
+                shared_logical_cores: 4,
+                shared_memory_bytes: 8 * BYTES_PER_GIB,
+                share_gpu: false,
+                shared_gpu_id: None,
+            },
+        )
+        .unwrap();
+    }
+
+    fn heartbeat_lookup(key: &str) -> Option<String> {
+        match key {
+            "MATCHMAKER_URL" => Some("http://matchmaker.test".to_string()),
+            "HOST_BOOTSTRAP_TOKEN" => Some(TEST_BOOTSTRAP_TOKEN.to_string()),
+            "HOST_DISPLAY_NAME" => Some("lab-pc".to_string()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn heartbeat_is_skipped_when_nothing_is_configured() {
+        let dir = tempdir().unwrap();
+        let outcome = heartbeat_tick(dir.path(), heartbeat_lookup, &PanicTransport).unwrap();
+        assert_eq!(outcome, HeartbeatOutcome::SkippedNoConfig);
+    }
+
+    #[test]
+    fn heartbeat_is_skipped_when_sharing_is_paused() {
+        let dir = tempdir().unwrap();
+        persist_registered_sharing(dir.path(), false);
+
+        let outcome = heartbeat_tick(
+            dir.path(),
+            |_| panic!("paused hosts do not need env"),
+            &PanicTransport,
+        )
+        .unwrap();
+        assert_eq!(outcome, HeartbeatOutcome::SkippedSharingPaused);
+    }
+
+    #[test]
+    fn heartbeat_is_skipped_when_this_machine_has_no_host_id() {
+        let dir = tempdir().unwrap();
+        config::save(
+            dir.path(),
+            &SharingConfig {
+                sharing_enabled: true,
+                ..sharing(4, 8 * BYTES_PER_GIB, false, None)
+            },
+        )
+        .unwrap();
+
+        let outcome = heartbeat_tick(dir.path(), heartbeat_lookup, &PanicTransport).unwrap();
+        assert_eq!(outcome, HeartbeatOutcome::SkippedNotRegistered);
+    }
+
+    #[test]
+    fn heartbeat_posts_to_the_host_id_with_bootstrap_bearer() {
+        let dir = tempdir().unwrap();
+        persist_registered_sharing(dir.path(), true);
+        let transport = RecordingTransport {
+            status: 200,
+            body: api_body(
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                4,
+                8 * BYTES_PER_GIB,
+                false,
+                None,
+            ),
+            calls: Mutex::new(Vec::new()),
+        };
+
+        let outcome = heartbeat_tick(dir.path(), heartbeat_lookup, &transport).unwrap();
+
+        assert_eq!(outcome, HeartbeatOutcome::Sent);
+        let call = transport.last();
+        assert_eq!(call.method, "POST");
+        assert_eq!(
+            call.url,
+            "http://matchmaker.test/v1/hosts/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/heartbeat"
+        );
+        assert_eq!(
+            call.authorization_header(),
+            format!("Bearer {TEST_BOOTSTRAP_TOKEN}")
+        );
+        assert_eq!(call.body, serde_json::json!({}));
+        assert!(!format!("{call:?}").contains(TEST_BOOTSTRAP_TOKEN));
+    }
+
+    #[test]
+    fn heartbeat_without_matchmaker_url_fails_fast_when_it_would_send() {
+        let dir = tempdir().unwrap();
+        persist_registered_sharing(dir.path(), true);
+
+        let error = heartbeat_tick(
+            dir.path(),
+            |key| match key {
+                "HOST_BOOTSTRAP_TOKEN" => Some(TEST_BOOTSTRAP_TOKEN.to_string()),
+                _ => None,
+            },
+            &PanicTransport,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            MatchmakerError::MissingEnv("MATCHMAKER_URL")
+        ));
+        assert!(!error.to_string().contains(TEST_BOOTSTRAP_TOKEN));
+    }
+
+    #[test]
+    fn heartbeat_rejects_non_success_status() {
+        let dir = tempdir().unwrap();
+        persist_registered_sharing(dir.path(), true);
+        let transport = RecordingTransport {
+            status: 404,
+            body: r#"{"detail":"Host not found"}"#.to_string(),
+            calls: Mutex::new(Vec::new()),
+        };
+
+        let error = heartbeat_tick(dir.path(), heartbeat_lookup, &transport).unwrap_err();
+        assert!(matches!(
+            error,
+            MatchmakerError::Rejected { status: 404, .. }
+        ));
     }
 }

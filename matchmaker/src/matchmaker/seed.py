@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -69,6 +70,7 @@ def seed_host() -> Host:
                 kasm_url=kasm_url,
                 kasm_token=kasm_token,
                 status=HostStatus.APPROVED,
+                last_seen_at=datetime.now(timezone.utc),
             )
             db.add(host)
             db.commit()
@@ -84,6 +86,7 @@ def seed_host() -> Host:
         existing.shared_gpu_id = shared_gpu_id
         existing.lab_tier = LabTier.STANDARD
         existing.status = HostStatus.APPROVED
+        existing.last_seen_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(existing)
         return existing

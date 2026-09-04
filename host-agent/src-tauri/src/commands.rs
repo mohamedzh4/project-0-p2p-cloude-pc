@@ -66,8 +66,12 @@ pub async fn register_declared_caps(
     let hardware = state.hardware.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        matchmaker::register_from_env(&dir, &hardware, &UreqTransport)
-            .map_err(|error| error.to_string())
+        let registration = matchmaker::register_from_env(&dir, &hardware, &UreqTransport)
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = matchmaker::heartbeat_from_env(&dir, &UreqTransport) {
+            eprintln!("host-agent heartbeat after register: {error}");
+        }
+        Ok(registration)
     })
     .await
     .map_err(|error| format!("could not run host registration: {error}"))?

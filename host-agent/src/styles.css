@@ -241,6 +241,12 @@ body {
   border-top: 1px solid var(--line);
 }
 
+.registration .hint {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
 .gpu-picker {
   display: flex;
   flex-direction: column;

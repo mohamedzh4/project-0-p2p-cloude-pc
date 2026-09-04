@@ -266,6 +266,11 @@ export default function App() {
                   : null}
               </p>
               <p className="path">{registration.hostId}</p>
+              <p className="hint">
+                While sharing is on, the packaged agent pings the Matchmaker from Rust every 10
+                seconds. Pause sharing to drop out of matching after the host goes stale.
+                Occupancy stays on active sessions, not a host flag.
+              </p>
               {registration.shareGpu ? (
                 <p className="hint gpu-warning">
                   Matchmaker registered GPU {registration.sharedGpuId ?? "unknown"} as exclusive for

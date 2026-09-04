@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Generator
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -94,6 +95,7 @@ def seeded_host(db: Session) -> Host:
         kasm_url=KASM_URL,
         kasm_token=KASM_TOKEN,
         status=HostStatus.APPROVED,
+        last_seen_at=datetime.now(timezone.utc),
     )
     db.add(host)
     db.commit()

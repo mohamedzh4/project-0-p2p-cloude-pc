@@ -103,3 +103,4 @@ class HostResponse(CamelModel):
     share_gpu: bool
     shared_gpu_id: str | None = None
     kasm_url: str | None = None
+    last_seen_at: datetime | None = None

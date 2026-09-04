@@ -12,6 +12,7 @@ from tests.helpers import (
     KASM_URL,
     approve_auth_header,
     auth_header,
+    heartbeat,
     host_auth_header,
     inventory_payload,
     signup,
@@ -27,6 +28,7 @@ def test_register_host_starts_pending(client: TestClient, db: Session) -> None:
     assert data["shareGpu"] is False
     assert data["sharedGpuId"] is None
     assert data["kasmUrl"] is None
+    assert data["lastSeenAt"] is None
     stored = db.get(Host, data["hostId"])
     assert stored is not None
     assert stored.status == HostStatus.PENDING
@@ -176,6 +178,12 @@ def test_approve_then_host_can_be_booked(client: TestClient) -> None:
     assert approved.status_code == 200
     assert approved.json()["status"] == "approved"
     assert approved.json()["hostId"] == host_id
+    assert approved.json()["lastSeenAt"] is None
+
+    pinged = heartbeat(client, host_id)
+    assert pinged.status_code == 200
+    assert pinged.json()["lastSeenAt"] is not None
+    assert pinged.json()["status"] == "approved"
 
     booked = client.post("/v1/sessions", headers=auth_header(token))
     assert booked.status_code == 201
@@ -202,6 +210,7 @@ def test_seed_upserts_by_display_name_and_leaves_other_hosts(
     assert first.status == HostStatus.APPROVED
     assert first.shared_gpu_id == "GPU-SEED"
     assert first.display_name == "phase1-lab-1"
+    assert first.last_seen_at is not None
 
     db.expire_all()
     other = db.get(Host, pending_host.id)
@@ -212,3 +221,76 @@ def test_seed_upserts_by_display_name_and_leaves_other_hosts(
     assert second.id == first.id
     db.expire_all()
     assert db.get(Host, pending_host.id) is not None
+
+
+def test_heartbeat_requires_host_bootstrap_token(client: TestClient) -> None:
+    created = client.post("/v1/hosts", headers=host_auth_header(), json=inventory_payload())
+    host_id = created.json()["hostId"]
+
+    missing = client.post(f"/v1/hosts/{host_id}/heartbeat")
+    assert missing.status_code == 401
+
+    user_token = signup(client)["accessToken"]
+    as_user = client.post(
+        f"/v1/hosts/{host_id}/heartbeat",
+        headers=auth_header(user_token),
+    )
+    assert as_user.status_code == 401
+
+    as_approver = client.post(
+        f"/v1/hosts/{host_id}/heartbeat",
+        headers=approve_auth_header(),
+    )
+    assert as_approver.status_code == 401
+
+
+def test_heartbeat_unknown_host_is_not_found(client: TestClient) -> None:
+    response = heartbeat(client, str(uuid4()))
+    assert response.status_code == 404
+
+
+def test_heartbeat_stamps_last_seen_without_approving(client: TestClient, db: Session) -> None:
+    created = client.post("/v1/hosts", headers=host_auth_header(), json=inventory_payload())
+    host_id = created.json()["hostId"]
+    assert created.json()["lastSeenAt"] is None
+
+    pinged = heartbeat(client, host_id)
+    assert pinged.status_code == 200
+    assert pinged.json()["status"] == "pending"
+    assert pinged.json()["lastSeenAt"] is not None
+    assert pinged.json()["sharedLogicalCores"] == 4
+
+    stored = db.get(Host, host_id)
+    assert stored is not None
+    assert stored.status == HostStatus.PENDING
+    assert stored.last_seen_at is not None
+
+
+def test_inventory_update_does_not_count_as_a_heartbeat(client: TestClient) -> None:
+    created = client.post("/v1/hosts", headers=host_auth_header(), json=inventory_payload())
+    host_id = created.json()["hostId"]
+    updated = client.put(
+        f"/v1/hosts/{host_id}",
+        headers=host_auth_header(),
+        json=inventory_payload(sharedLogicalCores=8),
+    )
+    assert updated.status_code == 200
+    assert updated.json()["lastSeenAt"] is None
+    assert updated.json()["status"] == "pending"
+
+
+def test_heartbeat_does_not_free_an_occupied_host(
+    client: TestClient, seeded_host: Host, db: Session
+) -> None:
+    token = signup(client)["accessToken"]
+    booked = client.post("/v1/sessions", headers=auth_header(token))
+    assert booked.status_code == 201
+
+    pinged = heartbeat(client, str(seeded_host.id))
+    assert pinged.status_code == 200
+    assert pinged.json()["lastSeenAt"] is not None
+
+    other = signup(client, "other@example.com")["accessToken"]
+    blocked = client.post("/v1/sessions", headers=auth_header(other))
+    assert blocked.status_code == 409
+    assert db.scalars(select(LabSession)).first() is not None

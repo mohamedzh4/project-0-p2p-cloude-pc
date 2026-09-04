@@ -8,7 +8,13 @@ from sqlalchemy.orm import Session
 
 from matchmaker.db import get_db
 from matchmaker.deps import require_host_approver, require_host_bootstrap
-from matchmaker.inventory import approve_host, apply_declared_caps, host_response, new_pending_host
+from matchmaker.inventory import (
+    approve_host,
+    apply_declared_caps,
+    host_response,
+    new_pending_host,
+    record_heartbeat,
+)
 from matchmaker.models import Host
 from matchmaker.schemas import HostInventoryRequest, HostResponse
 
@@ -54,6 +60,18 @@ def update_host(
     db.refresh(existing)
     response.status_code = status.HTTP_200_OK
     return host_response(existing)
+
+
+@router.post("/hosts/{host_id}/heartbeat", response_model=HostResponse)
+def heartbeat_host(
+    host_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_host_bootstrap)],
+) -> HostResponse:
+    host = record_heartbeat(db, host_id)
+    if host is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Host not found")
+    return host_response(host)
 
 
 @router.post("/hosts/{host_id}/approve", response_model=HostResponse)

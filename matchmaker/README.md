@@ -1,9 +1,10 @@
 # Matchmaker
 
 Control-plane service for the Distributed Compute Lab: auth, host inventory,
-and session occupancy. Hosts register declared caps and start **pending**;
-sessions still book only a manually approved host. No matching algorithm, no
-billing, no VM provisioning, no Tailscale.
+heartbeats, and session occupancy. Hosts register declared caps and start
+**pending**; sessions book a manually approved host whose last heartbeat is
+fresh (within 45s). Occupancy stays on session indexes, not a host flag. No
+matching algorithm, no billing, no VM provisioning, no Tailscale.
 
 The Host Agent is a separate app and is not called from here.
 
@@ -14,16 +15,20 @@ The Host Agent is a separate app and is not called from here.
   (`sharedLogicalCores`, `sharedMemoryBytes`, `shareGpu`, `sharedGpuId`,
   optional `kasmUrl`). New hosts are `pending`. GPU identity round-trips;
   sharing a GPU is exclusive for the session, not a concurrent slice.
+- `POST /v1/hosts/{id}/heartbeat` (Host Agent bootstrap Bearer) stamps
+  `lastSeenAt`. Register/update does **not** count as a ping. Never-seen or
+  stale approved hosts are not booked.
 - `POST /v1/hosts/{id}/approve` (or `python -m matchmaker.seed --approve-host-id`)
   is the manual approval path. The Host Agent bootstrap token cannot approve.
 - `POST /v1/sessions` assigns the logged-in user to an approved host if it is
   free and returns the Kasm URL (and optional token) already stored on that host
 - `POST /v1/sessions/{id}/end` frees the host so another user can take it
 
-Matching is isolated in `SingleApprovedHostSelector` (`status == approved` and
-no active session). Swap that class later for real ranking (latency,
-reliability, inventory). Comments in the session router mark where
-provisioning, Headscale, Storj, and billing will plug in.
+Matching is isolated in `SingleApprovedHostSelector` (`status == approved`,
+fresh `last_seen_at`, and no active session). Staleness lives in the selector
+(and helpers it calls), not the session router. Swap that class later for real
+ranking (latency, reliability, inventory). Comments in the session router mark
+where provisioning, Headscale, Storj, and billing will plug in.
 
 ## Manual steps
 
@@ -67,6 +72,9 @@ pip install -e ".[dev]"
 alembic upgrade head
 ```
 
+Head includes `0002_host_last_seen` (`hosts.last_seen_at`, nullable). Do not
+rewrite `0001_initial`.
+
 ### 4. Seed or approve a host
 
 Put the already-running Kasm session URL (from the Phase 0 host PC) in `.env`
@@ -77,8 +85,11 @@ python -m matchmaker.seed
 ```
 
 The command upserts by `SEED_HOST_DISPLAY_NAME` (default `phase1-lab-1`) and
-marks that row **approved**. Other hosts are left alone. Inventory fields
-(`SEED_HOST_SHARED_*`) are optional; defaults are 4 cores / 8 GiB / no GPU.
+marks that row **approved**, stamping `last_seen_at` so the local harness can
+book immediately. Re-run seed (or POST a heartbeat) if more than 45s have
+passed — silence is treated as stale. Other hosts are left alone. Inventory
+fields (`SEED_HOST_SHARED_*`) are optional; defaults are 4 cores / 8 GiB / no
+GPU.
 
 To approve a host that registered through the API:
 
@@ -127,19 +138,21 @@ pytest
 | GET | `/v1/auth/me` | Bearer | `{ id, email }` |
 | POST | `/v1/hosts` | Host bootstrap Bearer | 201 pending host |
 | PUT | `/v1/hosts/{id}` | Host bootstrap Bearer | 200 update caps; 201 if that id is new; status unchanged |
+| POST | `/v1/hosts/{id}/heartbeat` | Host bootstrap Bearer | 200 stamps `lastSeenAt`; 404 if unknown; does not approve |
 | POST | `/v1/hosts/{id}/approve` | Approve Bearer | 200 `approved`; bootstrap token is rejected |
 | POST | `/v1/sessions` | User Bearer | 201 new, 200 if you already have one, 409 if no approved host is free |
 | POST | `/v1/sessions/{id}/end` | User Bearer | owner only; frees the host |
 
 JSON is camelCase. Passwords and host tokens are never returned. Host inventory
-does not include `kasmToken`.
+does not include `kasmToken`. Host responses include `lastSeenAt` (null until a
+heartbeat).
 
 ## Out of scope
 
 - Real matching across many hosts
 - Billing / credits
 - Calling the Host Agent to boot a VM
-- Heartbeats
+- Interrupting an active session when heartbeats go silent
 - Tailscale / Headscale identities
 - Storj mounts
 - The user-facing web app

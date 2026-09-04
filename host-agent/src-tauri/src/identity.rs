@@ -79,7 +79,8 @@ pub fn load(dir: &Path) -> Result<Option<HostRegistration>, IdentityError> {
 pub fn save(dir: &Path, registration: &HostRegistration) -> Result<(), IdentityError> {
     fs::create_dir_all(dir).map_err(IdentityError::Write)?;
 
-    let serialized = serde_json::to_string_pretty(registration).map_err(IdentityError::Serialize)?;
+    let serialized =
+        serde_json::to_string_pretty(registration).map_err(IdentityError::Serialize)?;
     let path = identity_file_path(dir);
     let temp_path = path.with_extension("json.tmp");
 

@@ -41,3 +41,7 @@ def signup(
 
 def auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def heartbeat(client: TestClient, host_id: str):
+    return client.post(f"/v1/hosts/{host_id}/heartbeat", headers=host_auth_header())

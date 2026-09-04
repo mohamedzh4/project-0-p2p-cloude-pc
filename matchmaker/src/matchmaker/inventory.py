@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -25,6 +26,7 @@ def host_response(host: Host) -> HostResponse:
         share_gpu=host.share_gpu,
         shared_gpu_id=host.shared_gpu_id,
         kasm_url=host.kasm_url or None,
+        last_seen_at=host.last_seen_at,
     )
 
 
@@ -70,6 +72,17 @@ def approve_host(db: Session, host_id: UUID) -> Host | None:
     if host is None:
         return None
     host.status = HostStatus.APPROVED
+    db.commit()
+    db.refresh(host)
+    return host
+
+
+def record_heartbeat(db: Session, host_id: UUID) -> Host | None:
+    """Stamp last-seen. Does not approve, change caps, or touch occupancy."""
+    host = db.get(Host, host_id)
+    if host is None:
+        return None
+    host.last_seen_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(host)
     return host

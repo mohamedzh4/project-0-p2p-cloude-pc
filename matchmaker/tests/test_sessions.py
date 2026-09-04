@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from matchmaker.auth import hash_password
 from matchmaker.models import Host, LabSession, SessionStatus, User
-from tests.helpers import KASM_TOKEN, KASM_URL, auth_header, signup
+from tests.helpers import KASM_TOKEN, KASM_URL, auth_header, heartbeat, signup
 
 
 def test_request_session_requires_auth(client: TestClient, seeded_host: Host) -> None:
@@ -153,3 +154,40 @@ def test_concurrent_requests_only_one_gets_the_host(
     assert codes == [201, 409], [response.json() for response in results]
     winners = [response.json() for response in results if response.status_code == 201]
     assert winners[0]["hostId"] == str(seeded_host.id)
+
+
+def test_stale_approved_host_is_unavailable(client: TestClient, seeded_host: Host, db: Session) -> None:
+    seeded_host.last_seen_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+    db.commit()
+
+    token = signup(client)["accessToken"]
+    response = client.post("/v1/sessions", headers=auth_header(token))
+    assert response.status_code == 409
+
+
+def test_fresh_heartbeat_allows_booking(client: TestClient, seeded_host: Host, db: Session) -> None:
+    seeded_host.last_seen_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+    db.commit()
+
+    token = signup(client)["accessToken"]
+    stale = client.post("/v1/sessions", headers=auth_header(token))
+    assert stale.status_code == 409
+
+    pinged = heartbeat(client, str(seeded_host.id))
+    assert pinged.status_code == 200
+    assert pinged.json()["lastSeenAt"] is not None
+
+    booked = client.post("/v1/sessions", headers=auth_header(token))
+    assert booked.status_code == 201
+    assert booked.json()["hostId"] == str(seeded_host.id)
+
+
+def test_never_seen_approved_host_is_unavailable(
+    client: TestClient, seeded_host: Host, db: Session
+) -> None:
+    seeded_host.last_seen_at = None
+    db.commit()
+
+    token = signup(client)["accessToken"]
+    response = client.post("/v1/sessions", headers=auth_header(token))
+    assert response.status_code == 409

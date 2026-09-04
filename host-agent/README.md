@@ -2,7 +2,7 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is execution phase 3. It does four things and nothing else:
+This is execution phase 4. It does five things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU.
 2. Lets the host cap how much of each they are willing to share.
@@ -11,9 +11,12 @@ This is execution phase 3. It does four things and nothing else:
    (`POST /v1/hosts` or `PUT /v1/hosts/{id}`). New hosts stay `pending` until an
    operator approves them with `HOST_APPROVE_TOKEN`. This agent never sends that
    token.
+5. While local `sharingEnabled` is on and a host id exists, pings
+   `POST /v1/hosts/{id}/heartbeat` from Rust every 10 seconds. Pause sharing to
+   stop pings so the host goes stale in matching.
 
-There are no heartbeats, no Firecracker or QEMU, and no tray/background mode
-yet. See `../docs/distributed-compute-lab-architecture.md` for where those land.
+There is no Firecracker or QEMU, and no tray mode yet. See
+`../docs/distributed-compute-lab-architecture.md` for where those land.
 
 ## Stack
 
@@ -48,7 +51,7 @@ host-agent/
     │   ├── gpu.rs            NVIDIA detection with graceful fallback
     │   ├── config.rs         load/save the sharing config
     │   ├── identity.rs       persisted Matchmaker host id
-    │   ├── matchmaker.rs     inventory client (clamp, POST/PUT, fail-fast env)
+    │   ├── matchmaker.rs     inventory + heartbeat client (clamp, POST/PUT/ping, fail-fast env)
     │   ├── commands.rs       the command surface exposed to the UI
     │   └── lib.rs            app setup and state
     └── tauri.conf.json
@@ -79,10 +82,10 @@ Copy `.env.example` to `.env` on the host machine (never commit `.env`):
 | `HOST_BOOTSTRAP_TOKEN` | yes | Same Bearer token as Matchmaker `HOST_BOOTSTRAP_TOKEN` |
 | `HOST_DISPLAY_NAME` | no | Defaults to this machine's hostname |
 
-The agent fails registration if the URL or bootstrap token is missing. It does
-not read `HOST_APPROVE_TOKEN`. Operators approve with that token on the
-Matchmaker (`POST /v1/hosts/{id}/approve` or `python -m matchmaker.seed
---approve-host-id`).
+The agent fails registration and heartbeats if the URL or bootstrap token is
+missing when it would send. It does not read `HOST_APPROVE_TOKEN`. Operators
+approve with that token on the Matchmaker (`POST /v1/hosts/{id}/approve` or
+`python -m matchmaker.seed --approve-host-id`).
 
 `tauri dev` / `cargo run` load `.env` from `host-agent/` or `host-agent/src-tauri/`.
 A packaged install should set the same variables in the service environment.
@@ -101,7 +104,7 @@ npm run dev            # UI only, in a browser, with sample hardware
 
 The browser mode exists so the UI can be worked on without the Rust toolchain.
 It shows a banner, writes nothing to disk, and only simulates Matchmaker
-registration.
+registration. Heartbeats run only in the packaged agent.
 
 To see what the agent detects without opening a window:
 
@@ -128,8 +131,8 @@ cargo test
 Covers CPU model normalization, the GPU fallback path, recommended defaults,
 clamping a stored config to a smaller machine, the config file round trip,
 inventory payload clamping (including GPU id when `shareGpu` is true), fail-fast
-credentials, POST vs PUT once a host id is persisted, and token redaction in
-`Debug`.
+credentials, POST vs PUT once a host id is persisted, heartbeat skip/send paths,
+and token redaction in `Debug`.
 
 ```bash
 npm run typecheck
@@ -160,8 +163,9 @@ the driver hid it). v1 files that only have `shareGpu` still load; the missing
 id is filled with the first detected GPU. An availability schedule is not stored
 yet — that field can be added later without renaming the GPU id.
 
-Local `sharingEnabled` is not a Matchmaker field. Pause vs live inventory is
-phase 4 (heartbeats).
+Local `sharingEnabled` is not a Matchmaker field. Pause stops heartbeats; after
+45s of silence the Matchmaker will not select this host. Occupancy stays on
+session indexes — pause does not end an active session.
 
 ## Platform support
 
@@ -179,11 +183,8 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Heartbeats (phase 4): inventory is stale without liveness. Occupancy must
-  remain session indexes. Selector may ignore stale hosts through `HostSelector`
-  only.
+- Phase 5: OS-conditional provisioner stubs (Linux → Firecracker, Windows →
+  QEMU+WHPX). Do not invoke a real hypervisor.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.
-- `AgentState` currently holds only the hardware snapshot. A heartbeat task is
-  the natural next thing to hang off it.
