@@ -1,12 +1,14 @@
 //! The command surface exposed to the UI. Everything here is a thin wrapper:
-//! the logic lives in `hardware`, `gpu` and `config` so it stays testable
-//! outside a running window.
+//! the logic lives in `hardware`, `gpu`, `config` and `matchmaker` so it stays
+//! testable outside a running window.
 
 use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager, State};
 
 use crate::config;
+use crate::identity::{self, HostRegistration};
+use crate::matchmaker::{self, UreqTransport};
 use crate::models::{HardwareSnapshot, SharingConfig};
 use crate::AgentState;
 
@@ -46,6 +48,29 @@ pub fn get_config_file_path(app: AppHandle) -> Result<String, String> {
     Ok(config::config_file_path(&config_dir(&app)?)
         .to_string_lossy()
         .into_owned())
+}
+
+#[tauri::command]
+pub fn load_host_registration(app: AppHandle) -> Result<Option<HostRegistration>, String> {
+    identity::load(&config_dir(&app)?).map_err(|error| error.to_string())
+}
+
+/// Reads the on-disk config (not the webview payload), clamps again, then
+/// POST/PUT `/v1/hosts`. Fails if Matchmaker URL or bootstrap token is missing.
+#[tauri::command]
+pub async fn register_declared_caps(
+    app: AppHandle,
+    state: State<'_, AgentState>,
+) -> Result<HostRegistration, String> {
+    let dir = config_dir(&app)?;
+    let hardware = state.hardware.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        matchmaker::register_from_env(&dir, &hardware, &UreqTransport)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("could not run host registration: {error}"))?
 }
 
 fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {

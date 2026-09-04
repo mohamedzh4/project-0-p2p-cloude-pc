@@ -18,6 +18,10 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+hostname = "0.4"
+dotenvy = "0.15"
+# Blocking HTTP, rustls, no redirect-following in our AgentBuilder. JSON via serde.
+ureq = { version = "2.12", features = ["json"] }
 # Only the "system" feature is enabled: disk, network, component and user probing
 # would pull in extra platform APIs the agent never reads.
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }

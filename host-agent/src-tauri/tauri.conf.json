@@ -15,9 +15,9 @@
         "label": "main",
         "title": "Host Agent",
         "width": 880,
-        "height": 760,
+        "height": 820,
         "minWidth": 620,
-        "minHeight": 560,
+        "minHeight": 600,
         "resizable": true
       }
     ],

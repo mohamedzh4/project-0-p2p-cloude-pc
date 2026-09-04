@@ -1,14 +1,16 @@
 //! Host Agent core.
 //!
-//! Phase 1 scope: detect the machine's hardware, let the host cap what they
-//! share, and persist that choice locally. Networking, matchmaking and VM
-//! provisioning are deliberately absent — the modules here are split so those
-//! can be added beside them without touching detection or storage.
+//! Detect the machine, persist local sharing caps, and register those caps
+//! with the Matchmaker from Rust. Heartbeats, provisioning and tray mode are
+//! still out of scope — they can hang off `AgentState` later without touching
+//! detection or storage.
 
 mod commands;
 mod config;
 mod gpu;
 mod hardware;
+mod identity;
+mod matchmaker;
 mod models;
 
 #[cfg(test)]
@@ -30,7 +32,17 @@ pub fn detect_hardware() -> HardwareSnapshot {
     hardware::detect()
 }
 
+fn load_local_env() {
+    // `tauri dev` usually starts in host-agent/; `cargo run` in src-tauri/.
+    // Neither file is required — registration still fails fast if the vars
+    // are missing after this attempt.
+    let _ = dotenvy::from_filename(".env");
+    let _ = dotenvy::from_filename("../.env");
+}
+
 pub fn run() {
+    load_local_env();
+
     tauri::Builder::default()
         .manage(AgentState {
             hardware: hardware::detect(),
@@ -40,6 +52,8 @@ pub fn run() {
             commands::load_sharing_config,
             commands::save_sharing_config,
             commands::get_config_file_path,
+            commands::load_host_registration,
+            commands::register_declared_caps,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the host agent");

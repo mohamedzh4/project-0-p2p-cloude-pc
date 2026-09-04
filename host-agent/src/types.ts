@@ -37,3 +37,15 @@ export interface SharingConfig {
   /** Which card to dedicate. Null when no supported GPU is present. */
   sharedGpuId: string | null;
 }
+
+/** Last Matchmaker host-inventory response persisted by Rust. */
+export interface HostRegistration {
+  hostId: string;
+  displayName: string;
+  labTier: string;
+  status: string;
+  sharedLogicalCores: number;
+  sharedMemoryBytes: number;
+  shareGpu: boolean;
+  sharedGpuId: string | null;
+}

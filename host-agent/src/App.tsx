@@ -4,14 +4,16 @@ import {
   getConfigFilePath,
   getHardwareInfo,
   IS_PREVIEW,
+  loadHostRegistration,
   loadSharingConfig,
+  registerDeclaredCaps,
   saveSharingConfig,
 } from "./api";
 import { HardwareCard } from "./components/HardwareCard";
 import { GpuShareField } from "./components/GpuShareField";
 import { ResourceSlider } from "./components/ResourceSlider";
 import { BYTES_PER_GIB, formatCores, formatGib, formatGpuLabel } from "./format";
-import type { HardwareSnapshot, SharingConfig } from "./types";
+import type { HardwareSnapshot, HostRegistration, SharingConfig } from "./types";
 
 type SaveState = { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { kind: "error"; message: string };
 
@@ -20,14 +22,15 @@ export default function App() {
   const [config, setConfig] = useState<SharingConfig | null>(null);
   const [savedConfig, setSavedConfig] = useState<SharingConfig | null>(null);
   const [configPath, setConfigPath] = useState("");
+  const [registration, setRegistration] = useState<HostRegistration | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ kind: "idle" });
 
   useEffect(() => {
     let active = true;
 
-    Promise.all([getHardwareInfo(), loadSharingConfig(), getConfigFilePath()])
-      .then(([detected, stored, path]) => {
+    Promise.all([getHardwareInfo(), loadSharingConfig(), getConfigFilePath(), loadHostRegistration()])
+      .then(([detected, stored, path, storedRegistration]) => {
         if (!active) {
           return;
         }
@@ -36,6 +39,7 @@ export default function App() {
         setConfig(stored);
         setSavedConfig(stored);
         setConfigPath(path);
+        setRegistration(storedRegistration);
       })
       .catch((error: unknown) => {
         if (active) {
@@ -75,7 +79,18 @@ export default function App() {
       const stored = await saveSharingConfig(config);
       setConfig(stored);
       setSavedConfig(stored);
-      setSaveState({ kind: "saved" });
+      try {
+        const registered = await registerDeclaredCaps();
+        setRegistration(registered);
+        setSaveState({ kind: "saved" });
+      } catch (error: unknown) {
+        setSaveState({
+          kind: "error",
+          message: `Saved locally, but Matchmaker registration failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        });
+      }
     } catch (error: unknown) {
       setSaveState({
         kind: "error",
@@ -121,7 +136,7 @@ export default function App() {
 
       {IS_PREVIEW ? (
         <p className="notice reveal" data-reveal={1}>
-          Browser preview: these readings are sample data. The packaged agent reads the real machine.
+          Browser preview: these readings are sample data and Matchmaker registration is simulated. The packaged agent reads the real machine and calls the Matchmaker from Rust.
         </p>
       ) : null}
 
@@ -207,7 +222,11 @@ export default function App() {
       <section className="panel reveal" data-reveal={3}>
         <div className="actions">
           <button type="button" onClick={handleSave} disabled={!isDirty || saveState.kind === "saving"}>
-            {saveState.kind === "saving" ? "Saving…" : "Save configuration"}
+            {saveState.kind === "saving"
+              ? "Saving…"
+              : IS_PREVIEW
+                ? "Save configuration"
+                : "Save and register"}
           </button>
 
           {savedConfig ? (
@@ -236,6 +255,31 @@ export default function App() {
         </div>
 
         {configPath ? <p className="path">{configPath}</p> : null}
+
+        <div className="registration">
+          {registration ? (
+            <>
+              <p className="status">
+                Matchmaker: {registration.status}
+                {registration.status === "pending"
+                  ? " — sessions will not land here until an operator approves this host"
+                  : null}
+              </p>
+              <p className="path">{registration.hostId}</p>
+              {registration.shareGpu ? (
+                <p className="hint gpu-warning">
+                  Matchmaker registered GPU {registration.sharedGpuId ?? "unknown"} as exclusive for
+                  the session, not a concurrent slice. This PC cannot use that card while a guest is
+                  connected.
+                </p>
+              ) : null}
+            </>
+          ) : (
+            <p className="status">
+              Not registered with the Matchmaker yet. Save to declare these caps from Rust.
+            </p>
+          )}
+        </div>
       </section>
     </main>
   );

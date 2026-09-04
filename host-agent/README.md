@@ -2,19 +2,22 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is phase 1. It does three things and nothing else:
+This is execution phase 3. It does four things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU.
 2. Lets the host cap how much of each they are willing to share.
-3. Saves that choice to a local config file.
+3. Saves that choice to a local config file (v2).
+4. Registers those **clamped** caps with the Matchmaker from **Rust**
+   (`POST /v1/hosts` or `PUT /v1/hosts/{id}`). New hosts stay `pending` until an
+   operator approves them with `HOST_APPROVE_TOKEN`. This agent never sends that
+   token.
 
-There is no networking, no Matchmaker connection, no Firecracker or QEMU, and no
-tray/background mode yet. See `../docs/distributed-compute-lab-architecture.md`
-for where those land.
+There are no heartbeats, no Firecracker or QEMU, and no tray/background mode
+yet. See `../docs/distributed-compute-lab-architecture.md` for where those land.
 
 ## Stack
 
-- **Rust** core (`src-tauri/`) — all system access lives here.
+- **Rust** core (`src-tauri/`) — all system access and Matchmaker HTTP live here.
 - **Tauri v2** shell — a native webview instead of a bundled browser, so the
   agent stays small enough to sit on someone's daily-driver machine.
 - **React + TypeScript + Vite** for the window contents.
@@ -23,14 +26,18 @@ for where those land.
 disks, no networks). NVIDIA GPUs are read through `nvml-wrapper`; anything else
 reports "No GPU detected" with a note explaining why.
 
+The Content-Security-Policy allows no remote origins. Matchmaker calls belong
+in Rust, not `fetch` from the webview.
+
 ## Layout
 
 ```
 host-agent/
+├── .env.example              MATCHMAKER_URL + HOST_BOOTSTRAP_TOKEN
 ├── src/                      UI
 │   ├── App.tsx               window contents and state
 │   ├── api.ts                the only place that calls Tauri commands
-│   ├── components/           HardwareCard, ResourceSlider
+│   ├── components/           HardwareCard, ResourceSlider, GpuShareField
 │   ├── format.ts             byte and core formatting
 │   ├── preview.ts            sample data for browser-only development
 │   └── types.ts              mirrors the Rust models
@@ -40,14 +47,16 @@ host-agent/
     │   ├── hardware.rs       CPU + RAM detection
     │   ├── gpu.rs            NVIDIA detection with graceful fallback
     │   ├── config.rs         load/save the sharing config
+    │   ├── identity.rs       persisted Matchmaker host id
+    │   ├── matchmaker.rs     inventory client (clamp, POST/PUT, fail-fast env)
     │   ├── commands.rs       the command surface exposed to the UI
     │   └── lib.rs            app setup and state
     └── tauri.conf.json
 ```
 
-Detection and persistence are deliberately free of Tauri types (they take plain
-paths and return plain structs), so a future background service can reuse them
-without a window.
+Detection, persistence and the Matchmaker client are free of Tauri types (they
+take plain paths and return plain structs), so a future background service can
+reuse them without a window.
 
 ## Prerequisites
 
@@ -60,9 +69,28 @@ without a window.
     `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`.
   - macOS (development only): Xcode Command Line Tools.
 
+## Environment
+
+Copy `.env.example` to `.env` on the host machine (never commit `.env`):
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `MATCHMAKER_URL` | yes | Matchmaker origin, e.g. `http://127.0.0.1:8000` |
+| `HOST_BOOTSTRAP_TOKEN` | yes | Same Bearer token as Matchmaker `HOST_BOOTSTRAP_TOKEN` |
+| `HOST_DISPLAY_NAME` | no | Defaults to this machine's hostname |
+
+The agent fails registration if the URL or bootstrap token is missing. It does
+not read `HOST_APPROVE_TOKEN`. Operators approve with that token on the
+Matchmaker (`POST /v1/hosts/{id}/approve` or `python -m matchmaker.seed
+--approve-host-id`).
+
+`tauri dev` / `cargo run` load `.env` from `host-agent/` or `host-agent/src-tauri/`.
+A packaged install should set the same variables in the service environment.
+
 ## Running
 
 ```bash
+cp .env.example .env   # then edit MATCHMAKER_URL and HOST_BOOTSTRAP_TOKEN
 npm install
 npm run tauri dev      # the real agent, reads this machine's hardware
 ```
@@ -72,7 +100,8 @@ npm run dev            # UI only, in a browser, with sample hardware
 ```
 
 The browser mode exists so the UI can be worked on without the Rust toolchain.
-It shows a banner and writes nothing to disk.
+It shows a banner, writes nothing to disk, and only simulates Matchmaker
+registration.
 
 To see what the agent detects without opening a window:
 
@@ -97,26 +126,42 @@ cargo test
 ```
 
 Covers CPU model normalization, the GPU fallback path, recommended defaults,
-clamping a stored config to a smaller machine, and the config file round trip.
+clamping a stored config to a smaller machine, the config file round trip,
+inventory payload clamping (including GPU id when `shareGpu` is true), fail-fast
+credentials, POST vs PUT once a host id is persisted, and token redaction in
+`Debug`.
+
+```bash
+npm run typecheck
+```
 
 ## Where the config is written
 
-`sharing-config.json`, in the platform app-config directory:
+Two files, in the platform app-config directory:
 
-| OS | Path |
+| File | Contents |
 | --- | --- |
-| Windows | `%APPDATA%\com.distributedcomputelab.hostagent\sharing-config.json` |
-| Linux | `~/.config/com.distributedcomputelab.hostagent/sharing-config.json` |
-| macOS | `~/Library/Application Support/com.distributedcomputelab.hostagent/sharing-config.json` |
+| `sharing-config.json` | v2 caps: `version`, `sharingEnabled`, `sharedLogicalCores`, `sharedMemoryBytes`, `shareGpu`, `sharedGpuId` |
+| `host-identity.json` | Last Matchmaker `hostId` (and last known status) so the next save can `PUT /v1/hosts/{id}` |
 
-The window shows the exact path at the bottom. Values are re-clamped to the
-detected hardware every time the file is read, because a config file can travel
-to a different machine through a backup or profile sync.
+| OS | Directory |
+| --- | --- |
+| Windows | `%APPDATA%\com.distributedcomputelab.hostagent\` |
+| Linux | `~/.config/com.distributedcomputelab.hostagent/` |
+| macOS | `~/Library/Application Support/com.distributedcomputelab.hostagent/` |
 
-v2 of the file adds `sharedGpuId` (the NVML UUID, or `nvidia:{index}` if the
-driver hid it). v1 files that only have `shareGpu` still load; the missing id
-is filled with the first detected GPU. An availability schedule is not stored
+The window shows the sharing-config path at the bottom. Values are re-clamped
+to the detected hardware every time the file is read, and again in Rust before
+the Matchmaker request, because a config file can travel to a different machine
+through a backup or profile sync.
+
+v2 of the sharing file adds `sharedGpuId` (the NVML UUID, or `nvidia:{index}` if
+the driver hid it). v1 files that only have `shareGpu` still load; the missing
+id is filled with the first detected GPU. An availability schedule is not stored
 yet — that field can be added later without renaming the GPU id.
+
+Local `sharingEnabled` is not a Matchmaker field. Pause vs live inventory is
+phase 4 (heartbeats).
 
 ## Platform support
 
@@ -129,14 +174,16 @@ decision belongs to the phase that adds provisioning, not this one.
 
 GPU sharing in this UI is exclusive for the session: the selected card is
 handed to the guest, and the host loses it until logout. CPU/RAM sliders are
-a concurrent slice. Do not present them as the same kind of control.
+a concurrent slice. Do not present them as the same kind of control. The same
+exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
+- Heartbeats (phase 4): inventory is stale without liveness. Occupancy must
+  remain session indexes. Selector may ignore stale hosts through `HostSelector`
+  only.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.
-- The Content-Security-Policy in `tauri.conf.json` allows no remote origins. Any
-  future Matchmaker calls belong in Rust, not in `fetch` from the webview.
-- `AgentState` currently holds only the hardware snapshot. Session state and a
-  heartbeat task are the natural next things to hang off it.
+- `AgentState` currently holds only the hardware snapshot. A heartbeat task is
+  the natural next thing to hang off it.
