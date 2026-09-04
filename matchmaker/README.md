@@ -6,7 +6,9 @@ heartbeats, and session occupancy. Hosts register declared caps and start
 fresh (within 45s). Occupancy stays on session indexes, not a host flag. No
 matching algorithm, no billing, no VM provisioning, no Tailscale.
 
-The Host Agent is a separate app and is not called from here.
+The Host Agent is a separate app and is not called from here. OS-conditional
+provision stubs live in `host-agent/src-tauri/src/provision.rs`
+(`plan_provision`); phase 6 will call that port after `HostSelector.select`.
 
 ## What it does
 

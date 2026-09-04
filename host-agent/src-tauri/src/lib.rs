@@ -1,6 +1,7 @@
 //! Detect the machine, persist local sharing caps, register those caps with
-//! the Matchmaker from Rust, and ping while sharing is on. Provisioning and
-//! tray mode are still out of scope.
+//! the Matchmaker from Rust, and ping while sharing is on. Provisioning is a
+//! stub contract only (OS × tier → peer backend); tray mode is still out of
+//! scope.
 
 mod commands;
 mod config;
@@ -9,11 +10,18 @@ mod hardware;
 mod identity;
 mod matchmaker;
 mod models;
+mod provision;
 
 #[cfg(test)]
 mod test_support;
 
 pub use models::HardwareSnapshot;
+/// Phase 6 should call [`plan_provision`] after matching. Selection takes
+/// plain types (no Tauri) so a later HTTP port can reuse it.
+pub use provision::{
+    plan as plan_provision, HostOs, LabTier as ProvisionLabTier, ProvisionError, ProvisionPlan,
+    ProvisionRequest,
+};
 
 use tauri::Manager;
 

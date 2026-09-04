@@ -2,7 +2,7 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is execution phase 4. It does five things and nothing else:
+This is execution phase 5. It does six things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU.
 2. Lets the host cap how much of each they are willing to share.
@@ -14,8 +14,11 @@ This is execution phase 4. It does five things and nothing else:
 5. While local `sharingEnabled` is on and a host id exists, pings
    `POST /v1/hosts/{id}/heartbeat` from Rust every 10 seconds. Pause sharing to
    stop pings so the host goes stale in matching.
+6. Selects a **stub** provision target from host OS × lab tier (Linux Standard
+   → Firecracker, Windows Standard → QEMU+WHPX, Pro → QEMU+VFIO / Hyper-V GPU).
+   macOS is an explicit unsupported variant. No hypervisor is invoked.
 
-There is no Firecracker or QEMU, and no tray mode yet. See
+There is no real Firecracker, QEMU, or tray mode yet. See
 `../docs/distributed-compute-lab-architecture.md` for where those land.
 
 ## Stack
@@ -52,13 +55,14 @@ host-agent/
     │   ├── config.rs         load/save the sharing config
     │   ├── identity.rs       persisted Matchmaker host id
     │   ├── matchmaker.rs     inventory + heartbeat client (clamp, POST/PUT/ping, fail-fast env)
+    │   ├── provision.rs      OS-conditional stub backends (peers; no hypervisor)
     │   ├── commands.rs       the command surface exposed to the UI
     │   └── lib.rs            app setup and state
     └── tauri.conf.json
 ```
 
-Detection, persistence and the Matchmaker client are free of Tauri types (they
-take plain paths and return plain structs), so a future background service can
+Detection, persistence, the Matchmaker client, and provisioner selection are
+free of Tauri types (plain paths / structs), so a future background service can
 reuse them without a window.
 
 ## Prerequisites
@@ -171,10 +175,8 @@ session indexes — pause does not end an active session.
 
 Windows and Linux are the real targets. macOS builds and runs for development,
 but GPU detection there always reports "No GPU detected" because NVML is
-Windows/Linux only. Hosting on macOS is a larger question than detection: the
-Standard Lab is Firecracker on Linux and QEMU+WHPX on Windows, so a Mac host
-would need a third provisioning path (QEMU, or Tart on Apple Silicon). That
-decision belongs to the phase that adds provisioning, not this one.
+Windows/Linux only. The provisioner treats macOS (and any other OS) as an
+explicit unsupported host: selection fails instead of aliasing to Firecracker.
 
 GPU sharing in this UI is exclusive for the session: the selected card is
 handed to the guest, and the host loses it until logout. CPU/RAM sliders are
@@ -183,8 +185,9 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 5: OS-conditional provisioner stubs (Linux → Firecracker, Windows →
-  QEMU+WHPX). Do not invoke a real hypervisor.
+- Phase 6: Matchmaker-triggered mock provision. After `HostSelector.select`,
+  call `host_agent_lib::plan_provision` (`provision::plan`) — do not put
+  hypervisor names in the session router. Still do not invoke a real hypervisor.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

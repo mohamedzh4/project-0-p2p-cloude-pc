@@ -69,6 +69,15 @@ still load. Matchmaker `hosts` already has `shared_gpu_id`.
 Host Agent Matchmaker calls belong in **Rust**, not `fetch` from the webview
 (CSP allows no remote origins).
 
+Host Agent provisioner (stubs, phase 5): `host_agent_lib::plan_provision(os,
+request) -> Result<ProvisionPlan, ProvisionError>` in
+`host-agent/src-tauri/src/provision.rs`. Linux Standard → Firecracker, Windows
+Standard → QEMU+WHPX, Linux Pro → QEMU+VFIO, Windows Pro → Hyper-V GPU; macOS
+is unsupported (not a Firecracker fallback). Pro requires `sharedGpuId` and
+sets `gpuExclusive` plus an exclusivity warning. Never invokes a hypervisor.
+Phase 6 should call this after `HostSelector.select`; do not duplicate OS
+selection in the session router.
+
 `web/` is a harness, not the product dashboard. Kasm opens in a new tab; do not
 iframe it in early phases.
 
@@ -163,9 +172,12 @@ Linux-only path.
 row. Cahier FR14.
 
 **Do:** After `HostSelector.select`, call a provision port on the Host Agent
-(interface, not a concrete hypervisor). Stub returns a connection URL; session
-response shape unchanged unless a handoff documents a new field. Comments in
-`sessions.py` already mark this plug-in point.
+(interface, not a concrete hypervisor). Phase 5 left
+`host_agent_lib::plan_provision` (`provision::plan(os, request) -> ProvisionPlan`)
+as the stub; `connection_url` is `https://provision.invalid/{backend}`. Wire
+that. Do not invent a second OS selector in Python. Session response shape
+unchanged unless a handoff documents a new field. Comments in `sessions.py`
+already mark this plug-in point.
 
 **Do not:** Real Firecracker/QEMU. Do not put hypervisor details in the session
 router.

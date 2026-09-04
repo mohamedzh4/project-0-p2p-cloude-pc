@@ -69,8 +69,11 @@ def request_session(
 
     # --- later plug-ins (do not implement here) ---
     # 1. Real matching: swap SingleApprovedHostSelector for latency/reliability ranking.
-    # 2. Host Agent provision: tell the agent to boot Firecracker/QEMU instead of
-    #    assuming a Kasm session is already running.
+    # 2. Host Agent provision (phase 6): after select, call the Host Agent provision
+    #    port. The OS-conditional stub is `provision::plan` in
+    #    host-agent/src-tauri/src/provision.rs — do not put Firecracker/QEMU/WHPX
+    #    names in this router. Until that port exists, assume a Kasm URL already
+    #    on the host row.
     # 3. Headscale/Tailscale: mint a per-session mesh identity and scoped ACLs.
     # 4. Storj/rclone: mount the user's bucket inside the guest.
     # 5. Billing: start metering once the session is actually ready.
