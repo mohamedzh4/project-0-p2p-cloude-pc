@@ -174,17 +174,19 @@ from integration evidence. Record what is still manual (hardware gates).
 
 | Id | What | Status to record |
 | --- | --- | --- |
-| GATE-FC | One Standard session: Firecracker microVM + Kasm **inside the guest**, Linux host | Open — no runbook, script, or live URL in this repo |
-| GATE-WHPX | One Standard session: QEMU+WHPX + Kasm inside the guest, Windows host | Open |
-| GATE-PRO | One Pro session: GPU assignment (VFIO or Hyper-V) + Sunshine/Moonlight; host loses that GPU for the session | Open |
+| GATE-FC | One Standard session: Firecracker microVM + Kasm **inside the guest**, Linux host | Open — runbook `docs/runbooks/gate-fc.md`. No human result file, guest image, or live URL |
+| GATE-WHPX | One Standard session: QEMU+WHPX + Kasm inside the guest, Windows host | Open — runbook `docs/runbooks/gate-whpx.md` |
+| GATE-PRO | One Pro session: GPU assignment (VFIO or Hyper-V) + Sunshine/Moonlight; host loses that GPU for the session | Open — runbook `docs/runbooks/gate-pro.md` |
 
 An uncommitted `PROJECT_CONTEXT.md` draft once claimed Phase 0 was “done
-off-Mac”. That claim is **not** treated as done: there is no captured Kasm URL
-(`SEED_HOST_KASM_URL` is still `https://example.invalid/kasm`), no guest image,
-and no hypervisor scripts. A later agent must not silently skip these gates.
+off-Mac”. That claim is **not** treated as done: runbooks now exist, but there
+is no captured Kasm URL (`SEED_HOST_KASM_URL` is still
+`https://example.invalid/kasm`), no guest image, and no hypervisor scripts. A
+later agent must not silently skip these gates or close them without a human.
 
-When a gate is actually run, add a short note under `docs/phase-logs/` and move
-it in `PROJECT_STATUS.md`. Do not invent a pass.
+When a gate is actually run, the operator fills the result template in the
+runbook (`docs/phase-logs/gate-*-result.md`) and a human closes the gate in
+`PROJECT_STATUS.md`. Do not invent a pass.
 
 ## Deferred (after phase 7)
 

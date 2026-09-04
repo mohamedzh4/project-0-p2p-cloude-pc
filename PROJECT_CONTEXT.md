@@ -23,8 +23,8 @@ From `docs/cahier-des-charges-distributed-compute-lab.md` §11.
 
 | Phase | Content | Status |
 | --- | --- | --- |
-| 0 | Manual Firecracker+Kasm (Linux) and QEMU+WHPX+Kasm (Windows), plus one Pro GPU session | **Open / not evidenced in-repo** — no runbook, guest image, or live Kasm URL. This Mac cannot host. |
-| 1 | MVP Standard Lab, hosts approved manually | **In progress (software):** Matchmaker auth + one seeded host + occupancy; `web/` signup/request/open-desktop/end. Not on `origin/main` yet. Next software: land that slice (execution phase 1), then Host Agent ↔ Matchmaker (no real hypervisor). |
+| 0 | Manual Firecracker+Kasm (Linux) and QEMU+WHPX+Kasm (Windows), plus one Pro GPU session | **Open / not evidenced in-repo** — runbooks in `docs/runbooks/`; no human result file, guest image, or live Kasm URL. This Mac cannot host. |
+| 1 | MVP Standard Lab, hosts approved manually | **In progress (software):** Matchmaker auth + one seeded host + occupancy; `web/` signup/request/open-desktop/end, now on local `main` (not pushed). Next software: execution phase 2 (host registration), then Host Agent ↔ Matchmaker (no real hypervisor). |
 | 2 | Full Matchmaker (matching + billing), automated host onboarding | Host Agent: detection + caps only. Matching is `SingleApprovedHostSelector`, not a real algorithm |
 | 3 | Pro/Gamer Lab, latency-aware matching | Not started |
 | 4 | Hardening: image signing, exit nodes, reliability scoring | Not started |
@@ -35,7 +35,7 @@ From `docs/cahier-des-charges-distributed-compute-lab.md` §11.
 
 ```
 project-0-p2p-cloude-pc/
-├── docs/           architecture spec + cahier des charges
+├── docs/           architecture, cahier, runbooks, phase-logs
 ├── host-agent/     Tauri tray-to-be: hardware probe, sharing UI, local config
 ├── matchmaker/     FastAPI + Alembic + Postgres
 └── web/            React harness against the Matchmaker API
@@ -46,7 +46,7 @@ project-0-p2p-cloude-pc/
 | Decision | Status |
 | --- | --- |
 | Only the Matchmaker is custom glue; everything else is reused | Adopted |
-| Standard Lab backend is OS-conditional: Firecracker on Linux, QEMU+WHPX on Windows | Adopted on paper; hardware validation not recorded in this repo |
+| Standard Lab backend is OS-conditional: Firecracker on Linux, QEMU+WHPX on Windows | Adopted on paper; hardware validation not recorded (runbooks exist, gates open) |
 | Pro needs VFIO / Hyper-V GPU assignment — Firecracker has no PCI passthrough | Forced |
 | Hosts keep using the PC. CPU/RAM is a concurrent slice; GPU is exclusive for the session | Adopted |
 | Kasm runs *inside* the guest; the hypervisor is the isolation boundary | Adopted on paper; not evidenced in-repo |
@@ -77,20 +77,17 @@ Live in workspace `../.cursor/`.
 
 **Matchmaker (`matchmaker/`)** — signup/login/me; `POST /v1/sessions` and `…/end`; camelCase JSON; `python -m matchmaker.seed`. 23 pytest cases. Does not call the Host Agent. `SEED_HOST_KASM_URL` is still the `example.invalid` placeholder until a real session exists. How to run: `matchmaker/README.md`.
 
-**Web (`web/`)** — Vite/React harness: signup/login, request session, open the seeded Kasm URL in a new tab, end session. Needs `VITE_MATCHMAKER_URL`. Not FR2 intent capture, not billing, not an iframe (Kasm is opened, not embedded).
+**Web (`web/`)** — Vite/React harness: signup/login, request session, open the seeded Kasm URL in a new tab, end session. Needs `VITE_MATCHMAKER_URL`. Vitest for URL/placeholder, 200/409 session mapping, and API errors. Not FR2 intent capture, not billing, not an iframe (Kasm is opened, not embedded).
 
 **Known issues**
 
-- Matchmaker / `web/` may still be uncommitted on `main`.
+- Matchmaker / `web/` are on local `main` after execution phase 1; `origin/main` is still Host Agent + specs until someone pushes.
 - Aikido MCP still fails here; use `security-reviewer` until `/aikido:setup` works.
-- This Mac cannot *host*: Firecracker is Linux/KVM; Windows Standard needs QEMU+WHPX. Hosting needs a Linux or Windows PC; that pipeline is not recorded here yet.
+- This Mac cannot *host*: Firecracker is Linux/KVM; Windows Standard needs QEMU+WHPX. Hosting needs a Linux or Windows PC; follow `docs/runbooks/` — do not mark GATE-* closed without a human result.
 
 ## Recent changes
 
-`git log --oneline -10` on `main` (2 commits):
-
-- `5425ccf` — GPU exclusivity (docs + Host Agent `sharedGpuId` + picker), OS-conditional Standard Lab, `freezePrototype`, capabilities off `core:default`
-- `6ce3ca4` — initial specs + Host Agent v0 (detection, caps, local persist)
-
-Working tree: Matchmaker, `web/` harness (opens Kasm when seeded with a real URL).
-Phase 0 / hardware gates remain open. See `PROJECT_STATUS.md`.
+Execution phase 1 locks `matchmaker/` and `web/` on local `main` (vitest on the
+harness; pytest still 23). Hardware-gate runbooks are in `docs/runbooks/`.
+`origin/main` stays at `5425ccf` until someone pushes. Hardware gates remain
+open. See `PROJECT_STATUS.md`.
