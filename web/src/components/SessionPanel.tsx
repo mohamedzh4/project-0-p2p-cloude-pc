@@ -1,3 +1,11 @@
+import {
+  INTENT_PRESETS,
+  PRO_GPU_EXCLUSIVITY,
+  STANDARD_SLICE_HINT,
+  canRequestSession,
+  gpuExclusivityVisible,
+  mapIntentToLabTier,
+} from "../intent";
 import type { Notice, SessionResponse, UserPublic } from "../types";
 
 interface SessionPanelProps {
@@ -5,6 +13,8 @@ interface SessionPanelProps {
   session: SessionResponse | null;
   notice: Notice | null;
   busy: boolean;
+  intent: string;
+  onIntent: (value: string) => void;
   onRequest: () => void;
   onEnd: () => void;
   onSignOut: () => void;
@@ -14,6 +24,8 @@ function noticeText(notice: Notice): string {
   switch (notice.kind) {
     case "occupied":
       return "Another user already holds the host. End that session (or wait) before requesting again.";
+    case "unavailable":
+      return "No Pro host is free. Either none is approved and live, or that GPU is already assigned. Pro is exclusive for the session, not a concurrent slice.";
     case "ended":
       return "Session ended. The host is free to request again.";
     case "existing":
@@ -43,11 +55,16 @@ export function SessionPanel({
   session,
   notice,
   busy,
+  intent,
+  onIntent,
   onRequest,
-  onEnd,
   onSignOut,
+  onEnd,
 }: SessionPanelProps) {
   const live = session ? isLiveKasmUrl(session.connection.kasmUrl) : false;
+  const mappedTier = mapIntentToLabTier(intent);
+  const showExclusivity = gpuExclusivityVisible(mappedTier);
+  const canRequest = canRequestSession(intent);
 
   return (
     <div className="panel">
@@ -87,6 +104,11 @@ export function SessionPanel({
             <dt>kasmToken</dt>
             <dd>{session.connection.kasmToken ?? "(none)"}</dd>
           </dl>
+          {session.labTier === "pro" ? (
+            <p className="exclusivity" role="status">
+              {PRO_GPU_EXCLUSIVITY}
+            </p>
+          ) : null}
           {live ? (
             <p className="hint">
               Kasm is not embedded here (iframes are usually blocked). Open desktop
@@ -117,11 +139,62 @@ export function SessionPanel({
           </div>
         </>
       ) : (
-        <div className="row">
-          <button type="button" disabled={busy} onClick={onRequest}>
-            {busy ? "Working…" : "Request session"}
-          </button>
-        </div>
+        <form
+          className="intent-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (canRequest && !busy) {
+              onRequest();
+            }
+          }}
+        >
+          <div className="field">
+            <label htmlFor="lab-intent">What do you want to do in your lab today?</label>
+            <textarea
+              id="lab-intent"
+              name="intent"
+              rows={3}
+              disabled={busy}
+              value={intent}
+              onChange={(event) => onIntent(event.target.value)}
+              placeholder="e.g. write code, or play a game with a dedicated GPU"
+            />
+          </div>
+          <div className="intent-presets" role="group" aria-label="Example intents">
+            {INTENT_PRESETS.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                className="ghost"
+                aria-pressed={intent === preset.text}
+                disabled={busy}
+                onClick={() => onIntent(preset.text)}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          {canRequest ? (
+            <p className="tier-preview">
+              Maps to <strong>{mappedTier}</strong>
+              {showExclusivity ? " — exclusive GPU" : " — CPU/RAM slice"}.
+            </p>
+          ) : (
+            <p className="tier-preview">Answer the prompt to choose a lab tier.</p>
+          )}
+          {showExclusivity ? (
+            <p className="exclusivity" role="status">
+              {PRO_GPU_EXCLUSIVITY}
+            </p>
+          ) : canRequest ? (
+            <p className="hint">{STANDARD_SLICE_HINT}</p>
+          ) : null}
+          <div className="row">
+            <button type="submit" disabled={busy || !canRequest}>
+              {busy ? "Working…" : "Request session"}
+            </button>
+          </div>
+        </form>
       )}
     </div>
   );

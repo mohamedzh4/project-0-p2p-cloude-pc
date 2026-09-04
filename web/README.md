@@ -1,8 +1,8 @@
 # Lab console (Matchmaker harness)
 
 A small Vite + React + TypeScript page whose only job is to exercise the
-Matchmaker API (auth, session book/end). It is **not** the product: no FR2
-intent prompt, no billing, no Kasm iframe (a live desktop would open in a
+Matchmaker API (auth, FR2 intent → `labTier`, session book/end). It is **not**
+the product: no billing, no Kasm iframe (a live desktop would open in a
 new tab). Seed and mock-provision URLs use the `.invalid` TLD; Open desktop
 stays hidden until GATE-FC / GATE-WHPX produce a real Kasm URL.
 
@@ -16,6 +16,7 @@ web/
 ├── src/
 │   ├── api.ts            fetch helpers; no hardcoded host
 │   ├── api.test.ts
+│   ├── intent.ts         FR2: free-text / presets → standard | pro
 │   ├── sessionRequest.ts 201 / 200 / 409 mapping for the panel
 │   ├── App.tsx           JWT in React state only (not localStorage)
 │   ├── types.ts
@@ -29,14 +30,18 @@ web/
 ## UI states
 
 1. **Auth** — signup or login. Token lives in memory.
-2. **Ready** — logged in, no session; "Request session".
+2. **Intent** — logged in, no session. Prompt: "What do you want to do in
+   your lab today?" Maps to `labTier` (`standard` / `pro`). Pro shows GPU
+   exclusivity copy before booking. Intent text is **not** sent to the API.
 3. **Held** — 201 (new) or 200 (you already have one). **Open desktop** if
    `kasmUrl` is a live `http(s)` URL whose host is not RFC 2606 `.invalid`
    (seed `example.invalid` and stub `provision.invalid` are placeholders).
-   Token is shown, not stuffed into the URL.
-4. **Occupied** — 409; another user holds the host. Specific copy, not a
-   generic error.
-5. **Ended** — after `POST /v1/sessions/{id}/end`, back to Ready.
+   Token is shown, not stuffed into the URL. Pro sessions keep the exclusivity
+   note.
+4. **Occupied** — 409 on Standard; another user holds the host.
+5. **Unavailable** — 409 on Pro; no approved live Pro host (or GPU already
+   assigned). Expected while inventory is Standard-only.
+6. **Ended** — after `POST /v1/sessions/{id}/end`, back to Intent.
 
 ## Manual steps
 
@@ -69,7 +74,8 @@ npm test
 npm run typecheck
 ```
 
-Vitest covers `isLiveKasmUrl` (including `.invalid` stubs), occupied 409 vs
-existing-session 200, and Matchmaker error mapping (`detail` string,
-validation array, network failure). These are unit tests with a mocked
-`fetch`; they do not start Postgres.
+Vitest covers intent → `labTier` mapping, `isLiveKasmUrl` (including
+`.invalid` stubs), occupied 409 vs existing-session 200 vs Pro 409, and
+Matchmaker error mapping (`detail` string, validation array, network
+failure). These are unit tests with a mocked `fetch`; they do not start
+Postgres.

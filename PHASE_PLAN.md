@@ -37,7 +37,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 7: pytest 66, cargo test 77, vitest 16.
+  Counts after phase 8: pytest 66, cargo test 77, vitest 26.
 
 ## Contracts to keep stable
 
@@ -213,7 +213,7 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR | Status | Next |
 | --- | --- | --- |
 | FR1 signup/login | Implemented (Matchmaker + `web/`) | — |
-| FR2 intent prompt → lab tier | Missing | Phase 8 |
+| FR2 intent prompt → lab tier | Implemented (`web/` harness) | — |
 | FR3 match to most suitable host | Partial: one approved live host | Phase 9 (swap selector) |
 | FR4 encrypted persistent files | Missing | Phase 15 — **ask human first** (Storj account) |
 | FR5 live streamed desktop | Partial: harness opens a URL; no live Kasm | GATE-FC / GATE-WHPX |

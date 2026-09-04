@@ -36,6 +36,7 @@ def test_request_session_creates_and_returns_kasm_connection(
     assert data["startedAt"]
     assert data["connection"]["kasmUrl"] == KASM_URL
     assert data["connection"]["kasmToken"] == KASM_TOKEN
+    assert "intent" not in data
 
 
 def test_same_user_second_request_returns_existing_session(
@@ -75,6 +76,7 @@ def test_second_user_is_rejected_while_host_is_occupied(
 
 
 def test_wrong_lab_tier_is_unavailable(client: TestClient, seeded_host: Host) -> None:
+    """FR2: mapped Pro bookings 409 when inventory is Standard-only. No fake GPU session."""
     token = signup(client)["accessToken"]
     response = client.post(
         "/v1/sessions",
@@ -82,6 +84,7 @@ def test_wrong_lab_tier_is_unavailable(client: TestClient, seeded_host: Host) ->
         json={"labTier": "pro"},
     )
     assert response.status_code == 409
+    assert response.json()["detail"] == "Host unavailable"
     assert seeded_host.id
 
 

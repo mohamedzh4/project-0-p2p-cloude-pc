@@ -24,12 +24,12 @@ From `docs/cahier-des-charges-distributed-compute-lab.md` §11.
 | Phase | Content | Status |
 | --- | --- | --- |
 | 0 | Manual Firecracker+Kasm (Linux) and QEMU+WHPX+Kasm (Windows), plus one Pro GPU session | **Open / not evidenced in-repo** — runbooks in `docs/runbooks/`; no human result file, guest image, or live Kasm URL. This Mac cannot host. |
-| 1 | MVP Standard Lab, hosts approved manually | **Software loop done (execution phases 1–7):** Matchmaker auth + host inventory (pending → manual approve) + occupancy + heartbeats; Host Agent Rust client; OS-conditional **provisioner stubs** + Matchmaker `HostProvisioner`; `web/` harness. **Not a usable desktop** until GATE-FC / GATE-WHPX. Next software: execution phase 8 (FR2 intent). |
+| 1 | MVP Standard Lab, hosts approved manually | **Software loop done (execution phases 1–8):** Matchmaker auth + host inventory (pending → manual approve) + occupancy + heartbeats; Host Agent Rust client; OS-conditional **provisioner stubs** + Matchmaker `HostProvisioner`; `web/` harness with FR2 intent → `labTier`. **Not a usable desktop** until GATE-FC / GATE-WHPX. Next software: execution phase 9 (ranking selector). |
 | 2 | Full Matchmaker (matching + billing), automated host onboarding | Matching is still `SingleApprovedHostSelector`. Plan phases 9–12, 14–15. |
 | 3 | Pro/Gamer Lab, latency-aware matching | Stubs only (Pro backends in `provision.rs`). Phase 16 + GATE-PRO. |
 | 4 | Hardening: image signing, exit nodes, reliability scoring | Not started (phases 13–14). |
 
-**FR1** signup/login: done. **FR8** CPU/RAM + optional dedicated GPU: done except schedule. **FR5** streamed desktop: harness can open a URL; seed is still `example.invalid`. **FR12** inventory: caps + heartbeats; no load/reliability score. **FR14**: mock provision + heartbeats; no live hypervisor; silence does not tear down an active session. **FR2, FR4, FR6–FR7, FR9–FR11, FR13, FR15–FR16** not implemented (see `PHASE_PLAN.md` phases 8–16).
+**FR1** signup/login: done. **FR2** intent → `labTier`: harness mapping in `web/src/intent.ts`; Pro 409 if no GPU host. **FR8** CPU/RAM + optional dedicated GPU: done except schedule. **FR5** streamed desktop: harness can open a URL; seed is still `example.invalid`. **FR12** inventory: caps + heartbeats; no load/reliability score. **FR14**: mock provision + heartbeats; no live hypervisor; silence does not tear down an active session. **FR3, FR4, FR6–FR7, FR9–FR11, FR13, FR15–FR16** not implemented (see `PHASE_PLAN.md` phases 9–16).
 
 ## Layout
 
@@ -77,17 +77,17 @@ Live in workspace `../.cursor/`.
 
 **Matchmaker (`matchmaker/`)** — signup/login/me; host register/update (pending) + manual approve; heartbeats stamp `lastSeenAt`; selector skips stale hosts; `POST /v1/sessions` calls a `HostProvisioner` after occupancy commit; camelCase JSON; Alembic through `0003_host_agent_url`. **66 pytest cases**. `SEED_HOST_KASM_URL` is still the `example.invalid` placeholder. Needs `HOST_BOOTSTRAP_TOKEN` and `HOST_APPROVE_TOKEN` in `.env` to boot.
 
-**Web (`web/`)** — Vite/React harness: signup/login, request session, open a **live** Kasm URL in a new tab (not `.invalid`), end session. Needs `VITE_MATCHMAKER_URL`. Vitest for placeholders, 200/409 mapping, API errors. Not FR2 intent capture, not billing, not an iframe.
+**Web (`web/`)** — Vite/React harness: signup/login, FR2 intent prompt mapped to `labTier`, request session, open a **live** Kasm URL in a new tab (not `.invalid`), end session. Needs `VITE_MATCHMAKER_URL`. Vitest for intent mapping, placeholders, 200/409 mapping, API errors. Not billing, not an iframe.
 
 **Known issues**
 
-- Matchmaker / `web/` / Host Agent are on local `main` after execution phase 7; `origin/main` is still Host Agent v0 + specs until someone pushes.
+- Matchmaker / `web/` / Host Agent are on local `main` after execution phase 8; `origin/main` is still Host Agent v0 + specs until someone pushes.
 - Aikido MCP still fails here; use `security-reviewer` until `/aikido:setup` works.
 - This Mac cannot *host*: Firecracker is Linux/KVM; Windows Standard needs QEMU+WHPX. Follow `docs/runbooks/` — do not mark GATE-* closed without a human result.
 
 ## Recent changes
 
-Execution phase 7 is the orchestrator MVP pass: full suites, curl smoke of
-register → approve → heartbeat → stub provision → end, harness `.invalid` URL
-handling, and numbered plan phases 8–16 for remaining FRs. Hardware gates
+Execution phase 8 is FR2 intent capture in the web harness: the prompt maps
+to `labTier` already accepted by `POST /v1/sessions`. Pro exclusivity is
+visible in the UI; Pro bookings 409 without a Pro host. Hardware gates
 remain open. See `PROJECT_STATUS.md`.

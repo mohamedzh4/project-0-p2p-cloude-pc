@@ -1,3 +1,4 @@
+import type { LabTier } from "./intent";
 import type { EndSessionResponse, SessionResponse, TokenResponse } from "./types";
 
 export class ApiError extends Error {
@@ -97,11 +98,12 @@ export function login(email: string, password: string): Promise<{ status: number
 
 export function requestSession(
   token: string,
+  labTier: LabTier,
 ): Promise<{ status: number; data: SessionResponse }> {
   return request<SessionResponse>("/v1/sessions", {
     method: "POST",
     token,
-    body: JSON.stringify({ labTier: "standard" }),
+    body: JSON.stringify({ labTier }),
   });
 }
 

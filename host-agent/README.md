@@ -194,10 +194,11 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 8 is intent capture in `web/` (FR2), not more Host Agent networking.
-  Hardware gates stay OPEN. Still do not invoke a real hypervisor from this
-  agent. On macOS, `POST /v1/provision` returns 400 (`UnsupportedHostOs`);
-  Matchmaker then keeps the seeded `kasmUrl`. Tray / pause UI is phase 10.
+- Phase 9 is ranking `HostSelector` swap (FR3 / FR12 / FR13). Do not start it
+  from Host Agent work. Hardware gates stay OPEN. Still do not invoke a real
+  hypervisor from this agent. On macOS, `POST /v1/provision` returns 400
+  (`UnsupportedHostOs`); Matchmaker then keeps the seeded `kasmUrl`. Tray /
+  pause UI is phase 10.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

@@ -1,4 +1,5 @@
 import { ApiError } from "./api";
+import type { LabTier } from "./intent";
 import type { Notice, SessionResponse } from "./types";
 
 export type SessionRequestView = {
@@ -17,9 +18,15 @@ export function interpretSessionSuccess(
   return { session: data, notice: null };
 }
 
-/** Map POST /v1/sessions failures: 409 occupied/unavailable vs other API errors. */
-export function interpretSessionError(error: unknown): SessionRequestView {
+/** Map POST /v1/sessions failures: 409 occupied vs no matching host, vs other errors. */
+export function interpretSessionError(
+  error: unknown,
+  labTier: LabTier = "standard",
+): SessionRequestView {
   if (error instanceof ApiError && error.status === 409) {
+    if (labTier === "pro") {
+      return { session: null, notice: { kind: "unavailable" } };
+    }
     return { session: null, notice: { kind: "occupied" } };
   }
   return {

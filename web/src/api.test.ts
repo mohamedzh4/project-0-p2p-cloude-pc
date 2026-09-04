@@ -36,7 +36,7 @@ describe("requestSession error mapping", () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, sessionBody));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(requestSession("access-token")).resolves.toEqual({
+    await expect(requestSession("access-token", "standard")).resolves.toEqual({
       status: 201,
       data: sessionBody,
     });
@@ -53,9 +53,21 @@ describe("requestSession error mapping", () => {
   it("returns 200 when the caller already holds a session", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(200, sessionBody)));
 
-    await expect(requestSession("access-token")).resolves.toEqual({
+    await expect(requestSession("access-token", "standard")).resolves.toEqual({
       status: 200,
       data: sessionBody,
+    });
+  });
+
+  it("posts the mapped labTier, including pro", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(409, { detail: "Host unavailable" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const error = await requestSession("access-token", "pro").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 409, message: "Host unavailable" });
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      body: JSON.stringify({ labTier: "pro" }),
     });
   });
 
@@ -65,7 +77,7 @@ describe("requestSession error mapping", () => {
       vi.fn().mockResolvedValue(jsonResponse(409, { detail: "Host unavailable" })),
     );
 
-    const error = await requestSession("access-token").catch((caught: unknown) => caught);
+    const error = await requestSession("access-token", "standard").catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 409, message: "Host unavailable" });
   });
@@ -80,7 +92,7 @@ describe("requestSession error mapping", () => {
       ),
     );
 
-    const error = await requestSession("access-token").catch((caught: unknown) => caught);
+    const error = await requestSession("access-token", "standard").catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 422, message: "Field required" });
   });
@@ -88,7 +100,7 @@ describe("requestSession error mapping", () => {
   it("falls back to status text when the body has no detail", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(500, { error: "nope" })));
 
-    const error = await requestSession("access-token").catch((caught: unknown) => caught);
+    const error = await requestSession("access-token", "standard").catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 500, message: "Request failed (500)" });
   });
@@ -96,7 +108,7 @@ describe("requestSession error mapping", () => {
   it("maps a network failure to an unreachable Matchmaker error", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
 
-    const error = await requestSession("access-token").catch((caught: unknown) => caught);
+    const error = await requestSession("access-token", "standard").catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({
       status: 0,

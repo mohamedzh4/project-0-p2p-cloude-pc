@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-04, after phase 7 (orchestrator MVP pass)
+# Project Status — last updated: 2026-09-04, after phase 8 (FR2 intent capture)
 
 ## Done
 
@@ -6,37 +6,36 @@
   exclusivity, four planes). On `main`.
 - Hardware-gate runbooks (gates remain **OPEN**): `docs/runbooks/gate-fc.md`,
   `docs/runbooks/gate-whpx.md`, `docs/runbooks/gate-pro.md`.
-- Execution phases 1–7 **software** on local `main` (not pushed):
+- Execution phases 1–8 **software** on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats); OS-conditional
     provisioner stubs + opt-in `POST /v1/provision`. No hypervisor invoked.
-    **77/77** `cargo test`; clippy `-D warnings` clean; `npm run typecheck`
-    clean (2026-09-04, phase 7).
+    **77/77** `cargo test` (2026-09-04, phase 8 re-run).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
     `sessions_one_active_per_host` / `sessions_one_active_per_user`;
     `HostSelector.select(db, *, lab_tier) -> Host | None` via
     `get_host_selector()`; `HostProvisioner` after occupancy commit.
-    **66/66** pytest (2026-09-04, phase 7).
-  - Web harness: signup/login, request/end session, camelCase types aligned
-    with Matchmaker; `isLiveKasmUrl` rejects RFC 2606 `.invalid` (seed +
-    `provision.invalid` stubs). **16/16** vitest; `npm run typecheck` clean.
-- Phase 7 curl smoke (Matchmaker on `127.0.0.1:18000` + HTTP provision stub on
-  `:17842`, test DB): register pending → 409 book → approve → 409 never-seen →
-  heartbeat → 201 with `kasmUrl=https://provision.invalid/firecracker` →
-  existing 200 → occupied 409 → end → rebook 201. No live Firecracker desktop.
+    **66/66** pytest (2026-09-04, phase 8). Session JSON still has no `intent`
+    field. `POST /v1/sessions` with `labTier: pro` still 409 when inventory is
+    Standard-only.
+  - Web harness: signup/login, FR2 intent prompt → `labTier`, request/end
+    session, camelCase types aligned with Matchmaker; `isLiveKasmUrl` rejects
+    RFC 2606 `.invalid`. **26/26** vitest; `npm run typecheck` clean.
 
 ## In Progress
 
 - Cahier Phase 1 overall (MVP Standard Lab). Control-plane software loop is in
   place; a usable desktop still needs hardware gates. Next **software** session
-  is execution **phase 8** (FR2 intent capture). Do not start it in the session
-  that is wrapping phase 7.
+  is execution **phase 9** (ranking `HostSelector` swap). Do not start it in the
+  session that is wrapping phase 8.
 
 ## Up Next
 
-1. Phase 8 — Intent capture (FR2) in `web/`. See `PHASE_PLAN.md`.
+1. Phase 9 — Ranking `HostSelector` swap (FR3, FR12 load/score slice, FR13).
+   See `PHASE_PLAN.md`. Inject via `get_host_selector()`; do not inline ranking
+   in `sessions.py`.
 2. Human: GATE-FC / GATE-WHPX / GATE-PRO runbooks when a Linux/Windows host PC
    is available. Agents must not close these.
 
@@ -47,7 +46,7 @@
   `SEED_HOST_KASM_URL` (seed example is still `https://example.invalid/kasm`).
   This Mac cannot host. Closing a gate requires the runbook result file **and**
   an explicit human confirmation.
-- Local `main` is ahead of `origin/main` (planning + phases 1–7). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–8). Nothing was
   pushed this session.
 - Host register/heartbeat/provision auth uses a shared `HOST_BOOTSTRAP_TOKEN`.
   Per-host tokens are not in this MVP.
@@ -61,18 +60,22 @@
   is not interrupted when pings stop.
 - Provisioner is stubs only. On macOS, a real Host Agent `POST /v1/provision`
   is 400 (`UnsupportedHostOs`); Matchmaker then keeps the seeded `kasmUrl`.
-  Smoke used a Python stub, not the Tauri listener.
-- No Tailscale/Headscale, Storj, billing, or FR2 intent UI. Guest egress via
-  platform exit nodes is still on paper (legal exposure at public launch —
-  architecture §9 item 5).
-- Aikido MCP `namespaceStatus: error` this session; not a scan pass.
+- Intent text stays in the harness. It is not persisted and is not on the
+  session JSON. Keyword mapping is a smallest-slice heuristic (office/code →
+  Standard; GPU/game/3D/training → Pro).
+- No Tailscale/Headscale, Storj, billing, ranking selector, or tray UI. Guest
+  egress via platform exit nodes is still on paper (legal exposure at public
+  launch — architecture §9 item 5).
+- Aikido MCP `namespaceStatus: error` this session; not a scan pass. Run
+  `/aikido:setup` if a scan is required.
 - Consumer GPU EULAs and ToS/liability still need legal review (architecture
   §9 items 10–11).
 
 ## Notes for next agent/session
 
-- You are starting **phase 8** (intent capture). Read `PHASE_PLAN.md`, this
-  file, and `docs/phase-logs/` (including `phase-7-orchestrator-mvp.md`).
+- You are starting **phase 9** (ranking `HostSelector` swap). Read
+  `PHASE_PLAN.md`, this file, and `docs/phase-logs/` (including
+  `phase-8-intent-capture.md`).
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `SingleApprovedHostSelector` in `sessions.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.

@@ -32,7 +32,7 @@ execution phase 7 is the **control-plane MVP with stubs**, not a live lab.
 | Four planes | Control plane only (Matchmaker). Compute is OS-conditional **stubs**. Network/storage planes are not wired |
 | Standard: Firecracker (Linux) / QEMU+WHPX (Windows) + Kasm in the guest | `plan_provision` + `POST /v1/provision` return `https://provision.invalid/{backend}`. No hypervisor, no guest image. GATE-FC / GATE-WHPX open |
 | Pro: VFIO / Hyper-V GPU + Sunshine | Stubs require `sharedGpuId` and set `gpuExclusive`. GATE-PRO open |
-| Intent capture, ranking, billing | `labTier` on sessions; `SingleApprovedHostSelector`; no FR2 UI, no ledger |
+| Intent capture, ranking, billing | FR2 harness maps intent → `labTier`; ranking still `SingleApprovedHostSelector`; no ledger |
 | Tailscale/Headscale + exit-node egress | Not implemented. §9 item 5 still a launch blocker. Phase 14 — ask human first |
 | Storj + rclone | Not implemented. Phase 15 — ask human first |
 | Host Agent tray / mesh / signed images | Detection + caps + register/heartbeat + provision HTTP stub |

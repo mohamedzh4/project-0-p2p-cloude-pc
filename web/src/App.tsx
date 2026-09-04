@@ -3,6 +3,7 @@ import { useState } from "react";
 import { ApiError, endSession, login, matchmakerUrl, requestSession, signup } from "./api";
 import { AuthForm } from "./components/AuthForm";
 import { SessionPanel } from "./components/SessionPanel";
+import { mapIntentToLabTier, canRequestSession } from "./intent";
 import { interpretSessionError, interpretSessionSuccess } from "./sessionRequest";
 import type { AuthMode, Notice, SessionResponse, UserPublic } from "./types";
 
@@ -14,6 +15,7 @@ export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<UserPublic | null>(null);
   const [session, setSession] = useState<SessionResponse | null>(null);
+  const [intent, setIntent] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -49,18 +51,19 @@ export default function App() {
   }
 
   async function handleRequest() {
-    if (!token) {
+    if (!token || !canRequestSession(intent)) {
       return;
     }
+    const labTier = mapIntentToLabTier(intent);
     setBusy(true);
     setNotice(null);
     try {
-      const result = await requestSession(token);
+      const result = await requestSession(token, labTier);
       const view = interpretSessionSuccess(result.status, result.data);
       setSession(view.session);
       setNotice(view.notice);
     } catch (error) {
-      const view = interpretSessionError(error);
+      const view = interpretSessionError(error, labTier);
       setSession(view.session);
       setNotice(view.notice);
     } finally {
@@ -92,6 +95,7 @@ export default function App() {
     setToken(null);
     setUser(null);
     setSession(null);
+    setIntent("");
     setNotice(null);
   }
 
@@ -99,11 +103,12 @@ export default function App() {
     <main className="app">
       <header className="reveal">
         <p className="kicker">Matchmaker harness</p>
-        <h1>Standard Lab loop</h1>
+        <h1>Lab session</h1>
         <p className="lede">
-          Sign in, request a session, and end it. Open desktop appears only for a
-          live Kasm URL — seed and mock-provision use <code>.invalid</code> placeholders.
-          This is not the product UI.
+          Sign in, say what you want to do, and book a session. Intent maps to
+          Standard (CPU/RAM slice) or Pro (exclusive GPU). Open desktop appears
+          only for a live Kasm URL — seed and mock-provision use <code>.invalid</code>{" "}
+          placeholders. This is not the product UI.
         </p>
       </header>
 
@@ -119,6 +124,8 @@ export default function App() {
           session={session}
           notice={notice}
           busy={busy}
+          intent={intent}
+          onIntent={setIntent}
           onRequest={() => void handleRequest()}
           onEnd={() => void handleEnd()}
           onSignOut={handleSignOut}

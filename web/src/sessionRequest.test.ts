@@ -32,10 +32,21 @@ describe("interpretSessionSuccess", () => {
 });
 
 describe("interpretSessionError", () => {
-  it("maps occupied/unavailable 409 to the occupied notice", () => {
+  it("maps occupied/unavailable 409 to the occupied notice for Standard", () => {
     expect(interpretSessionError(new ApiError(409, "Host unavailable"))).toEqual({
       session: null,
       notice: { kind: "occupied" },
+    });
+    expect(interpretSessionError(new ApiError(409, "Host unavailable"), "standard")).toEqual({
+      session: null,
+      notice: { kind: "occupied" },
+    });
+  });
+
+  it("maps Pro 409 to unavailable (no GPU host, or that GPU already assigned)", () => {
+    expect(interpretSessionError(new ApiError(409, "Host unavailable"), "pro")).toEqual({
+      session: null,
+      notice: { kind: "unavailable" },
     });
   });
 
