@@ -4,7 +4,17 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, Text, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -27,6 +37,16 @@ class SessionStatus(StrEnum):
     ENDED = "ended"
 
 
+class LedgerParty(StrEnum):
+    USER = "user"
+    HOST = "host"
+
+
+class LedgerDirection(StrEnum):
+    DEBIT = "debit"
+    CREDIT = "credit"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -38,6 +58,7 @@ class User(Base):
     )
 
     sessions: Mapped[list[LabSession]] = relationship(back_populates="user")
+    ledger_entries: Mapped[list[LedgerEntry]] = relationship(back_populates="user")
 
 
 class Host(Base):
@@ -60,6 +81,7 @@ class Host(Base):
     )
 
     sessions: Mapped[list[LabSession]] = relationship(back_populates="host")
+    ledger_entries: Mapped[list[LedgerEntry]] = relationship(back_populates="host")
 
 
 class LabSession(Base):
@@ -90,3 +112,36 @@ class LabSession(Base):
 
     user: Mapped[User] = relationship(back_populates="sessions")
     host: Mapped[Host] = relationship(back_populates="sessions")
+    ledger_entries: Mapped[list[LedgerEntry]] = relationship(back_populates="session")
+
+
+class LedgerEntry(Base):
+    """One debit or credit for a settled session. Unique per (session, party)."""
+
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "party",
+            name="ledger_entries_one_per_session_party",
+        ),
+        Index("ix_ledger_entries_user_id", "user_id"),
+        Index("ix_ledger_entries_host_id", "host_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    session_id: Mapped[UUID] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    host_id: Mapped[UUID | None] = mapped_column(ForeignKey("hosts.id"), nullable=True)
+    party: Mapped[str] = mapped_column(Text, nullable=False)
+    direction: Mapped[str] = mapped_column(Text, nullable=False)
+    amount_credits: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    rate_credits_per_minute: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    session: Mapped[LabSession] = relationship(back_populates="ledger_entries")
+    user: Mapped[User | None] = relationship(back_populates="ledger_entries")
+    host: Mapped[Host | None] = relationship(back_populates="ledger_entries")

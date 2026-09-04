@@ -214,7 +214,7 @@ export default function App() {
             <dt>Presence</dt>
             <dd>{presenceLabel(presence)}</dd>
             <dt>Earnings</dt>
-            <dd>{status?.earningsNote ?? "not metered yet"}</dd>
+            <dd>{status?.earningsNote ?? "earnings unavailable"}</dd>
           </dl>
           <button
             type="button"
@@ -231,7 +231,8 @@ export default function App() {
         ) : (
           <p className="hint">
             Pause writes locally and stops heartbeats on the next tick so this host becomes unselectable
-            after it goes stale. It does not end an active guest session. Earnings are not metered yet.
+            after it goes stale. It does not end an active guest session. Earnings are credits accrued
+            on the Matchmaker ledger and are not paid out.
           </p>
         )}
         {IS_PREVIEW ? (

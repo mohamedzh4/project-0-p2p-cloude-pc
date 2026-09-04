@@ -42,6 +42,7 @@ class Settings:
     host_bootstrap_token: str
     host_approve_token: str
     host_agent_provision_url: str | None
+    credits_per_minute: int
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -52,6 +53,14 @@ class Settings:
             raise RuntimeError("JWT_EXPIRE_MINUTES must be an integer") from exc
         if expire_minutes <= 0:
             raise RuntimeError("JWT_EXPIRE_MINUTES must be positive")
+
+        credits_raw = _require_env("CREDITS_PER_MINUTE")
+        try:
+            credits_per_minute = int(credits_raw)
+        except ValueError as exc:
+            raise RuntimeError("CREDITS_PER_MINUTE must be an integer") from exc
+        if credits_per_minute < 0:
+            raise RuntimeError("CREDITS_PER_MINUTE must be non-negative")
 
         host_bootstrap_token = _require_env("HOST_BOOTSTRAP_TOKEN")
         host_approve_token = _require_env("HOST_APPROVE_TOKEN")
@@ -65,6 +74,7 @@ class Settings:
             host_bootstrap_token=host_bootstrap_token,
             host_approve_token=host_approve_token,
             host_agent_provision_url=_optional_http_url("HOST_AGENT_PROVISION_URL"),
+            credits_per_minute=credits_per_minute,
         )
 
 

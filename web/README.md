@@ -1,10 +1,11 @@
 # Lab console (Matchmaker harness)
 
 A small Vite + React + TypeScript page whose only job is to exercise the
-Matchmaker API (auth, FR2 intent → `labTier`, session book/end). It is **not**
-the product: no billing, no Kasm iframe (a live desktop would open in a
-new tab). Seed and mock-provision URLs use the `.invalid` TLD; Open desktop
-stays hidden until GATE-FC / GATE-WHPX produce a real Kasm URL.
+Matchmaker API (auth, FR2 intent → `labTier`, session book/end, session
+history + credits). It is **not** the product: no payment processor, no Kasm
+iframe (a live desktop would open in a new tab). Seed and mock-provision URLs
+use the `.invalid` TLD; Open desktop stays hidden until GATE-FC / GATE-WHPX
+produce a real Kasm URL.
 
 ## File structure
 
@@ -38,6 +39,8 @@ web/
    (seed `example.invalid` and stub `provision.invalid` are placeholders).
    Token is shown, not stuffed into the URL. Pro sessions keep the exclusivity
    note.
+4. **History** — `GET /v1/sessions` under the booking panel: past sessions and
+   lifetime credits on the internal ledger (not a card charge).
 4. **Occupied** — 409 on Standard; another user holds the host.
 5. **Unavailable** — 409 on Pro; no approved live Pro host (or GPU already
    assigned). Expected while inventory is Standard-only.

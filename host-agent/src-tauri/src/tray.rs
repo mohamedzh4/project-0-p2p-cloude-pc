@@ -96,6 +96,7 @@ fn current_status(app: &AppHandle) -> Option<AgentStatus> {
     Some(AgentStatus::from_flags(
         config.sharing_enabled,
         state.occupancy.is_in_session(),
+        None,
     ))
 }
 

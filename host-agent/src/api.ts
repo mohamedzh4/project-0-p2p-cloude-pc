@@ -22,7 +22,7 @@ function previewStatus(): AgentStatus {
     presence: previewPresence(previewStore.sharingEnabled, previewInSession),
     sharingEnabled: previewStore.sharingEnabled,
     inSession: previewInSession,
-    earningsNote: "not metered yet",
+    earningsNote: "0 credits accrued (not paid out)",
   };
 }
 

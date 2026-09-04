@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, matchmakerUrl, requestSession } from "./api";
+import { ApiError, listSessions, matchmakerUrl, requestSession } from "./api";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -114,5 +114,38 @@ describe("requestSession error mapping", () => {
       status: 0,
       message: "Matchmaker is unreachable. Is it running?",
     });
+  });
+});
+
+describe("listSessions", () => {
+  it("gets camelCase history and lifetime creditsDebited", async () => {
+    const historyBody = {
+      sessions: [
+        {
+          sessionId: "11111111-1111-1111-1111-111111111111",
+          hostId: "22222222-2222-2222-2222-222222222222",
+          labTier: "standard",
+          status: "ended",
+          startedAt: "2026-09-04T12:00:00.000Z",
+          endedAt: "2026-09-04T12:02:00.000Z",
+          durationSeconds: 120,
+          creditsDebited: 2,
+        },
+      ],
+      creditsDebited: 2,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, historyBody));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listSessions("access-token")).resolves.toEqual({
+      status: 200,
+      data: historyBody,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://matchmaker.test/v1/sessions");
+    expect(init.method).toBe("GET");
+    const headers = new Headers(init.headers);
+    expect(headers.get("Authorization")).toBe("Bearer access-token");
   });
 });

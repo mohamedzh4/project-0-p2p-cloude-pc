@@ -1,16 +1,17 @@
 # Matchmaker
 
 Control-plane service for the Distributed Compute Lab (software MVP after
-execution phase 9): auth, host inventory, heartbeats, and session occupancy.
-Hosts register declared caps and start **pending**; sessions book a manually
-approved host whose last heartbeat is fresh (within 45s). Among eligible hosts,
-`RankedHostSelector` prefers more declared CPU, then more RAM, then host id.
-Pro bookings also require a dedicated GPU id. After occupancy commit, the
-Matchmaker calls a Host Agent **provision port** (HTTP, or a test double) for
-a stub connection URL. Occupancy stays on session indexes, not a host flag.
-FR2 intent mapping lives in `web/`; this API still takes `labTier`.
-No measured latency/reliability scores, no billing, no real hypervisor, no
-Tailscale.
+execution phase 11): auth, host inventory, heartbeats, session occupancy, and
+an internal credits ledger. Hosts register declared caps and start **pending**;
+sessions book a manually approved host whose last heartbeat is fresh (within
+45s). Among eligible hosts, `RankedHostSelector` prefers more declared CPU,
+then more RAM, then host id. Pro bookings also require a dedicated GPU id.
+After occupancy commit, the Matchmaker calls a Host Agent **provision port**
+(HTTP, or a test double) for a stub connection URL. Occupancy stays on session
+indexes, not a host flag. Ending a session meters `startedAt` → `endedAt` into
+`ledger_entries` (user debit / host credit). FR2 intent mapping lives in
+`web/`; this API still takes `labTier`. No measured latency/reliability scores,
+no payment processor, no real hypervisor, no Tailscale.
 
 How Matchmaker finds the agent: `hosts.agent_url` from inventory, else optional
 `HOST_AGENT_PROVISION_URL`. If neither is usable, the seeded/placeholder
@@ -35,7 +36,11 @@ Rust (`plan_provision`); this service does not name Firecracker/QEMU/WHPX.
   free, then calls the Host Agent provision port. `connection.kasmUrl` comes
   from that stub result when the agent is reachable; otherwise the URL already
   stored on the host row. Session JSON shape is unchanged.
-- `POST /v1/sessions/{id}/end` frees the host so another user can take it
+- `POST /v1/sessions/{id}/end` frees the host so another user can take it and
+  writes ledger rows (user debit, host credit) from session duration
+- `GET /v1/sessions` lists the caller's sessions and lifetime `creditsDebited`
+- `GET /v1/hosts/{id}/earnings` (host bootstrap Bearer) returns
+  `creditsAccrued` (not paid out)
 
 Matching is isolated in `RankedHostSelector` (`status == approved`, matching
 tier, fresh `last_seen_at`, no active session, then declared CPU/RAM). Pro
@@ -45,7 +50,7 @@ scores wait until they can be measured — extend this class, do not inline
 ranking in the session router. Provisioning is a `HostProvisioner`
 injected via `get_host_provisioner()` — tests swap a fake; production POSTs
 `/v1/provision` on the agent. Comments in the session router mark where
-Headscale, Storj, and billing will plug in.
+Headscale and Storj will plug in. Metering is in `ledger.py`, called at end.
 
 ## Manual steps
 
@@ -58,9 +63,9 @@ cp .env.example .env
 ```
 
 Edit `.env` and set `POSTGRES_PASSWORD`, `JWT_SECRET`, `HOST_BOOTSTRAP_TOKEN`,
-and `HOST_APPROVE_TOKEN` to real values (long random strings; the two host
-tokens must differ). Keep `DATABASE_URL` / `TEST_DATABASE_URL` in sync with the
-password.
+`HOST_APPROVE_TOKEN`, and `CREDITS_PER_MINUTE` (integer credits per billed
+minute; `0` is allowed). Keep `DATABASE_URL` / `TEST_DATABASE_URL` in sync with
+the password.
 
 ```bash
 docker compose up -d
@@ -70,8 +75,8 @@ Wait until the `postgres` service is healthy. Pytest creates `matchmaker_test`
 on first run if it does not already exist.
 
 You can point `DATABASE_URL` at any Postgres 16 instance instead of Docker; the
-app will not start if `DATABASE_URL`, `JWT_SECRET`, `HOST_BOOTSTRAP_TOKEN`, or
-`HOST_APPROVE_TOKEN` is missing.
+app will not start if `DATABASE_URL`, `JWT_SECRET`, `HOST_BOOTSTRAP_TOKEN`,
+`HOST_APPROVE_TOKEN`, or `CREDITS_PER_MINUTE` is missing.
 
 ### 2. Python
 
@@ -89,8 +94,9 @@ pip install -e ".[dev]"
 alembic upgrade head
 ```
 
-Head includes `0003_host_agent_url` (`hosts.agent_url`, nullable). Do not
-rewrite `0001_initial` or `0002_host_last_seen`.
+Head includes `0004_ledger_entries` (`ledger_entries` plus
+`ledger_entries_one_per_session_party`). Do not rewrite `0001_initial`,
+`0002_host_last_seen`, or `0003_host_agent_url`.
 
 ### 4. Seed or approve a host
 
@@ -146,7 +152,7 @@ Needs the test database in `TEST_DATABASE_URL` (created by compose).
 pytest
 ```
 
-Expect 81 passed on the phase-9 baseline (plus the existing Starlette/httpx
+Expect 94 passed on the phase-11 baseline (plus the existing Starlette/httpx
 deprecation warning).
 
 ## API
@@ -161,7 +167,9 @@ deprecation warning).
 | POST | `/v1/hosts/{id}/heartbeat` | Host bootstrap Bearer | 200 stamps `lastSeenAt`; 404 if unknown; does not approve |
 | POST | `/v1/hosts/{id}/approve` | Approve Bearer | 200 `approved`; bootstrap token is rejected |
 | POST | `/v1/sessions` | User Bearer | 201 new, 200 if you already have one, 409 if no approved host is free. New bookings call the provision port after occupancy commit. |
-| POST | `/v1/sessions/{id}/end` | User Bearer | owner only; frees the host |
+| POST | `/v1/sessions/{id}/end` | User Bearer | owner only; frees the host; meters duration into ledger rows |
+| GET | `/v1/sessions` | User Bearer | session history + lifetime `creditsDebited` |
+| GET | `/v1/hosts/{id}/earnings` | Host bootstrap Bearer | `{ hostId, creditsAccrued }` — accrued, not paid out |
 
 JSON is camelCase. Passwords and host tokens are never returned. Host inventory
 does not include `kasmToken`. Host responses include `lastSeenAt` (null until a
@@ -170,6 +178,8 @@ heartbeat) and `agentUrl` (null until the agent advertises a listen origin).
 Optional Matchmaker env: `HOST_AGENT_PROVISION_URL` (http/https origin, no path)
 when the booked host has no `agentUrl`. Not required; missing means fallback to
 the host row `kasmUrl`. Invalid non-empty values fail fast at startup.
+`CREDITS_PER_MINUTE` is required (non-negative integer). It is a ledger rate,
+not a payment-processor key.
 
 The Host Agent provision listener (not this process) is `POST /v1/provision`
 with the host bootstrap Bearer. It is not fetched from the webview.
@@ -177,7 +187,7 @@ with the host bootstrap Bearer. It is not fetched from the webview.
 ## Out of scope
 
 - Real measured latency / reliability scoring (declared-cap ranking is in)
-- Billing / credits
+- Payment processors / host payouts (internal ledger only)
 - Invoking Firecracker, QEMU, Kasm, Sunshine, or VFIO
 - Interrupting an active session when heartbeats go silent
 - Tailscale / Headscale identities

@@ -38,7 +38,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 10: pytest 81, cargo test 89, vitest 26.
+  Counts after phase 11: pytest 94, cargo test 93, vitest 27.
 
 ## Contracts to keep stable
 
@@ -54,9 +54,12 @@ Matchmaker JSON is camelCase.
 | POST | `/v1/hosts/{id}/heartbeat` | Host bootstrap Bearer; 200 stamps `lastSeenAt`; 404 if unknown |
 | POST | `/v1/hosts/{id}/approve` | Approve Bearer (not the bootstrap token); 200 `status: approved` |
 | POST | `/v1/sessions` | body `{ labTier }` (default `standard`); 201 new, 200 existing, 409 occupied/unavailable |
-| POST | `/v1/sessions/{id}/end` | owner only |
+| POST | `/v1/sessions/{id}/end` | owner only; meters duration into ledger |
+| GET | `/v1/sessions` | owner history + lifetime `creditsDebited` |
+| GET | `/v1/hosts/{id}/earnings` | Host bootstrap Bearer; `{ hostId, creditsAccrued }` |
 
 Session response: `{ sessionId, hostId, labTier, startedAt, connection: { kasmUrl, kasmToken } }`.
+End response: `{ sessionId, status, endedAt, creditsDebited }`.
 
 Host register/update body: `{ displayName, labTier?, sharedLogicalCores, sharedMemoryBytes,
 shareGpu, sharedGpuId, kasmUrl?, agentUrl? }`. Host response: `{ hostId, displayName, labTier,
@@ -219,16 +222,16 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR4 encrypted persistent files | Missing | Phase 15 — **ask human first** (Storj account) |
 | FR5 live streamed desktop | Partial: harness opens a URL; no live Kasm | GATE-FC / GATE-WHPX |
 | FR6 logout final save + “saved as of” | Missing | Phase 15 — **ask human first** |
-| FR7 session history + billing/credits | Missing | Phase 11 |
+| FR7 session history + billing/credits | Internal ledger + `GET /v1/sessions` | Phase 11 done; no payouts |
 | FR8 declare CPU/RAM slice + exclusive GPU | Implemented except availability schedule | Schedule can wait; do not break `sharedGpuId` |
 | FR9 auto mesh join + signed image pull | Missing | Phase 13 (images); phase 14 mesh — **ask human first** |
-| FR10 tray status (idle / in-session / earnings) | Window + Rust tray: idle / in-session / paused; earnings placeholder | Phase 11 for metering |
+| FR10 tray status (idle / in-session / earnings) | Window + Rust tray; earnings from ledger | Accrued, not paid out |
 | FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | no Matchmaker pause field |
 | FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Phase 12 / later telemetry |
 | FR13 match on tier, latency, reliability | Partial: tier fit + declared caps; latency/reliability not measured | Phase 16 |
 | FR14 provision, heartbeat, auto teardown | Partial: mock provision + 45s stale for **new** books; no live hypervisor; silence does not end an active session | Phase 6 stubs; GATE-* for real VMs; phase 12 for teardown |
 | FR15 re-match on host disconnect | Missing | Phase 12 |
-| FR16 meter usage / payouts | Missing | Phase 11 |
+| FR16 meter usage / payouts | Metering + ledger; payouts deferred | Phase 11 metering done; no Stripe |
 
 ## Hardware gates (human — this Mac cannot host)
 

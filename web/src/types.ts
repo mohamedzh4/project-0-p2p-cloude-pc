@@ -26,6 +26,23 @@ export interface EndSessionResponse {
   sessionId: string;
   status: string;
   endedAt: string;
+  creditsDebited: number;
+}
+
+export interface SessionHistoryItem {
+  sessionId: string;
+  hostId: string;
+  labTier: string;
+  status: string;
+  startedAt: string;
+  endedAt: string | null;
+  durationSeconds: number | null;
+  creditsDebited: number;
+}
+
+export interface SessionHistoryResponse {
+  sessions: SessionHistoryItem[];
+  creditsDebited: number;
 }
 
 export type AuthMode = "signup" | "login";

@@ -2,7 +2,7 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is the Host Agent after execution phase 10 (tray, pause, status). It
+This is the Host Agent after execution phase 11 (internal credits ledger). It
 does these things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU.
@@ -21,8 +21,9 @@ does these things and nothing else:
 7. Optionally listens for `POST /v1/provision` from the Matchmaker
    (`HOST_AGENT_LISTEN_ADDR`). The handler calls `plan_provision` and returns
    `https://provision.invalid/{backend}`. The webview does not `fetch` this.
-8. Shows local presence: paused / idle / in-session. Earnings copy is
-   `not metered yet`.
+8. Shows local presence: paused / idle / in-session. Earnings are
+   `{n} credits accrued (not paid out)` from `GET /v1/hosts/{id}/earnings`
+   (Rust, not the webview). Zero if this machine has no host id yet.
 9. Sits in the system tray (Rust, not the webview): tooltip, pause/resume,
    open window, quit. Closing the window hides to the tray when the icon
    installed.
@@ -63,7 +64,7 @@ host-agent/
     │   ├── gpu.rs            NVIDIA detection with graceful fallback
     │   ├── config.rs         load/save the sharing config; immediate pause
     │   ├── identity.rs       persisted Matchmaker host id
-    │   ├── matchmaker.rs     inventory + heartbeat client (clamp, POST/PUT/ping, fail-fast env)
+    │   ├── matchmaker.rs     inventory + heartbeat + earnings GET (clamp, fail-fast env)
     │   ├── agent_status.rs   paused / idle / in-session (no Tauri types)
     │   ├── provision.rs      OS-conditional stub backends (peers; no hypervisor)
     │   ├── provision_http.rs POST /v1/provision → plan_provision (Bearer; no hypervisor)
@@ -152,10 +153,11 @@ clamping a stored config to a smaller machine, the config file round trip,
 immediate pause (`set_sharing_enabled` only flips the flag), inventory payload
 clamping (including GPU id when `shareGpu` is true), fail-fast credentials,
 POST vs PUT once a host id is persisted, heartbeat skip/send paths (including
-pause via `set_sharing_enabled`), token redaction in `Debug`, and presence
-(paused beats occupancy; earnings placeholder). Provision HTTP: Linux/Windows
-stub URLs, 401 without Bearer, macOS rejected, bind round-trip with
-`hypervisorInvoked` false, occupancy marked only on HTTP 200.
+pause via `set_sharing_enabled`), token redaction in `Debug`, presence
+(paused beats occupancy), and earnings GET (`credits accrued (not paid out)`).
+Provision HTTP: Linux/Windows stub URLs, 401 without Bearer, macOS rejected,
+bind round-trip with `hypervisorInvoked` false, occupancy marked only on
+HTTP 200.
 
 ```bash
 npm run typecheck
@@ -206,11 +208,12 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 11 is session history + billing/credits (FR7, FR16). Ask the human
-  before inventing a payments approach. Hardware gates stay OPEN. Still do not
-  invoke a real hypervisor from this agent. On macOS, `POST /v1/provision`
-  returns 400 (`UnsupportedHostOs`); Matchmaker then keeps the seeded `kasmUrl`.
-  Local in-session occupancy is not cleared here — that is phase 12.
+- Phase 12 is heartbeat-silence teardown + re-match (FR14 remainder, FR15).
+  Hardware gates stay OPEN. Still do not invoke a real hypervisor from this
+  agent. On macOS, `POST /v1/provision` returns 400 (`UnsupportedHostOs`);
+  Matchmaker then keeps the seeded `kasmUrl`. Local in-session occupancy is
+  not cleared here — that is phase 12. Real host payouts are not in this
+  agent; the ledger only accrues credits.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

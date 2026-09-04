@@ -58,6 +58,28 @@ class EndSessionResponse(CamelModel):
     session_id: UUID
     status: str
     ended_at: datetime
+    credits_debited: int
+
+
+class SessionHistoryItem(CamelModel):
+    session_id: UUID
+    host_id: UUID
+    lab_tier: str
+    status: str
+    started_at: datetime
+    ended_at: datetime | None = None
+    duration_seconds: int | None = None
+    credits_debited: int
+
+
+class SessionHistoryResponse(CamelModel):
+    sessions: list[SessionHistoryItem]
+    credits_debited: int
+
+
+class HostEarningsResponse(CamelModel):
+    host_id: UUID
+    credits_accrued: int
 
 
 class HostInventoryRequest(CamelModel):

@@ -58,17 +58,26 @@ pub fn load_host_registration(app: AppHandle) -> Result<Option<HostRegistration>
 }
 
 #[tauri::command]
-pub fn get_agent_status(
+pub async fn get_agent_status(
     app: AppHandle,
     state: State<'_, AgentState>,
 ) -> Result<AgentStatus, String> {
     let dir = config_dir(&app)?;
-    let config =
-        config::load_for_hardware(&dir, &state.hardware).map_err(|error| error.to_string())?;
-    Ok(AgentStatus::from_flags(
-        config.sharing_enabled,
-        state.occupancy.is_in_session(),
-    ))
+    let hardware = state.hardware.clone();
+    let in_session = state.occupancy.is_in_session();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let config =
+            config::load_for_hardware(&dir, &hardware).map_err(|error| error.to_string())?;
+        let credits = matchmaker::fetch_credits_accrued_from_env(&dir, &UreqTransport).ok();
+        Ok(AgentStatus::from_flags(
+            config.sharing_enabled,
+            in_session,
+            credits,
+        ))
+    })
+    .await
+    .map_err(|error| format!("could not load agent status: {error}"))?
 }
 
 /// FR11: write `sharingEnabled` immediately so the heartbeat loop sees pause

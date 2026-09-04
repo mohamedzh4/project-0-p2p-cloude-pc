@@ -1,5 +1,5 @@
 import type { LabTier } from "./intent";
-import type { EndSessionResponse, SessionResponse, TokenResponse } from "./types";
+import type { EndSessionResponse, SessionHistoryResponse, SessionResponse, TokenResponse } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -113,6 +113,15 @@ export function endSession(
 ): Promise<{ status: number; data: EndSessionResponse }> {
   return request<EndSessionResponse>(`/v1/sessions/${sessionId}/end`, {
     method: "POST",
+    token,
+  });
+}
+
+export function listSessions(
+  token: string,
+): Promise<{ status: number; data: SessionHistoryResponse }> {
+  return request<SessionHistoryResponse>("/v1/sessions", {
+    method: "GET",
     token,
   });
 }

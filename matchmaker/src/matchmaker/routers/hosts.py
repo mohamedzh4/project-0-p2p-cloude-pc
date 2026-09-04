@@ -15,8 +15,9 @@ from matchmaker.inventory import (
     new_pending_host,
     record_heartbeat,
 )
+from matchmaker.ledger import host_credits_accrued
 from matchmaker.models import Host
-from matchmaker.schemas import HostInventoryRequest, HostResponse
+from matchmaker.schemas import HostEarningsResponse, HostInventoryRequest, HostResponse
 
 router = APIRouter()
 
@@ -85,3 +86,18 @@ def approve_registered_host(
     if host is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Host not found")
     return host_response(host)
+
+
+@router.get("/hosts/{host_id}/earnings", response_model=HostEarningsResponse)
+def host_earnings(
+    host_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_host_bootstrap)],
+) -> HostEarningsResponse:
+    host = db.get(Host, host_id)
+    if host is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Host not found")
+    return HostEarningsResponse(
+        host_id=host.id,
+        credits_accrued=host_credits_accrued(db, host.id),
+    )

@@ -196,6 +196,7 @@ impl Transport for UreqTransport {
         let call = match request.method {
             "POST" => agent.post(&request.url),
             "PUT" => agent.put(&request.url),
+            "GET" => agent.get(&request.url),
             other => {
                 return Err(MatchmakerError::Network(format!(
                     "unsupported HTTP method {other}"
@@ -206,7 +207,12 @@ impl Transport for UreqTransport {
         .set("Accept", "application/json")
         .set("User-Agent", "host-agent/0.1");
 
-        match call.send_json(request.body.clone()) {
+        let result = if request.method == "GET" {
+            call.call()
+        } else {
+            call.send_json(request.body.clone())
+        };
+        match result {
             Ok(response) => read_ureq_response(response.status(), response),
             Err(ureq::Error::Status(status, response)) => read_ureq_response(status, response),
             Err(error) => Err(MatchmakerError::Network(error.to_string())),
@@ -339,6 +345,48 @@ fn parse_heartbeat(status: u16, body: &str) -> Result<(), MatchmakerError> {
     }
 }
 
+/// Ledger credits for this host. Zero if the machine has no Matchmaker id yet.
+pub fn fetch_credits_accrued_from_env(
+    dir: &Path,
+    transport: &impl Transport,
+) -> Result<i64, MatchmakerError> {
+    fetch_credits_accrued(dir, |key| std::env::var(key).ok(), transport)
+}
+
+pub fn fetch_credits_accrued(
+    dir: &Path,
+    lookup: impl FnMut(&str) -> Option<String>,
+    transport: &impl Transport,
+) -> Result<i64, MatchmakerError> {
+    let Some(identity) = identity::load(dir)? else {
+        return Ok(0);
+    };
+    let credentials = MatchmakerCredentials::from_lookup(lookup)?;
+    let request = HttpRequest {
+        method: "GET",
+        url: earnings_url(&credentials.base_url, &identity.host_id),
+        authorization: credentials.authorization_header(),
+        body: serde_json::Value::Null,
+    };
+    let response = transport.send(&request)?;
+    parse_earnings(response.status, &response.body)
+}
+
+fn parse_earnings(status: u16, body: &str) -> Result<i64, MatchmakerError> {
+    if status != 200 {
+        return Err(MatchmakerError::Rejected {
+            status,
+            detail: truncate_detail(body),
+        });
+    }
+    let parsed: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| MatchmakerError::UnexpectedResponse { status })?;
+    parsed
+        .get("creditsAccrued")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or(MatchmakerError::UnexpectedResponse { status })
+}
+
 fn parse_registration(status: u16, body: &str) -> Result<HostRegistration, MatchmakerError> {
     if status != 200 && status != 201 {
         return Err(MatchmakerError::Rejected {
@@ -427,6 +475,10 @@ fn host_url(base: &str, host_id: &str) -> String {
 
 fn heartbeat_url(base: &str, host_id: &str) -> String {
     format!("{base}/v1/hosts/{host_id}/heartbeat")
+}
+
+fn earnings_url(base: &str, host_id: &str) -> String {
+    format!("{base}/v1/hosts/{host_id}/earnings")
 }
 
 fn truncate_display_name(value: &str) -> String {
@@ -1024,6 +1076,68 @@ mod tests {
         assert!(matches!(
             error,
             MatchmakerError::Rejected { status: 404, .. }
+        ));
+    }
+
+    #[test]
+    fn earnings_are_zero_when_the_host_is_not_registered() {
+        let dir = tempdir().unwrap();
+        let transport = RecordingTransport {
+            status: 200,
+            body: r#"{"hostId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","creditsAccrued":9}"#
+                .to_string(),
+            calls: Mutex::new(Vec::new()),
+        };
+
+        let credits = fetch_credits_accrued(dir.path(), heartbeat_lookup, &transport).unwrap();
+        assert_eq!(credits, 0);
+        assert!(transport.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn earnings_get_credits_accrued_from_matchmaker() {
+        let dir = tempdir().unwrap();
+        persist_registered_sharing(dir.path(), true);
+        let transport = RecordingTransport {
+            status: 200,
+            body: r#"{"hostId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","creditsAccrued":12}"#
+                .to_string(),
+            calls: Mutex::new(Vec::new()),
+        };
+
+        let credits = fetch_credits_accrued(dir.path(), heartbeat_lookup, &transport).unwrap();
+        assert_eq!(credits, 12);
+        let call = transport.last();
+        assert_eq!(call.method, "GET");
+        assert_eq!(
+            call.url,
+            "http://matchmaker.test/v1/hosts/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/earnings"
+        );
+        assert_eq!(
+            call.authorization_header(),
+            format!("Bearer {TEST_BOOTSTRAP_TOKEN}")
+        );
+        assert!(!format!("{call:?}").contains(TEST_BOOTSTRAP_TOKEN));
+    }
+
+    #[test]
+    fn earnings_without_matchmaker_url_fails_fast() {
+        let dir = tempdir().unwrap();
+        persist_registered_sharing(dir.path(), true);
+
+        let error = fetch_credits_accrued(
+            dir.path(),
+            |key| match key {
+                "HOST_BOOTSTRAP_TOKEN" => Some(TEST_BOOTSTRAP_TOKEN.to_string()),
+                _ => None,
+            },
+            &PanicTransport,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            MatchmakerError::MissingEnv("MATCHMAKER_URL")
         ));
     }
 }

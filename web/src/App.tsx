@@ -1,11 +1,11 @@
 import { useState } from "react";
 
-import { ApiError, endSession, login, matchmakerUrl, requestSession, signup } from "./api";
+import { ApiError, endSession, listSessions, login, matchmakerUrl, requestSession, signup } from "./api";
 import { AuthForm } from "./components/AuthForm";
 import { SessionPanel } from "./components/SessionPanel";
 import { mapIntentToLabTier, canRequestSession } from "./intent";
 import { interpretSessionError, interpretSessionSuccess } from "./sessionRequest";
-import type { AuthMode, Notice, SessionResponse, UserPublic } from "./types";
+import type { AuthMode, Notice, SessionHistoryResponse, SessionResponse, UserPublic } from "./types";
 
 export default function App() {
   const configured = matchmakerUrl();
@@ -15,6 +15,7 @@ export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<UserPublic | null>(null);
   const [session, setSession] = useState<SessionResponse | null>(null);
+  const [history, setHistory] = useState<SessionHistoryResponse | null>(null);
   const [intent, setIntent] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
@@ -30,6 +31,15 @@ export default function App() {
     );
   }
 
+  async function loadHistory(accessToken: string) {
+    try {
+      const result = await listSessions(accessToken);
+      setHistory(result.data);
+    } catch {
+      setHistory(null);
+    }
+  }
+
   async function handleAuth() {
     setBusy(true);
     setNotice(null);
@@ -40,6 +50,7 @@ export default function App() {
       setUser(result.data.user);
       setSession(null);
       setPassword("");
+      await loadHistory(result.data.accessToken);
     } catch (error) {
       setNotice({
         kind: "error",
@@ -62,6 +73,7 @@ export default function App() {
       const view = interpretSessionSuccess(result.status, result.data);
       setSession(view.session);
       setNotice(view.notice);
+      await loadHistory(token);
     } catch (error) {
       const view = interpretSessionError(error, labTier);
       setSession(view.session);
@@ -81,6 +93,7 @@ export default function App() {
       await endSession(token, session.sessionId);
       setSession(null);
       setNotice({ kind: "ended" });
+      await loadHistory(token);
     } catch (error) {
       setNotice({
         kind: "error",
@@ -95,6 +108,7 @@ export default function App() {
     setToken(null);
     setUser(null);
     setSession(null);
+    setHistory(null);
     setIntent("");
     setNotice(null);
   }
@@ -119,17 +133,44 @@ export default function App() {
       ) : null}
 
       {user && token ? (
-        <SessionPanel
-          user={user}
-          session={session}
-          notice={notice}
-          busy={busy}
-          intent={intent}
-          onIntent={setIntent}
-          onRequest={() => void handleRequest()}
-          onEnd={() => void handleEnd()}
-          onSignOut={handleSignOut}
-        />
+        <>
+          <SessionPanel
+            user={user}
+            session={session}
+            notice={notice}
+            busy={busy}
+            intent={intent}
+            onIntent={setIntent}
+            onRequest={() => void handleRequest()}
+            onEnd={() => void handleEnd()}
+            onSignOut={handleSignOut}
+          />
+          <section className="panel history">
+            <h2>Session history</h2>
+            <p className="hint">
+              {history
+                ? `${history.creditsDebited} credits debited on the internal ledger. Not a card charge.`
+                : "Could not load credits yet."}
+            </p>
+            {history && history.sessions.length === 0 ? (
+              <p className="hint">No sessions yet.</p>
+            ) : null}
+            {history && history.sessions.length > 0 ? (
+              <ul className="history-list">
+                {history.sessions.map((item) => (
+                  <li key={item.sessionId}>
+                    <span className="history-status">{item.status}</span>
+                    <span>
+                      {item.labTier}
+                      {item.durationSeconds != null ? ` · ${item.durationSeconds}s` : ""}
+                      {` · ${item.creditsDebited} credits`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </section>
+        </>
       ) : (
         <AuthForm
           mode={mode}

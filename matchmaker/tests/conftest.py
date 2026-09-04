@@ -31,6 +31,8 @@ if not os.environ.get("HOST_BOOTSTRAP_TOKEN"):
     os.environ["HOST_BOOTSTRAP_TOKEN"] = "test-host-bootstrap-token"
 if not os.environ.get("HOST_APPROVE_TOKEN"):
     os.environ["HOST_APPROVE_TOKEN"] = "test-host-approve-token"
+if not os.environ.get("CREDITS_PER_MINUTE"):
+    os.environ["CREDITS_PER_MINUTE"] = "1"
 # A local .env must not point pytest at a live agent; tests inject a fake or bind one.
 os.environ.pop("HOST_AGENT_PROVISION_URL", None)
 
@@ -69,7 +71,9 @@ command.upgrade(_alembic, "head")
 def clean_tables() -> Generator[None, None, None]:
     engine = get_engine()
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE TABLE sessions, hosts, users RESTART IDENTITY CASCADE"))
+        conn.execute(
+            text("TRUNCATE TABLE ledger_entries, sessions, hosts, users RESTART IDENTITY CASCADE")
+        )
     yield
 
 

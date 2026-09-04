@@ -9,14 +9,24 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from matchmaker.config import get_settings
 from matchmaker.db import get_db
 from matchmaker.deps import get_current_user, get_host_provisioner, get_host_selector
+from matchmaker.ledger import (
+    debit_amounts_for_sessions,
+    duration_seconds,
+    settle_ended_session,
+    user_credits_debited,
+    user_debit_for_session,
+)
 from matchmaker.matching import HostSelector
 from matchmaker.models import Host, LabSession, SessionStatus, User
 from matchmaker.provision import HostProvisioner, ProvisionResult
 from matchmaker.schemas import (
     ConnectionInfo,
     EndSessionResponse,
+    SessionHistoryItem,
+    SessionHistoryResponse,
     SessionRequest,
     SessionResponse,
 )
@@ -97,7 +107,8 @@ def request_session(
     #    inline it here — swap the injected class.
     # 2. Headscale/Tailscale: mint a per-session mesh identity and scoped ACLs.
     # 3. Storj/rclone: mount the user's bucket inside the guest.
-    # 4. Billing: start metering once the session is actually ready.
+    # 4. Billing: duration is metered at end (startedAt → endedAt) into
+    #    ledger_entries. Occupancy start is the clock; no payment processor.
     host = selector.select(db, lab_tier=req.lab_tier)
     if host is None:
         raise HTTPException(
@@ -147,8 +158,22 @@ def end_session(
     if session.status != SessionStatus.ENDED:
         session.status = SessionStatus.ENDED
         session.ended_at = datetime.now(timezone.utc)
-        db.commit()
-        db.refresh(session)
+        settle_ended_session(
+            db,
+            session,
+            credits_per_minute=get_settings().credits_per_minute,
+        )
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            session = db.get(LabSession, session_id)
+            if session is None or session.user_id != user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+                ) from None
+        else:
+            db.refresh(session)
 
     if session.ended_at is None:
         raise HTTPException(
@@ -156,8 +181,45 @@ def end_session(
             detail="Ended session is missing endedAt",
         )
 
+    debited = user_debit_for_session(db, session.id)
     return EndSessionResponse(
         session_id=session.id,
         status=session.status,
         ended_at=session.ended_at,
+        credits_debited=debited if debited is not None else 0,
+    )
+
+
+@router.get("/sessions", response_model=SessionHistoryResponse)
+def list_sessions(
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> SessionHistoryResponse:
+    rows = db.scalars(
+        select(LabSession)
+        .where(LabSession.user_id == user.id)
+        .order_by(LabSession.started_at.desc())
+    ).all()
+    debits = debit_amounts_for_sessions(db, [row.id for row in rows])
+    items: list[SessionHistoryItem] = []
+    for row in rows:
+        host = _host_or_error(db, row.host_id)
+        ended_at = row.ended_at
+        items.append(
+            SessionHistoryItem(
+                session_id=row.id,
+                host_id=row.host_id,
+                lab_tier=host.lab_tier,
+                status=row.status,
+                started_at=row.started_at,
+                ended_at=ended_at,
+                duration_seconds=(
+                    duration_seconds(row.started_at, ended_at) if ended_at is not None else None
+                ),
+                credits_debited=debits.get(row.id, 0),
+            )
+        )
+    return SessionHistoryResponse(
+        sessions=items,
+        credits_debited=user_credits_debited(db, user.id),
     )

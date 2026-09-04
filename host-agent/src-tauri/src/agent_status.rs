@@ -1,14 +1,8 @@
-//! Local host presence for FR10. Earnings stay a placeholder until phase 11.
-//!
-//! Pause (`sharingEnabled=false`) always wins: occupancy indexes can still hold
-//! an active session, but this machine is not advertising itself.
+//! Local host presence for FR10. Earnings are credits accrued, not paid out.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
-
-/// Copy only — phase 11 meters usage. Do not invent a number here.
-pub const EARNINGS_PLACEHOLDER: &str = "not metered yet";
 
 /// Process-wide occupancy for the provision listener thread (no Tauri types).
 /// Cleared only when a later teardown path exists (phase 12).
@@ -68,6 +62,13 @@ pub fn presence(sharing_enabled: bool, in_session: bool) -> SharingPresence {
     }
 }
 
+pub fn earnings_note(credits_accrued: Option<i64>) -> String {
+    match credits_accrued {
+        Some(credits) => format!("{credits} credits accrued (not paid out)"),
+        None => "earnings unavailable".to_string(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentStatus {
@@ -78,12 +79,16 @@ pub struct AgentStatus {
 }
 
 impl AgentStatus {
-    pub fn from_flags(sharing_enabled: bool, in_session: bool) -> Self {
+    pub fn from_flags(
+        sharing_enabled: bool,
+        in_session: bool,
+        credits_accrued: Option<i64>,
+    ) -> Self {
         Self {
             presence: presence(sharing_enabled, in_session),
             sharing_enabled,
             in_session,
-            earnings_note: EARNINGS_PLACEHOLDER.to_string(),
+            earnings_note: earnings_note(credits_accrued),
         }
     }
 
@@ -113,15 +118,22 @@ mod tests {
     }
 
     #[test]
-    fn status_json_is_camel_case_with_placeholder_earnings() {
-        let status = AgentStatus::from_flags(true, true);
+    fn status_json_is_camel_case_with_accrued_earnings() {
+        let status = AgentStatus::from_flags(true, true, Some(12));
         let json = serde_json::to_value(&status).unwrap();
 
         assert_eq!(json["presence"], "inSession");
         assert_eq!(json["sharingEnabled"], true);
         assert_eq!(json["inSession"], true);
-        assert_eq!(json["earningsNote"], EARNINGS_PLACEHOLDER);
+        assert_eq!(json["earningsNote"], "12 credits accrued (not paid out)");
         assert_eq!(status.tooltip(), "Host Agent — In session");
+        assert!(json.get("paid").is_none());
+    }
+
+    #[test]
+    fn earnings_note_does_not_invent_a_payout() {
+        assert_eq!(earnings_note(Some(0)), "0 credits accrued (not paid out)");
+        assert_eq!(earnings_note(None), "earnings unavailable");
     }
 
     #[test]
