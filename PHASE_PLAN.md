@@ -38,7 +38,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 12: pytest 105, cargo test 93, vitest 27.
+  Counts after phase 13: pytest 113, cargo test 109, vitest 27.
 
 ## Contracts to keep stable
 
@@ -57,6 +57,7 @@ Matchmaker JSON is camelCase.
 | POST | `/v1/sessions/{id}/end` | owner only; meters duration into ledger |
 | GET | `/v1/sessions` | owner history + lifetime `creditsDebited` |
 | GET | `/v1/hosts/{id}/earnings` | Host bootstrap Bearer; `{ hostId, creditsAccrued }` |
+| GET | `/v1/images/{labTier}` | Public; `{ labTier, digestSha256, signature, algorithm, digestAlgorithm }`. `standard` / `pro` only. Not a blob download. |
 
 Session response: `{ sessionId, hostId, labTier, startedAt, connection: { kasmUrl, kasmToken } }`.
 End response: `{ sessionId, status, endedAt, creditsDebited }`.
@@ -64,8 +65,8 @@ History `status` is `active` | `ended` (user end) | `interrupted` (heartbeat
 silence). End response is `ended` or already-`interrupted`. Occupied silent
 hosts are reclaimed on book, history, heartbeat (after stamping last-seen),
 and an optional background sweep (`STALE_SESSION_SWEEP_INTERVAL_SECONDS`,
-default 15, `0` disables the loop). No new HTTP routes. Rematch uses
-`HostSelector.select` only.
+default 15, `0` disables the loop). Silence reclaim adds no HTTP routes.
+Rematch uses `HostSelector.select` only.
 
 Host register/update body: `{ displayName, labTier?, sharedLogicalCores, sharedMemoryBytes,
 shareGpu, sharedGpuId, kasmUrl?, agentUrl? }`. Host response: `{ hostId, displayName, labTier,
@@ -88,14 +89,19 @@ request) -> Result<ProvisionPlan, ProvisionError>` in
 Standard → QEMU+WHPX, Linux Pro → QEMU+VFIO, Windows Pro → Hyper-V GPU; macOS
 is unsupported (not a Firecracker fallback). Pro requires `sharedGpuId` and
 sets `gpuExclusive` plus an exclusivity warning. Never invokes a hypervisor.
-The Host Agent HTTP port is `POST /v1/provision` (`provision_http.rs`); it calls
-`plan` and returns `{ connectionUrl, hypervisorInvoked, gpuExclusive }`.
-Matchmaker session booking, after `HostSelector.select` and occupancy commit,
+The Host Agent HTTP port is `POST /v1/provision` (`provision_http.rs`); it
+verifies Ed25519 over the SHA-256 digest (`image.rs`) **before** `plan` and
+returns `{ connectionUrl, hypervisorInvoked, gpuExclusive }`. Body includes
+`labTier`, optional `sharedGpuId`, `imageDigest`, `imageSignature`. Missing
+or mismatched image metadata is 400 (no stub boot). Listen requires
+`IMAGE_SIGNING_PUBLIC_KEY` and `IMAGE_LOCAL_DIGEST` (fail fast). Matchmaker
+session booking, after `HostSelector.select` and occupancy commit,
 calls a `HostProvisioner` port (`get_host_provisioner()`), not a hypervisor and
 not a concrete selector. Origin: `host.agentUrl`, else optional
 `HOST_AGENT_PROVISION_URL`. If that call is unavailable, the seeded/placeholder
 `kasmUrl` on the host row is kept. Do not put Firecracker/QEMU/WHPX names in
-`sessions.py`.
+`sessions.py`. Provision POSTs the registry digest+signature for the booked
+`labTier`.
 
 `web/` is a harness, not the product dashboard. Kasm opens in a new tab; do not
 iframe it in early phases.
@@ -108,7 +114,7 @@ iframe it in early phases.
 | 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs). Live desktop still GATE-FC / GATE-WHPX |
 | 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
 | 3 Pro/Gamer + latency | Execution phase 16 + GATE-PRO |
-| 4 Hardening | Execution phase 13 (images); Tailscale/Storj phases ask human first |
+| 4 Hardening | Execution phase 13 (images, done); Tailscale/Storj phases ask human first |
 
 ## Execution phases
 
@@ -230,7 +236,7 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR6 logout final save + “saved as of” | Missing | Phase 15 — **ask human first** |
 | FR7 session history + billing/credits | Internal ledger + `GET /v1/sessions` | Phase 11 done; no payouts |
 | FR8 declare CPU/RAM slice + exclusive GPU | Implemented except availability schedule | Schedule can wait; do not break `sharedGpuId` |
-| FR9 auto mesh join + signed image pull | Missing | Phase 13 (images); phase 14 mesh — **ask human first** |
+| FR9 auto mesh join + signed image pull | Partial: signed digest+sig verify before stub boot; no mesh | Phase 14 mesh — **ask human first** |
 | FR10 tray status (idle / in-session / earnings) | Window + Rust tray; earnings from ledger | Accrued, not paid out |
 | FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | After 45s Matchmaker treats skip as silence (interrupts). No pause field |
 | FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Later telemetry |
@@ -306,6 +312,9 @@ the user within a bounded window. Occupancy stays on session indexes.
 registry the human can point at.
 
 **Do not:** Close GATE-* from this work.
+
+Done as a software contract (fixture bytes + Ed25519, no image CDN). See
+`docs/phase-logs/phase-13-signed-images.md`.
 
 ### Phase 14 — Tailscale/Headscale mesh + exit-node egress (FR9 network)
 

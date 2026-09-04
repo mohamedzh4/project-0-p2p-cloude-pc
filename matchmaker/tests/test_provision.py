@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from matchmaker.images import ImageManifest
 from matchmaker.models import Host, HostStatus, LabTier
 from matchmaker.provision import HttpHostProvisioner, agent_origin
 from tests.helpers import (
@@ -14,6 +15,7 @@ from tests.helpers import (
     inventory_payload,
     host_auth_header,
 )
+from tests.image_fixtures import STANDARD_DIGEST, STANDARD_SIGNATURE
 
 
 def _host(*, agent_url: str | None, shared_gpu_id: str | None = None) -> Host:
@@ -87,6 +89,54 @@ def test_http_provisioner_posts_to_the_agent_and_reads_connection_url() -> None:
     assert captured["path"] == "/v1/provision"
     assert captured["authorization"] == "Bearer test-host-bootstrap-token"
     assert captured["body"] == {"labTier": "standard", "sharedGpuId": None}
+
+
+def test_http_provisioner_advertises_signed_image_metadata() -> None:
+    captured: dict[str, object] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            captured["body"] = json.loads(self.rfile.read(length))
+            payload = json.dumps(
+                {"connectionUrl": PROVISION_URL, "hypervisorInvoked": False}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        provisioner = HttpHostProvisioner(
+            bearer_token="test-host-bootstrap-token",
+            images={
+                "standard": ImageManifest(
+                    lab_tier="standard",
+                    digest_sha256=STANDARD_DIGEST,
+                    signature=STANDARD_SIGNATURE,
+                )
+            },
+        )
+        result = provisioner.provision(_host(agent_url=origin), lab_tier="standard")
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert result is not None
+    assert captured["body"] == {
+        "labTier": "standard",
+        "sharedGpuId": None,
+        "imageDigest": STANDARD_DIGEST,
+        "imageSignature": STANDARD_SIGNATURE,
+    }
 
 
 def test_http_provisioner_uses_fallback_origin_when_host_has_none() -> None:

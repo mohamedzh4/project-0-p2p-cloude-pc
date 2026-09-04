@@ -9,6 +9,7 @@ mod config;
 mod gpu;
 mod hardware;
 mod identity;
+mod image;
 mod matchmaker;
 mod models;
 mod provision;
@@ -18,9 +19,11 @@ mod tray;
 #[cfg(test)]
 mod test_support;
 
+pub use image::{verify_image, ImageError, ImageManifest, ImageTrust};
 pub use models::HardwareSnapshot;
-/// Phase 6: Matchmaker calls the HTTP port; that port calls [`plan_provision`].
-/// Selection takes plain types (no Tauri) so the listener can reuse it.
+/// Phase 6: Matchmaker calls the HTTP port; that port verifies the signed
+/// image then calls [`plan_provision`]. Selection takes plain types (no Tauri)
+/// so the listener can reuse it.
 pub use provision::{
     plan as plan_provision, HostOs, LabTier as ProvisionLabTier, ProvisionError, ProvisionPlan,
     ProvisionRequest,

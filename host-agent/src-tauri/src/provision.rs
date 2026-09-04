@@ -5,9 +5,10 @@
 //! assignment), not Firecracker with a GPU bolted on. GPU assignment is
 //! exclusive for the session; CPU/RAM stay a concurrent slice.
 //!
-//! Nothing in this module invokes a hypervisor. The HTTP port in
-//! `provision_http` calls [`plan`] after matching; do not put Firecracker/QEMU
-//! details in the session router. Real boots are GATE-FC / GATE-WHPX / GATE-PRO.
+//! The HTTP port in `provision_http` verifies the signed image digest
+//! ([`crate::image::verify_image`]) **before** calling [`plan`]. Nothing in
+//! this module invokes a hypervisor. Do not put Firecracker/QEMU details in
+//! the session router. Real boots are GATE-FC / GATE-WHPX / GATE-PRO.
 
 use std::fmt;
 
@@ -382,7 +383,10 @@ mod tests {
         assert_eq!(planned.backend, ComputeBackend::QemuWhpx);
         assert!(!planned.gpu_exclusive);
         assert!(!planned.hypervisor_invoked);
-        assert_eq!(planned.connection_url, "https://provision.invalid/qemu-whpx");
+        assert_eq!(
+            planned.connection_url,
+            "https://provision.invalid/qemu-whpx"
+        );
     }
 
     #[test]

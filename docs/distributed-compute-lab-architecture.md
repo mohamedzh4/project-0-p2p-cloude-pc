@@ -35,7 +35,7 @@ execution phase 11 is the **control-plane MVP with stubs**, not a live lab.
 | Intent capture, ranking, billing | FR2 harness maps intent → `labTier`; ranking is `RankedHostSelector` (declared CPU/RAM, Pro GPU id); internal `ledger_entries` meter at session end (no payment processor) |
 | Tailscale/Headscale + exit-node egress | Not implemented. §9 item 5 still a launch blocker. Phase 14 — ask human first |
 | Storj + rclone | Not implemented. Phase 15 — ask human first |
-| Host Agent tray / mesh / signed images | Tray + immediate pause + idle/in-session/paused. Mesh/images still missing |
+| Host Agent tray / mesh / signed images | Tray + pause + presence. Signed image **verify** before stub boot (fixture bytes, no CDN). Mesh still missing |
 
 Do not treat a passing pytest/cargo suite as GATE-FC/WHPX/PRO.
 

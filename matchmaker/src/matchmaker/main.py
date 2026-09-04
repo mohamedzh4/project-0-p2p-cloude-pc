@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from matchmaker.config import get_settings
 from matchmaker.db import get_session_factory
 from matchmaker.deps import get_host_provisioner, get_host_selector
-from matchmaker.routers import auth, hosts, sessions
+from matchmaker.routers import auth, hosts, images, sessions
 from matchmaker.silence import reclaim_stale_sessions
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(auth.router, prefix="/v1/auth", tags=["auth"])
     app.include_router(hosts.router, prefix="/v1", tags=["hosts"])
+    app.include_router(images.router, prefix="/v1", tags=["images"])
     app.include_router(sessions.router, prefix="/v1", tags=["sessions"])
     return app
 

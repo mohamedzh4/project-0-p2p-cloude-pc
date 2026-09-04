@@ -2,7 +2,7 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is the Host Agent after execution phase 11 (internal credits ledger). It
+This is the Host Agent after execution phase 13 (signed base-image verify). It
 does these things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU.
@@ -19,8 +19,11 @@ does these things and nothing else:
    → Firecracker, Windows Standard → QEMU+WHPX, Pro → QEMU+VFIO / Hyper-V GPU).
    macOS is an explicit unsupported variant. No hypervisor is invoked.
 7. Optionally listens for `POST /v1/provision` from the Matchmaker
-   (`HOST_AGENT_LISTEN_ADDR`). The handler calls `plan_provision` and returns
-   `https://provision.invalid/{backend}`. The webview does not `fetch` this.
+   (`HOST_AGENT_LISTEN_ADDR`). The handler verifies the advertised SHA-256
+   digest + Ed25519 signature against `IMAGE_SIGNING_PUBLIC_KEY` and
+   `IMAGE_LOCAL_DIGEST`, then calls `plan_provision` and returns
+   `https://provision.invalid/{backend}`. Mismatch is 400 (no stub boot).
+   The webview does not `fetch` this.
 8. Shows local presence: paused / idle / in-session. Earnings are
    `{n} credits accrued (not paid out)` from `GET /v1/hosts/{id}/earnings`
    (Rust, not the webview). Zero if this machine has no host id yet.
@@ -66,8 +69,9 @@ host-agent/
     │   ├── identity.rs       persisted Matchmaker host id
     │   ├── matchmaker.rs     inventory + heartbeat + earnings GET (clamp, fail-fast env)
     │   ├── agent_status.rs   paused / idle / in-session (no Tauri types)
-    │   ├── provision.rs      OS-conditional stub backends (peers; no hypervisor)
-    │   ├── provision_http.rs POST /v1/provision → plan_provision (Bearer; no hypervisor)
+│   ├── provision.rs      OS-conditional stub backends (peers; no hypervisor)
+│   ├── image.rs          SHA-256 + Ed25519 verify (public key from env)
+│   ├── provision_http.rs POST /v1/provision → verify image → plan (Bearer)
     │   ├── tray.rs           system tray in Rust (no webview tray APIs)
     │   ├── commands.rs       the command surface exposed to the UI
     │   └── lib.rs            app setup and state
@@ -98,8 +102,10 @@ Copy `.env.example` to `.env` on the host machine (never commit `.env`):
 | `MATCHMAKER_URL` | yes | Matchmaker origin, e.g. `http://127.0.0.1:8000` |
 | `HOST_BOOTSTRAP_TOKEN` | yes | Same Bearer token as Matchmaker `HOST_BOOTSTRAP_TOKEN` |
 | `HOST_DISPLAY_NAME` | no | Defaults to this machine's hostname |
-| `HOST_AGENT_LISTEN_ADDR` | no | Bind `host:port` for `POST /v1/provision`. Omit to disable. If set, the bootstrap token is required (fail fast). |
+| `HOST_AGENT_LISTEN_ADDR` | no | Bind `host:port` for `POST /v1/provision`. Omit to disable. If set, the bootstrap token **and** image trust env vars are required (fail fast). |
 | `HOST_AGENT_URL` | no | Origin advertised as `agentUrl`. Defaults to `http://$HOST_AGENT_LISTEN_ADDR` when listening. |
+| `IMAGE_SIGNING_PUBLIC_KEY` | when listening | 32-byte Ed25519 public key (64 hex chars). No private key on the agent. |
+| `IMAGE_LOCAL_DIGEST` | when listening | SHA-256 hex of the standby image (or the Standard fixture for local stub). |
 
 The agent fails registration and heartbeats if the URL or bootstrap token is
 missing when it would send. It does not read `HOST_APPROVE_TOKEN`. Operators
@@ -108,6 +114,29 @@ approve with that token on the Matchmaker (`POST /v1/hosts/{id}/approve` or
 
 `tauri dev` / `cargo run` load `.env` from `host-agent/` or `host-agent/src-tauri/`.
 A packaged install should set the same variables in the service environment.
+
+### Generate a test keypair (do not commit the PEM)
+
+Ed25519 over the **raw 32-byte SHA-256 digest** (not the hex string):
+
+```bash
+openssl genpkey -algorithm ED25519 -out platform-ed25519.pem
+openssl pkey -in platform-ed25519.pem -pubout -outform DER | tail -c 32 | xxd -p -c 32
+# IMAGE_SIGNING_PUBLIC_KEY
+
+printf 'dcl-fixture-standard-v1\n' | shasum -a 256
+# IMAGE_STANDARD_DIGEST / IMAGE_LOCAL_DIGEST
+
+DIGEST_HEX=<64 hex chars from sha256>
+echo "$DIGEST_HEX" | xxd -r -p > /tmp/image.digest
+openssl pkeyutl -sign -inkey platform-ed25519.pem -rawin -in /tmp/image.digest | openssl base64 -A
+# IMAGE_STANDARD_SIGNATURE
+rm platform-ed25519.pem /tmp/image.digest
+```
+
+`.env.example` already has fixture values for those Standard/Pro strings so
+local Matchmaker + agent can verify without a real guest disk. Replace them
+before any production image. Never commit `.pem` / `.key` / `.env`.
 
 ## Running
 
@@ -157,7 +186,8 @@ pause via `set_sharing_enabled`), token redaction in `Debug`, presence
 (paused beats occupancy), and earnings GET (`credits accrued (not paid out)`).
 Provision HTTP: Linux/Windows stub URLs, 401 without Bearer, macOS rejected,
 bind round-trip with `hypervisorInvoked` false, occupancy marked only on
-HTTP 200.
+HTTP 200. Image verify: valid signature accepts; tampered bytes reject;
+missing public key / local digest fail fast; HTTP mismatch does not boot.
 
 ```bash
 npm run typecheck
@@ -209,8 +239,9 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 13 is signed base-image pipeline (FR9 image part). Hardware gates stay
-  OPEN. Still do not invoke a real hypervisor from this agent. On macOS,
+- Phase 14 is Tailscale/Headscale mesh + exit-node egress. **Ask the human
+  first** — it needs an account / Headscale host. Hardware gates stay OPEN.
+  Still do not invoke a real hypervisor from this agent. On macOS,
   `POST /v1/provision` returns 400 (`UnsupportedHostOs`); Matchmaker then keeps
   the seeded `kasmUrl`. Local in-session occupancy is still not cleared when
   Matchmaker interrupts a session (no teardown port). Real host payouts are not

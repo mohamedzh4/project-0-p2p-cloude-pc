@@ -82,6 +82,14 @@ class HostEarningsResponse(CamelModel):
     credits_accrued: int
 
 
+class ImageRegistryResponse(CamelModel):
+    lab_tier: str
+    digest_sha256: str
+    signature: str
+    algorithm: str = "ed25519"
+    digest_algorithm: str = "sha256"
+
+
 class HostInventoryRequest(CamelModel):
     display_name: str = Field(min_length=1, max_length=128)
     lab_tier: str = Field(default="standard", min_length=1, max_length=32)

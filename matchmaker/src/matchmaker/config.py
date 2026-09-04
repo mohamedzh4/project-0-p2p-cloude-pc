@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+import base64
+import os
+import re
 
 from dotenv import load_dotenv
-import os
 
 
 def load_env_files() -> None:
@@ -34,6 +36,33 @@ def _optional_http_url(name: str) -> str | None:
     return value
 
 
+_SHA256_HEX = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def _require_sha256_hex(name: str) -> str:
+    raw = _require_env(name).strip()
+    if raw.lower().startswith("sha256:"):
+        raw = raw[7:]
+    if _SHA256_HEX.fullmatch(raw) is None:
+        raise RuntimeError(f"{name} must be a 64-character SHA-256 hex digest")
+    return raw.lower()
+
+
+def _require_ed25519_signature(name: str) -> str:
+    raw = _require_env(name).strip()
+    try:
+        decoded = base64.b64decode(raw, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError(
+            f"{name} must be standard base64 of a 64-byte Ed25519 signature"
+        ) from exc
+    if len(decoded) != 64:
+        raise RuntimeError(
+            f"{name} must be standard base64 of a 64-byte Ed25519 signature"
+        )
+    return base64.b64encode(decoded).decode("ascii")
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
@@ -44,6 +73,10 @@ class Settings:
     host_agent_provision_url: str | None
     credits_per_minute: int
     stale_session_sweep_interval_seconds: int
+    image_standard_digest: str
+    image_standard_signature: str
+    image_pro_digest: str
+    image_pro_signature: str
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -89,6 +122,10 @@ class Settings:
             host_agent_provision_url=_optional_http_url("HOST_AGENT_PROVISION_URL"),
             credits_per_minute=credits_per_minute,
             stale_session_sweep_interval_seconds=sweep_interval,
+            image_standard_digest=_require_sha256_hex("IMAGE_STANDARD_DIGEST"),
+            image_standard_signature=_require_ed25519_signature("IMAGE_STANDARD_SIGNATURE"),
+            image_pro_digest=_require_sha256_hex("IMAGE_PRO_DIGEST"),
+            image_pro_signature=_require_ed25519_signature("IMAGE_PRO_SIGNATURE"),
         )
 
 

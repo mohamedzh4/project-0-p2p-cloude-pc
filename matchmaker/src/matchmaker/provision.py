@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import httpx
 from sqlalchemy.orm import Session
 
+from matchmaker.images import ImageManifest
 from matchmaker.models import Host
 
 _PROVISION_PATH = "/v1/provision"
@@ -82,10 +83,12 @@ class HttpHostProvisioner:
         fallback_base_url: str | None = None,
         bearer_token: str,
         timeout_seconds: float = _REQUEST_TIMEOUT_SECONDS,
+        images: dict[str, ImageManifest] | None = None,
     ) -> None:
         self._fallback_base_url = fallback_base_url
         self._bearer_token = bearer_token
         self._timeout_seconds = timeout_seconds
+        self._images = images or {}
 
     def provision(self, host: Host, *, lab_tier: str) -> ProvisionResult | None:
         origin = agent_origin(host.agent_url) or agent_origin(self._fallback_base_url)
@@ -97,6 +100,10 @@ class HttpHostProvisioner:
             "labTier": lab_tier,
             "sharedGpuId": host.shared_gpu_id,
         }
+        manifest = self._images.get(lab_tier)
+        if manifest is not None:
+            payload["imageDigest"] = manifest.digest_sha256
+            payload["imageSignature"] = manifest.signature
         headers = {
             "Authorization": f"Bearer {self._bearer_token}",
             "Accept": "application/json",

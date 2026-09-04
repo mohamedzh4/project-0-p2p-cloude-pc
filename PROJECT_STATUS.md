@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-04, after phase 12 (heartbeat-silence teardown + re-match)
+# Project Status — last updated: 2026-09-05, after phase 13 (signed base-image pipeline)
 
 ## Done
 
@@ -6,7 +6,7 @@
   exclusivity, four planes). On `main`.
 - Hardware-gate runbooks (gates remain **OPEN**): `docs/runbooks/gate-fc.md`,
   `docs/runbooks/gate-whpx.md`, `docs/runbooks/gate-pro.md`.
-- Execution phases 1–12 **software** on local `main` (not pushed):
+- Execution phases 1–13 **software** on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -14,23 +14,25 @@
     pause writes `sharingEnabled` and skips heartbeats. Presence is paused /
     idle / in-session. Earnings copy is `{n} credits accrued (not paid out)`
     from the Matchmaker ledger (not a payout). Rust-side tray (tooltip +
-    pause/resume; no JS tray APIs). No hypervisor invoked. **93/93**
-    `cargo test` (2026-09-04, phase 12; unchanged this session).
+    pause/resume; no JS tray APIs). No hypervisor invoked. **Before** a stub
+    boot, `image.rs` verifies Ed25519 over the SHA-256 digest against
+    `IMAGE_SIGNING_PUBLIC_KEY` and `IMAGE_LOCAL_DIGEST` (required when the
+    provision listener is on). **109/109** `cargo test` (2026-09-05).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
     `sessions_one_active_per_host` / `sessions_one_active_per_user`;
     `HostSelector.select(db, *, lab_tier) -> Host | None` via
     `get_host_selector()` → `RankedHostSelector`. `HostProvisioner` after
-    occupancy commit. Session end meters `startedAt` → `endedAt` into
-    `ledger_entries` (user debit + host credit). Silence (~45s) on an occupied
-    host marks the session `interrupted`, settles the ledger once, and rematches
-    via one `select` when another eligible host is free. `GET /v1/sessions`
-    history; `GET /v1/hosts/{id}/earnings` accrued credits.
-    `CREDITS_PER_MINUTE` is required env (non-negative int). Optional
-    `STALE_SESSION_SWEEP_INTERVAL_SECONDS` (default 15; `0` disables the loop).
-    **105/105** pytest (2026-09-04, phase 12). Session JSON still has no
-    `intent` field. No latency/reliability columns. No Matchmaker pause field.
-    No payment processor.
+    occupancy commit, now advertising `imageDigest` + `imageSignature` for the
+    booked lab tier. `GET /v1/images/{labTier}` is checksum metadata only.
+    Session end meters `startedAt` → `endedAt` into `ledger_entries`. Silence
+    (~45s) on an occupied host marks the session `interrupted`, settles the
+    ledger once, and rematches via one `select`. `GET /v1/sessions` history;
+    `GET /v1/hosts/{id}/earnings` accrued credits. Required env includes
+    `CREDITS_PER_MINUTE` and the four `IMAGE_*` digest/signature pairs.
+    **113/113** pytest (2026-09-05). Session JSON still has no `intent` field.
+    No latency/reliability columns. No Matchmaker pause field. No payment
+    processor. No image CDN / multi-GB download.
   - Web harness: signup/login, FR2 intent prompt → `labTier`, request/end
     session, session history + credits debited, camelCase types aligned with
     Matchmaker; `isLiveKasmUrl` rejects RFC 2606 `.invalid`. History already
@@ -41,12 +43,14 @@
 
 - Cahier Phase 1 overall (MVP Standard Lab). Control-plane software loop is in
   place; a usable desktop still needs hardware gates. Next **software** session
-  is execution **phase 13** (signed base-image pipeline).
+  is execution **phase 14** (Tailscale/Headscale mesh) — **ask the human
+  first** (needs an account / Headscale host). Do not implement it unattended.
 
 ## Up Next
 
-1. Phase 13 — Signed base-image pipeline (FR9 image part). Needs an image
-   registry the human can point at. Do not close GATE-* from that work.
+1. Phase 14 — Tailscale/Headscale mesh + exit-node egress (FR9 network).
+   **Needs a human account.** Do not start it in an agent session without
+   asking. Do not close GATE-* from that work.
 2. Human: GATE-FC / GATE-WHPX / GATE-PRO runbooks when a Linux/Windows host PC
    is available. Agents must not close these.
 
@@ -57,16 +61,21 @@
   `SEED_HOST_KASM_URL` (seed example is still `https://example.invalid/kasm`).
   This Mac cannot host. Closing a gate requires the runbook result file **and**
   an explicit human confirmation.
-- Local `main` is ahead of `origin/main` (planning + phases 1–12). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–13). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
 - Existing local `matchmaker/.env` must have `HOST_BOOTSTRAP_TOKEN` and
-  `HOST_APPROVE_TOKEN` (different values) plus `CREDITS_PER_MINUTE` or uvicorn
-  fails at startup. Pytest setdefaults only when they are missing. Do not
-  commit `.env`. Optional `STALE_SESSION_SWEEP_INTERVAL_SECONDS` defaults to 15.
-- A long-running Matchmaker on `:8000` from before this phase will not sweep
-  occupied silent hosts. Restart uvicorn after pulling this commit.
+  `HOST_APPROVE_TOKEN` (different values), `CREDITS_PER_MINUTE`, and the four
+  `IMAGE_*` digest/signature pairs or uvicorn fails at startup. Pytest
+  setdefaults only when they are missing. Do not commit `.env`. Copy the
+  fixture values from `.env.example` for local stub verify; they are not a
+  production key. Optional `STALE_SESSION_SWEEP_INTERVAL_SECONDS` defaults to 15.
+- Enabling `HOST_AGENT_LISTEN_ADDR` now also requires `IMAGE_SIGNING_PUBLIC_KEY`
+  and `IMAGE_LOCAL_DIGEST` (fail fast). Public key only — never a signing
+  secret in the agent or Matchmaker runtime.
+- A long-running Matchmaker on `:8000` from before this phase will not advertise
+  image metadata. Restart uvicorn after pulling this commit, with `IMAGE_*` set.
 - Pause is still local `sharingEnabled=false` (no Matchmaker field). Skipping
   heartbeats looks like disconnect: after 45s the occupied session is
   interrupted and may rematch.
@@ -74,8 +83,10 @@
   **not** cleared when Matchmaker interrupts — there is no teardown HTTP port
   on the agent. Resume after pause can still show in-session if a guest already
   left.
-- Provisioner is stubs only. On macOS, a real Host Agent `POST /v1/provision`
-  is 400 (`UnsupportedHostOs`); Matchmaker then keeps the seeded `kasmUrl`.
+- Provisioner is stubs only. Image verify is the software contract (small
+  fixture bytes in tests). On macOS, a real Host Agent `POST /v1/provision`
+  is 400 (`UnsupportedHostOs`) even with a valid signature; Matchmaker then
+  keeps the seeded `kasmUrl`.
 - Intent text stays in the harness. It is not persisted and is not on the
   session JSON. Keyword mapping is a smallest-slice heuristic (office/code →
   Standard; GPU/game/3D/training → Pro).
@@ -98,12 +109,16 @@
 
 ## Notes for next agent/session
 
-- You are starting **phase 13** (signed base-image pipeline). Read
-  `PHASE_PLAN.md`, this file, and `docs/phase-logs/` (including
-  `phase-12-silence-teardown.md`). Do not start 14–15 without asking (accounts).
+- You are starting **phase 14** only after a human agrees (Tailscale/Headscale
+  account). If they have not, stop. Read `PHASE_PLAN.md`, this file, and
+  `docs/phase-logs/` (including `phase-13-signed-images.md`). Phase 15 also
+  needs a Storj account.
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.
+- Image verify: signed message is the raw 32-byte SHA-256 digest; signature is
+  standard base64 Ed25519; public key is 64 hex chars. Matchmaker does not
+  hold the private key. Tests use a documented fixture seed in Rust only.
 - Metering is `ledger.settle_ended_session` at user end and on silence
   interrupt. Unique `(session_id, party)` prevents double-credit. Rate is
   `CREDITS_PER_MINUTE`.

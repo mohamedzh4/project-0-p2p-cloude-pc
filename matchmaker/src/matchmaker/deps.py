@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from matchmaker.auth import decode_access_token
 from matchmaker.config import get_settings
 from matchmaker.db import get_db
+from matchmaker.images import registry_from_settings
 from matchmaker.matching import HostSelector, RankedHostSelector
 from matchmaker.models import User
 from matchmaker.provision import HostProvisioner, HttpHostProvisioner
@@ -70,6 +71,7 @@ def get_host_provisioner() -> HostProvisioner:
     return HttpHostProvisioner(
         fallback_base_url=settings.host_agent_provision_url,
         bearer_token=settings.host_bootstrap_token,
+        images=registry_from_settings(settings),
     )
 
 

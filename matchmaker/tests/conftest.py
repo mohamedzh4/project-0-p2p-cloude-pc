@@ -16,6 +16,13 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import Session
 
+from tests.image_fixtures import (
+    PRO_DIGEST,
+    PRO_SIGNATURE,
+    STANDARD_DIGEST,
+    STANDARD_SIGNATURE,
+)
+
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
@@ -35,6 +42,15 @@ if not os.environ.get("CREDITS_PER_MINUTE"):
     os.environ["CREDITS_PER_MINUTE"] = "1"
 # Pytest drives reclaim from the request path; do not race TRUNCATE with a loop.
 os.environ["STALE_SESSION_SWEEP_INTERVAL_SECONDS"] = "0"
+# Local-dev image vectors (same as host-agent image::tests). Not a production key.
+if not os.environ.get("IMAGE_STANDARD_DIGEST"):
+    os.environ["IMAGE_STANDARD_DIGEST"] = STANDARD_DIGEST
+if not os.environ.get("IMAGE_STANDARD_SIGNATURE"):
+    os.environ["IMAGE_STANDARD_SIGNATURE"] = STANDARD_SIGNATURE
+if not os.environ.get("IMAGE_PRO_DIGEST"):
+    os.environ["IMAGE_PRO_DIGEST"] = PRO_DIGEST
+if not os.environ.get("IMAGE_PRO_SIGNATURE"):
+    os.environ["IMAGE_PRO_SIGNATURE"] = PRO_SIGNATURE
 # A local .env must not point pytest at a live agent; tests inject a fake or bind one.
 os.environ.pop("HOST_AGENT_PROVISION_URL", None)
 

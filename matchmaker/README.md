@@ -1,8 +1,10 @@
 # Matchmaker
 
 Control-plane service for the Distributed Compute Lab (software MVP after
-execution phase 12): auth, host inventory, heartbeats, session occupancy, and
-an internal credits ledger. Hosts register declared caps and start **pending**;
+execution phase 13): auth, host inventory, heartbeats, session occupancy,
+an internal credits ledger, and signed base-image **metadata** (digest +
+Ed25519 signature per lab tier). Hosts register declared caps and start
+**pending**;
 sessions book a manually approved host whose last heartbeat is fresh (within
 45s). Among eligible hosts, `RankedHostSelector` prefers more declared CPU,
 then more RAM, then host id. Pro bookings also require a dedicated GPU id.
@@ -48,6 +50,8 @@ Rust (`plan_provision`); this service does not name Firecracker/QEMU/WHPX.
   Status is `active`, `ended` (user end), or `interrupted` (heartbeat silence).
 - `GET /v1/hosts/{id}/earnings` (host bootstrap Bearer) returns
   `creditsAccrued` (not paid out)
+- `GET /v1/images/{labTier}` returns the signed SHA-256 digest for `standard`
+  or `pro`. Provision POSTs those fields to the Host Agent. Not a disk CDN.
 
 Matching is isolated in `RankedHostSelector` (`status == approved`, matching
 tier, fresh `last_seen_at`, no active session, then declared CPU/RAM). Pro
@@ -72,9 +76,9 @@ cp .env.example .env
 ```
 
 Edit `.env` and set `POSTGRES_PASSWORD`, `JWT_SECRET`, `HOST_BOOTSTRAP_TOKEN`,
-`HOST_APPROVE_TOKEN`, and `CREDITS_PER_MINUTE` (integer credits per billed
-minute; `0` is allowed). Keep `DATABASE_URL` / `TEST_DATABASE_URL` in sync with
-the password.
+`HOST_APPROVE_TOKEN`, `CREDITS_PER_MINUTE` (integer credits per billed
+minute; `0` is allowed), and the `IMAGE_*` digest/signature pairs. Keep
+`DATABASE_URL` / `TEST_DATABASE_URL` in sync with the password.
 
 ```bash
 docker compose up -d
@@ -85,7 +89,8 @@ on first run if it does not already exist.
 
 You can point `DATABASE_URL` at any Postgres 16 instance instead of Docker; the
 app will not start if `DATABASE_URL`, `JWT_SECRET`, `HOST_BOOTSTRAP_TOKEN`,
-`HOST_APPROVE_TOKEN`, or `CREDITS_PER_MINUTE` is missing.
+`HOST_APPROVE_TOKEN`, `CREDITS_PER_MINUTE`, or the four `IMAGE_*` registry
+variables are missing.
 
 ### 2. Python
 
@@ -161,7 +166,7 @@ Needs the test database in `TEST_DATABASE_URL` (created by compose).
 pytest
 ```
 
-Expect 105 passed on the phase-12 baseline (plus the existing Starlette/httpx
+Expect 113 passed on the phase-13 baseline (plus the existing Starlette/httpx
 deprecation warning).
 
 ## API
@@ -179,6 +184,7 @@ deprecation warning).
 | POST | `/v1/sessions/{id}/end` | User Bearer | owner only; frees the host; meters duration into ledger rows. `status` is `ended` or already-`interrupted`. |
 | GET | `/v1/sessions` | User Bearer | session history + lifetime `creditsDebited`; reclaims silent occupied hosts (may rematch) |
 | GET | `/v1/hosts/{id}/earnings` | Host bootstrap Bearer | `{ hostId, creditsAccrued }` — accrued, not paid out |
+| GET | `/v1/images/{labTier}` | no | `{ labTier, digestSha256, signature, algorithm: ed25519, digestAlgorithm: sha256 }` for `standard` or `pro`. Checksums only; not a disk download. |
 
 JSON is camelCase. Passwords and host tokens are never returned. Host inventory
 does not include `kasmToken`. Host responses include `lastSeenAt` (null until a
@@ -193,8 +199,16 @@ not a payment-processor key. Optional
 background loop only). Invalid or negative values fail fast. Book, history,
 and heartbeat paths still reclaim when the loop is off.
 
+Image registry (required): `IMAGE_STANDARD_DIGEST`, `IMAGE_STANDARD_SIGNATURE`,
+`IMAGE_PRO_DIGEST`, `IMAGE_PRO_SIGNATURE`. Digests are 64-char SHA-256 hex
+(optional `sha256:` prefix). Signatures are standard base64 of a 64-byte
+Ed25519 signature over the **raw 32-byte digest**. `.env.example` holds
+local-dev fixture values (not a production key, not a private key). The Host
+Agent verifies with `IMAGE_SIGNING_PUBLIC_KEY` before a stub boot.
+
 The Host Agent provision listener (not this process) is `POST /v1/provision`
-with the host bootstrap Bearer. It is not fetched from the webview.
+with the host bootstrap Bearer. The JSON body includes `imageDigest` and
+`imageSignature` from this registry. It is not fetched from the webview.
 
 ## Out of scope
 

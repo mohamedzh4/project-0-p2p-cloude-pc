@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from matchmaker.config import Settings
+from tests.image_fixtures import (
+    PRO_DIGEST,
+    PRO_SIGNATURE,
+    STANDARD_DIGEST,
+    STANDARD_SIGNATURE,
+)
 
 
 def _required_env(monkeypatch) -> None:
@@ -8,6 +14,10 @@ def _required_env(monkeypatch) -> None:
     monkeypatch.setenv("JWT_SECRET", "test-jwt-secret")
     monkeypatch.setenv("HOST_BOOTSTRAP_TOKEN", "test-host-bootstrap-token")
     monkeypatch.setenv("HOST_APPROVE_TOKEN", "test-host-approve-token")
+    monkeypatch.setenv("IMAGE_STANDARD_DIGEST", STANDARD_DIGEST)
+    monkeypatch.setenv("IMAGE_STANDARD_SIGNATURE", STANDARD_SIGNATURE)
+    monkeypatch.setenv("IMAGE_PRO_DIGEST", PRO_DIGEST)
+    monkeypatch.setenv("IMAGE_PRO_SIGNATURE", PRO_SIGNATURE)
     monkeypatch.delenv("HOST_AGENT_PROVISION_URL", raising=False)
 
 
@@ -72,3 +82,47 @@ def test_stale_sweep_interval_must_be_a_non_negative_integer(monkeypatch) -> Non
         raise AssertionError("expected STALE_SESSION_SWEEP_INTERVAL_SECONDS to fail fast")
     except RuntimeError as exc:
         assert "STALE_SESSION_SWEEP_INTERVAL_SECONDS must be non-negative" in str(exc)
+
+
+def test_image_digest_and_signature_are_required(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.delenv("IMAGE_STANDARD_DIGEST", raising=False)
+    try:
+        Settings.from_env()
+        raise AssertionError("expected IMAGE_STANDARD_DIGEST to fail fast")
+    except RuntimeError as exc:
+        assert "IMAGE_STANDARD_DIGEST is required" in str(exc)
+
+
+def test_image_digest_must_be_sha256_hex(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.setenv("IMAGE_STANDARD_DIGEST", "not-a-digest")
+    try:
+        Settings.from_env()
+        raise AssertionError("expected IMAGE_STANDARD_DIGEST to fail fast")
+    except RuntimeError as exc:
+        assert "64-character SHA-256 hex digest" in str(exc)
+
+
+def test_image_signature_must_be_64_byte_ed25519(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.setenv("IMAGE_STANDARD_SIGNATURE", "not-base64!!!")
+    try:
+        Settings.from_env()
+        raise AssertionError("expected IMAGE_STANDARD_SIGNATURE to fail fast")
+    except RuntimeError as exc:
+        assert "64-byte Ed25519 signature" in str(exc)
+
+
+def test_image_env_accepts_sha256_prefix(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.setenv("IMAGE_STANDARD_DIGEST", f"sha256:{STANDARD_DIGEST}")
+    settings = Settings.from_env()
+    assert settings.image_standard_digest == STANDARD_DIGEST
+    assert settings.image_standard_signature == STANDARD_SIGNATURE
+    assert settings.image_pro_digest == PRO_DIGEST
+    assert settings.image_pro_signature == PRO_SIGNATURE

@@ -1,6 +1,7 @@
-//! Inbound provision HTTP port. Calls [`crate::provision::plan`]; never starts
-//! a hypervisor. The Matchmaker POSTs here after host selection. The webview
-//! must not `fetch` this URL (CSP allows no remote origins).
+//! Inbound provision HTTP port. Calls [`crate::provision::plan`] **after**
+//! image digest+signature verify; never starts a hypervisor. The Matchmaker
+//! POSTs here after host selection. The webview must not `fetch` this URL
+//! (CSP allows no remote origins).
 
 use std::io::Read;
 use std::net::SocketAddr;
@@ -10,6 +11,7 @@ use thiserror::Error;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::agent_status::Occupancy;
+use crate::image::{trust_from_env, verify_image, ImageError, ImageManifest, ImageTrust};
 use crate::provision::{plan, HostOs, LabTier, ProvisionError, ProvisionRequest};
 
 const PROVISION_PATH: &str = "/v1/provision";
@@ -23,19 +25,31 @@ pub enum ProvisionListenError {
     InvalidAddr,
     #[error("could not bind the provision listener at {addr}: {detail}")]
     Bind { addr: String, detail: String },
+    #[error(transparent)]
+    Image(#[from] ImageError),
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum PlanHttpError {
+    #[error(transparent)]
+    Provision(#[from] ProvisionError),
+    #[error(transparent)]
+    Image(#[from] ImageError),
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ListenConfig {
     pub addr: String,
     token: String,
+    pub image_trust: ImageTrust,
 }
 
 impl ListenConfig {
-    pub fn new(addr: impl Into<String>, token: impl Into<String>) -> Self {
+    pub fn new(addr: impl Into<String>, token: impl Into<String>, image_trust: ImageTrust) -> Self {
         Self {
             addr: addr.into(),
             token: token.into(),
+            image_trust,
         }
     }
 }
@@ -45,6 +59,7 @@ impl std::fmt::Debug for ListenConfig {
         f.debug_struct("ListenConfig")
             .field("addr", &self.addr)
             .field("token", &"[redacted]")
+            .field("image_trust", &self.image_trust)
             .finish()
     }
 }
@@ -54,6 +69,8 @@ impl std::fmt::Debug for ListenConfig {
 pub struct ProvisionHttpRequest {
     pub lab_tier: String,
     pub shared_gpu_id: Option<String>,
+    pub image_digest: String,
+    pub image_signature: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -70,7 +87,8 @@ pub struct HttpProvisionOutput {
     pub body: String,
 }
 
-/// Env: `HOST_AGENT_LISTEN_ADDR=127.0.0.1:7842` (or `off`). Token required if listening.
+/// Env: `HOST_AGENT_LISTEN_ADDR=127.0.0.1:7842` (or `off`). Token and image
+/// trust are required if listening (fail fast; no hardcoded key).
 pub fn listen_config_from_env<F>(
     mut lookup: F,
 ) -> Result<Option<ListenConfig>, ProvisionListenError>
@@ -89,13 +107,19 @@ where
     }
     let token =
         nonempty(lookup("HOST_BOOTSTRAP_TOKEN")).ok_or(ProvisionListenError::MissingToken)?;
-    Ok(Some(ListenConfig::new(addr, token)))
+    let image_trust = trust_from_env(|key| lookup(key))?;
+    Ok(Some(ListenConfig::new(addr, token, image_trust)))
 }
 
+/// Verify the advertised image, then select a stub backend. Never boots on
+/// digest or signature mismatch — including this stub path.
 pub fn plan_http(
     os: HostOs,
     request: &ProvisionHttpRequest,
-) -> Result<ProvisionHttpResponse, ProvisionError> {
+    trust: &ImageTrust,
+) -> Result<ProvisionHttpResponse, PlanHttpError> {
+    let advertised = ImageManifest::parse(&request.image_digest, &request.image_signature)?;
+    verify_image(trust, &advertised, None)?;
     let lab_tier = LabTier::parse(&request.lab_tier)?;
     let planned = plan(
         os,
@@ -118,6 +142,7 @@ pub fn respond(
     body: &[u8],
     expected_token: &str,
     os: HostOs,
+    image_trust: &ImageTrust,
 ) -> HttpProvisionOutput {
     let path = path.split('?').next().unwrap_or(path);
     if !method.eq_ignore_ascii_case("POST") {
@@ -138,7 +163,7 @@ pub fn respond(
         Err(_) => return text(400, "invalid provision request"),
     };
 
-    match plan_http(os, &parsed) {
+    match plan_http(os, &parsed, image_trust) {
         Ok(planned) => {
             let json = serde_json::to_string(&planned).unwrap_or_else(|_| {
                 "{\"connectionUrl\":\"\",\"hypervisorInvoked\":false,\"gpuExclusive\":false}"
@@ -155,6 +180,7 @@ pub fn respond(
 
 /// Same as [`respond`], then records local occupancy on HTTP 200 so the tray
 /// can show in-session. Pause still wins in [`crate::agent_status::presence`].
+#[allow(clippy::too_many_arguments)]
 pub fn respond_and_track(
     method: &str,
     path: &str,
@@ -163,8 +189,17 @@ pub fn respond_and_track(
     expected_token: &str,
     os: HostOs,
     occupancy: &Occupancy,
+    image_trust: &ImageTrust,
 ) -> HttpProvisionOutput {
-    let output = respond(method, path, authorization, body, expected_token, os);
+    let output = respond(
+        method,
+        path,
+        authorization,
+        body,
+        expected_token,
+        os,
+        image_trust,
+    );
     if output.status == 200 {
         occupancy.mark_in_session();
     }
@@ -181,7 +216,7 @@ pub fn serve(
         detail: error.to_string(),
     })?;
     for request in server.incoming_requests() {
-        let _ = dispatch(request, &config.token, os, occupancy);
+        let _ = dispatch(request, &config.token, os, occupancy, &config.image_trust);
     }
     Ok(())
 }
@@ -191,6 +226,7 @@ fn dispatch(
     expected_token: &str,
     os: HostOs,
     occupancy: &Occupancy,
+    image_trust: &ImageTrust,
 ) -> std::io::Result<()> {
     let method = method_name(request.method());
     let url = request.url().to_string();
@@ -209,6 +245,7 @@ fn dispatch(
         expected_token,
         os,
         occupancy,
+        image_trust,
     );
     let mut response =
         Response::from_string(output.body).with_status_code(StatusCode(output.status));
@@ -278,26 +315,43 @@ fn text(status: u16, message: &str) -> HttpProvisionOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::image::tests::{signed_fixture, FIXTURE_PRO_BYTES, FIXTURE_STANDARD_BYTES};
+    use crate::image::Sha256Digest;
     use crate::provision::STUB_CONNECTION_ORIGIN;
     use std::thread;
 
     const TOKEN: &str = "test-host-bootstrap-token";
 
-    fn standard_body() -> Vec<u8> {
+    fn unsigned_standard_body() -> Vec<u8> {
         serde_json::json!({ "labTier": "standard", "sharedGpuId": null })
             .to_string()
             .into_bytes()
     }
 
+    fn signed_standard() -> (ImageTrust, Vec<u8>) {
+        let (trust, manifest) = signed_fixture(FIXTURE_STANDARD_BYTES);
+        let body = serde_json::json!({
+            "labTier": "standard",
+            "sharedGpuId": null,
+            "imageDigest": manifest.digest_hex(),
+            "imageSignature": manifest.signature_base64(),
+        })
+        .to_string()
+        .into_bytes();
+        (trust, body)
+    }
+
     #[test]
     fn linux_standard_returns_stub_url_without_invoking_a_hypervisor() {
+        let (trust, body) = signed_standard();
         let output = respond(
             "POST",
             "/v1/provision",
             Some(&format!("Bearer {TOKEN}")),
-            &standard_body(),
+            &body,
             TOKEN,
             HostOs::Linux,
+            &trust,
         );
         assert_eq!(output.status, 200);
         let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
@@ -311,13 +365,15 @@ mod tests {
 
     #[test]
     fn windows_standard_returns_a_peer_stub_url() {
+        let (trust, body) = signed_standard();
         let output = respond(
             "POST",
             "/v1/provision",
             Some(&format!("Bearer {TOKEN}")),
-            &standard_body(),
+            &body,
             TOKEN,
             HostOs::Windows,
+            &trust,
         );
         assert_eq!(output.status, 200);
         let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
@@ -330,13 +386,15 @@ mod tests {
 
     #[test]
     fn macos_does_not_pretend_to_host() {
+        let (trust, body) = signed_standard();
         let output = respond(
             "POST",
             "/v1/provision",
             Some(&format!("Bearer {TOKEN}")),
-            &standard_body(),
+            &body,
             TOKEN,
             HostOs::MacOs,
+            &trust,
         );
         assert_eq!(output.status, 400);
         assert!(output.body.contains("macOS"));
@@ -345,40 +403,110 @@ mod tests {
     }
 
     #[test]
+    fn missing_image_fields_refuse_the_stub_boot() {
+        let (trust, _) = signed_standard();
+        let output = respond(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &unsigned_standard_body(),
+            TOKEN,
+            HostOs::Linux,
+            &trust,
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("invalid provision request"));
+    }
+
+    #[test]
+    fn mismatched_signature_refuses_the_stub_boot() {
+        let (trust, manifest) = signed_fixture(FIXTURE_STANDARD_BYTES);
+        let other = signed_fixture(FIXTURE_PRO_BYTES);
+        let body = serde_json::json!({
+            "labTier": "standard",
+            "imageDigest": manifest.digest_hex(),
+            "imageSignature": other.1.signature_base64(),
+        })
+        .to_string()
+        .into_bytes();
+        let output = respond(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &trust,
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("signature does not verify"));
+    }
+
+    #[test]
+    fn advertised_digest_must_match_local_standby() {
+        let (trust, _) = signed_fixture(FIXTURE_STANDARD_BYTES);
+        let other = signed_fixture(FIXTURE_PRO_BYTES);
+        let body = serde_json::json!({
+            "labTier": "standard",
+            "imageDigest": other.1.digest_hex(),
+            "imageSignature": other.1.signature_base64(),
+        })
+        .to_string()
+        .into_bytes();
+        let output = respond(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &trust,
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("digest does not match"));
+    }
+
+    #[test]
     fn missing_bearer_is_unauthorized() {
+        let (trust, body) = signed_standard();
         let output = respond(
             "POST",
             "/v1/provision",
             None,
-            &standard_body(),
+            &body,
             TOKEN,
             HostOs::Linux,
+            &trust,
         );
         assert_eq!(output.status, 401);
     }
 
     #[test]
     fn wrong_bearer_is_unauthorized() {
+        let (trust, body) = signed_standard();
         let output = respond(
             "POST",
             "/v1/provision",
             Some("Bearer other-token"),
-            &standard_body(),
+            &body,
             TOKEN,
             HostOs::Linux,
+            &trust,
         );
         assert_eq!(output.status, 401);
     }
 
     #[test]
     fn other_paths_are_not_found() {
+        let (trust, body) = signed_standard();
         let output = respond(
             "POST",
             "/v1/hosts",
             Some(&format!("Bearer {TOKEN}")),
-            &standard_body(),
+            &body,
             TOKEN,
             HostOs::Linux,
+            &trust,
         );
         assert_eq!(output.status, 404);
     }
@@ -405,8 +533,25 @@ mod tests {
     }
 
     #[test]
+    fn listen_config_fails_fast_without_an_image_public_key() {
+        let error = listen_config_from_env(|key| match key {
+            "HOST_AGENT_LISTEN_ADDR" => Some("127.0.0.1:7842".to_string()),
+            "HOST_BOOTSTRAP_TOKEN" => Some(TOKEN.to_string()),
+            "IMAGE_LOCAL_DIGEST" => Some(Sha256Digest::of(FIXTURE_STANDARD_BYTES).to_hex()),
+            _ => None,
+        })
+        .unwrap_err();
+        assert_eq!(
+            error,
+            ProvisionListenError::Image(ImageError::MissingPublicKey)
+        );
+        assert!(error.to_string().contains("IMAGE_SIGNING_PUBLIC_KEY"));
+    }
+
+    #[test]
     fn listen_config_debug_redacts_the_token() {
-        let config = ListenConfig::new("127.0.0.1:7842", TOKEN);
+        let (trust, _) = signed_standard();
+        let config = ListenConfig::new("127.0.0.1:7842", TOKEN, trust);
         let debug = format!("{config:?}");
         assert!(debug.contains("[redacted]"));
         assert!(!debug.contains(TOKEN));
@@ -414,22 +559,25 @@ mod tests {
 
     #[test]
     fn http_bind_round_trip_stays_a_stub() {
+        let (trust, body) = signed_standard();
         let server = Server::http("127.0.0.1:0").unwrap();
         let addr = server
             .server_addr()
             .to_ip()
             .expect("provision test listens on TCP");
+        let trust_for_server = trust.clone();
         thread::spawn(move || {
             let occupancy = Occupancy::new();
             let request = server.recv().unwrap();
-            dispatch(request, TOKEN, HostOs::Linux, &occupancy).unwrap();
+            dispatch(request, TOKEN, HostOs::Linux, &occupancy, &trust_for_server).unwrap();
         });
 
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let agent = ureq::AgentBuilder::new().redirects(0).build();
         let response = agent
             .post(&format!("http://{addr}/v1/provision"))
             .set("Authorization", &format!("Bearer {TOKEN}"))
-            .send_json(serde_json::json!({ "labTier": "standard" }))
+            .send_json(payload)
             .unwrap();
         assert_eq!(response.status(), 200);
         let body: serde_json::Value = response.into_json().unwrap();
@@ -442,15 +590,17 @@ mod tests {
 
     #[test]
     fn successful_provision_marks_local_occupancy() {
+        let (trust, body) = signed_standard();
         let occupancy = Occupancy::new();
         let output = respond_and_track(
             "POST",
             "/v1/provision",
             Some(&format!("Bearer {TOKEN}")),
-            &standard_body(),
+            &body,
             TOKEN,
             HostOs::Linux,
             &occupancy,
+            &trust,
         );
         assert_eq!(output.status, 200);
         assert!(occupancy.is_in_session());
@@ -458,31 +608,61 @@ mod tests {
 
     #[test]
     fn rejected_provision_does_not_mark_occupancy() {
+        let (trust, body) = signed_standard();
         let occupancy = Occupancy::new();
         let output = respond_and_track(
             "POST",
             "/v1/provision",
             None,
-            &standard_body(),
+            &body,
             TOKEN,
             HostOs::Linux,
             &occupancy,
+            &trust,
         );
         assert_eq!(output.status, 401);
         assert!(!occupancy.is_in_session());
     }
 
     #[test]
+    fn image_mismatch_does_not_mark_occupancy() {
+        let (trust, manifest) = signed_fixture(FIXTURE_STANDARD_BYTES);
+        let occupancy = Occupancy::new();
+        let other = signed_fixture(FIXTURE_PRO_BYTES);
+        let body = serde_json::json!({
+            "labTier": "standard",
+            "imageDigest": manifest.digest_hex(),
+            "imageSignature": other.1.signature_base64(),
+        })
+        .to_string()
+        .into_bytes();
+        let output = respond_and_track(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+        );
+        assert_eq!(output.status, 400);
+        assert!(!occupancy.is_in_session());
+    }
+
+    #[test]
     fn macos_reject_does_not_mark_occupancy() {
+        let (trust, body) = signed_standard();
         let occupancy = Occupancy::new();
         let output = respond_and_track(
             "POST",
             "/v1/provision",
             Some(&format!("Bearer {TOKEN}")),
-            &standard_body(),
+            &body,
             TOKEN,
             HostOs::MacOs,
             &occupancy,
+            &trust,
         );
         assert_eq!(output.status, 400);
         assert!(!occupancy.is_in_session());
