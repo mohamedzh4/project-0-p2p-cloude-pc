@@ -1,13 +1,30 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import { isTauriRuntime, previewConfig, previewHardware } from "./preview";
-import type { HardwareSnapshot, HostRegistration, SharingConfig } from "./types";
+import type { AgentStatus, HardwareSnapshot, HostRegistration, SharingConfig, SharingPresence } from "./types";
 
 /** True only when the UI runs in a plain browser during development. */
 export const IS_PREVIEW = import.meta.env.DEV && !isTauriRuntime();
 
 let previewStore: SharingConfig = previewConfig;
 let previewRegistration: HostRegistration | null = null;
+let previewInSession = false;
+
+function previewPresence(sharingEnabled: boolean, inSession: boolean): SharingPresence {
+  if (!sharingEnabled) {
+    return "paused";
+  }
+  return inSession ? "inSession" : "idle";
+}
+
+function previewStatus(): AgentStatus {
+  return {
+    presence: previewPresence(previewStore.sharingEnabled, previewInSession),
+    sharingEnabled: previewStore.sharingEnabled,
+    inSession: previewInSession,
+    earningsNote: "not metered yet",
+  };
+}
 
 export function getHardwareInfo(): Promise<HardwareSnapshot> {
   if (IS_PREVIEW) {
@@ -71,4 +88,29 @@ export function registerDeclaredCaps(): Promise<HostRegistration> {
   }
 
   return invoke<HostRegistration>("register_declared_caps");
+}
+
+export function getAgentStatus(): Promise<AgentStatus> {
+  if (IS_PREVIEW) {
+    return Promise.resolve(previewStatus());
+  }
+
+  return invoke<AgentStatus>("get_agent_status");
+}
+
+/** Immediate pause/resume. Writes `sharingEnabled` in Rust; does not send slider drafts. */
+export function setSharingEnabled(enabled: boolean): Promise<SharingConfig> {
+  if (IS_PREVIEW) {
+    previewStore = { ...previewStore, sharingEnabled: enabled };
+    return Promise.resolve(previewStore);
+  }
+
+  return invoke<SharingConfig>("set_sharing_enabled", { enabled });
+}
+
+/** Browser-only: pretends stub provision already ran so the idle/in-session pill can be checked. */
+export function previewSetInSession(inSession: boolean): void {
+  if (IS_PREVIEW) {
+    previewInSession = inSession;
+  }
 }

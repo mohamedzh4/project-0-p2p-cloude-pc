@@ -1,8 +1,9 @@
 //! Detect the machine, persist local sharing caps, register those caps with
 //! the Matchmaker from Rust, and ping while sharing is on. Provisioning is a
-//! stub HTTP port that calls `plan_provision`; tray mode is still out of
-//! scope.
+//! stub HTTP port that calls `plan_provision`. Tray status and immediate pause
+//! live in Rust; the webview does not call the Matchmaker.
 
+mod agent_status;
 mod commands;
 mod config;
 mod gpu;
@@ -12,6 +13,7 @@ mod matchmaker;
 mod models;
 mod provision;
 mod provision_http;
+mod tray;
 
 #[cfg(test)]
 mod test_support;
@@ -24,8 +26,11 @@ pub use provision::{
     ProvisionRequest,
 };
 
+use std::sync::Arc;
+
 use tauri::Manager;
 
+use crate::agent_status::Occupancy;
 use crate::matchmaker::UreqTransport;
 
 /// Long-lived state shared by every command.
@@ -34,6 +39,9 @@ pub struct AgentState {
     /// agent runs, and re-probing per request would waste the resources the
     /// agent exists to lend out.
     pub hardware: HardwareSnapshot,
+    /// Set when stub provision succeeds. Pause does not clear this; phase 12
+    /// teardown will.
+    pub occupancy: Arc<Occupancy>,
 }
 
 /// Reads this machine's hardware without opening a window, for diagnostics and
@@ -58,6 +66,7 @@ fn spawn_heartbeat_loop(app: &tauri::App) {
             if let Err(error) = tick_heartbeat(&handle) {
                 eprintln!("host-agent heartbeat: {error}");
             }
+            tray::refresh(&handle);
             std::thread::sleep(matchmaker::HEARTBEAT_INTERVAL);
         })
         .expect("could not start host heartbeat thread");
@@ -74,14 +83,17 @@ fn tick_heartbeat(
     matchmaker::heartbeat_from_env(&dir, &UreqTransport)
 }
 
-fn spawn_provision_listener() {
+fn spawn_provision_listener(app: &tauri::App) {
+    let occupancy = app.state::<AgentState>().occupancy.clone();
     match provision_http::listen_config_from_env(|key| std::env::var(key).ok()) {
         Ok(None) => {}
         Ok(Some(config)) => {
             std::thread::Builder::new()
                 .name("host-agent-provision".into())
                 .spawn(move || {
-                    if let Err(error) = provision_http::serve(&config, HostOs::current()) {
+                    if let Err(error) =
+                        provision_http::serve(&config, HostOs::current(), occupancy.as_ref())
+                    {
                         eprintln!("host-agent provision listener: {error}");
                     }
                 })
@@ -93,15 +105,25 @@ fn spawn_provision_listener() {
 
 pub fn run() {
     load_local_env();
-    spawn_provision_listener();
 
     tauri::Builder::default()
         .manage(AgentState {
             hardware: hardware::detect(),
+            occupancy: Arc::new(Occupancy::new()),
         })
         .setup(|app| {
             spawn_heartbeat_loop(app);
+            spawn_provision_listener(app);
+            tray::try_install(app);
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if tray::is_installed() {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_hardware_info,
@@ -110,6 +132,8 @@ pub fn run() {
             commands::get_config_file_path,
             commands::load_host_registration,
             commands::register_declared_caps,
+            commands::get_agent_status,
+            commands::set_sharing_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the host agent");

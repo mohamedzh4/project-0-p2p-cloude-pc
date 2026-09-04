@@ -1,19 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  getAgentStatus,
   getConfigFilePath,
   getHardwareInfo,
   IS_PREVIEW,
   loadHostRegistration,
   loadSharingConfig,
+  previewSetInSession,
   registerDeclaredCaps,
   saveSharingConfig,
+  setSharingEnabled,
 } from "./api";
 import { HardwareCard } from "./components/HardwareCard";
 import { GpuShareField } from "./components/GpuShareField";
 import { ResourceSlider } from "./components/ResourceSlider";
 import { BYTES_PER_GIB, formatCores, formatGib, formatGpuLabel } from "./format";
-import type { HardwareSnapshot, HostRegistration, SharingConfig } from "./types";
+import { presenceLabel, type AgentStatus, type HardwareSnapshot, type HostRegistration, type SharingConfig } from "./types";
 
 type SaveState = { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { kind: "error"; message: string };
 
@@ -23,14 +26,22 @@ export default function App() {
   const [savedConfig, setSavedConfig] = useState<SharingConfig | null>(null);
   const [configPath, setConfigPath] = useState("");
   const [registration, setRegistration] = useState<HostRegistration | null>(null);
+  const [status, setStatus] = useState<AgentStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ kind: "idle" });
+  const [pauseError, setPauseError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
 
-    Promise.all([getHardwareInfo(), loadSharingConfig(), getConfigFilePath(), loadHostRegistration()])
-      .then(([detected, stored, path, storedRegistration]) => {
+    Promise.all([
+      getHardwareInfo(),
+      loadSharingConfig(),
+      getConfigFilePath(),
+      loadHostRegistration(),
+      getAgentStatus(),
+    ])
+      .then(([detected, stored, path, storedRegistration, agentStatus]) => {
         if (!active) {
           return;
         }
@@ -40,6 +51,7 @@ export default function App() {
         setSavedConfig(stored);
         setConfigPath(path);
         setRegistration(storedRegistration);
+        setStatus(agentStatus);
       })
       .catch((error: unknown) => {
         if (active) {
@@ -52,10 +64,31 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    const id = window.setInterval(() => {
+      getAgentStatus()
+        .then((next) => {
+          if (active) {
+            setStatus(next);
+          }
+        })
+        .catch(() => {
+          /* occupancy updates are best-effort; pause still writes to disk */
+        });
+    }, 2000);
+
+    return () => {
+      active = false;
+      window.clearInterval(id);
+    };
+  }, []);
+
   const maxMemoryGib = hardware ? Math.floor(hardware.memory.totalBytes / BYTES_PER_GIB) : 0;
   const sharedMemoryGib = config ? Math.min(Math.round(config.sharedMemoryBytes / BYTES_PER_GIB), maxMemoryGib) : 0;
   const gpus = hardware?.gpus ?? [];
   const primaryGpu = gpus[0] ?? null;
+  const presence = status?.presence ?? (config?.sharingEnabled ? "idle" : "paused");
 
   const isDirty = useMemo(
     () => JSON.stringify(config) !== JSON.stringify(savedConfig),
@@ -65,6 +98,39 @@ export default function App() {
   function update(patch: Partial<SharingConfig>) {
     setConfig((current) => (current ? { ...current, ...patch } : current));
     setSaveState({ kind: "idle" });
+  }
+
+  async function handleSharingEnabled(enabled: boolean) {
+    if (!config) {
+      return;
+    }
+
+    const previous = config.sharingEnabled;
+    setPauseError(null);
+    setConfig((current) => (current ? { ...current, sharingEnabled: enabled } : current));
+    setSavedConfig((current) => (current ? { ...current, sharingEnabled: enabled } : current));
+    setStatus((current) =>
+      current
+        ? {
+            ...current,
+            sharingEnabled: enabled,
+            presence: !enabled ? "paused" : current.inSession ? "inSession" : "idle",
+          }
+        : current,
+    );
+
+    try {
+      const stored = await setSharingEnabled(enabled);
+      setConfig((current) => (current ? { ...current, sharingEnabled: stored.sharingEnabled } : current));
+      setSavedConfig((current) =>
+        current ? { ...current, sharingEnabled: stored.sharingEnabled } : current,
+      );
+      setStatus(await getAgentStatus());
+    } catch (error: unknown) {
+      setConfig((current) => (current ? { ...current, sharingEnabled: previous } : current));
+      setSavedConfig((current) => (current ? { ...current, sharingEnabled: previous } : current));
+      setPauseError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function handleSave() {
@@ -82,6 +148,7 @@ export default function App() {
       try {
         const registered = await registerDeclaredCaps();
         setRegistration(registered);
+        setStatus(await getAgentStatus());
         setSaveState({ kind: "saved" });
       } catch (error: unknown) {
         setSaveState({
@@ -127,18 +194,71 @@ export default function App() {
       <header className="header reveal" data-reveal={0}>
         <div>
           <h1>Host Agent</h1>
-          <p>Choose how much of this machine you can spare while you keep using it. Nothing is shared until you turn sharing on.</p>
+          <p>Choose how much of this machine you can spare while you keep using it. Pause at any time — that stops Matchmaker pings immediately.</p>
         </div>
-        <span className="pill" data-active={config.sharingEnabled}>
-          {config.sharingEnabled ? "Sharing on" : "Sharing paused"}
+        <span className="pill" data-presence={presence === "inSession" ? "in-session" : presence}>
+          {presenceLabel(presence)}
         </span>
       </header>
 
       {IS_PREVIEW ? (
         <p className="notice reveal" data-reveal={1}>
-          Browser preview: these readings are sample data and Matchmaker registration is simulated. The packaged agent reads the real machine and calls the Matchmaker from Rust.
+          Browser preview: these readings are sample data and Matchmaker registration is simulated. The packaged agent reads the real machine, calls the Matchmaker from Rust, and can sit in the system tray.
         </p>
       ) : null}
+
+      <section className="panel reveal" data-reveal={1}>
+        <h2>Status</h2>
+        <div className="status-board">
+          <dl className="status-facts">
+            <dt>Presence</dt>
+            <dd>{presenceLabel(presence)}</dd>
+            <dt>Earnings</dt>
+            <dd>{status?.earningsNote ?? "not metered yet"}</dd>
+          </dl>
+          <button
+            type="button"
+            className={config.sharingEnabled ? "secondary" : undefined}
+            onClick={() => void handleSharingEnabled(!config.sharingEnabled)}
+          >
+            {config.sharingEnabled ? "Pause sharing" : "Resume sharing"}
+          </button>
+        </div>
+        {pauseError ? (
+          <p className="status" data-tone="error">
+            {pauseError}
+          </p>
+        ) : (
+          <p className="hint">
+            Pause writes locally and stops heartbeats on the next tick so this host becomes unselectable
+            after it goes stale. It does not end an active guest session. Earnings are not metered yet.
+          </p>
+        )}
+        {IS_PREVIEW ? (
+          <div className="preview-occupancy">
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                previewSetInSession(true);
+                void getAgentStatus().then(setStatus);
+              }}
+            >
+              Simulate in-session
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                previewSetInSession(false);
+                void getAgentStatus().then(setStatus);
+              }}
+            >
+              Clear simulated session
+            </button>
+          </div>
+        ) : null}
+      </section>
 
       <section className="panel reveal" data-reveal={1}>
         <h2>Detected hardware</h2>
@@ -180,7 +300,7 @@ export default function App() {
             <input
               type="checkbox"
               checked={config.sharingEnabled}
-              onChange={(event) => update({ sharingEnabled: event.target.checked })}
+              onChange={(event) => void handleSharingEnabled(event.target.checked)}
             />
             Make this machine available for sessions while I keep using it
           </label>
@@ -221,7 +341,7 @@ export default function App() {
 
       <section className="panel reveal" data-reveal={3}>
         <div className="actions">
-          <button type="button" onClick={handleSave} disabled={!isDirty || saveState.kind === "saving"}>
+          <button type="button" onClick={() => void handleSave()} disabled={!isDirty || saveState.kind === "saving"}>
             {saveState.kind === "saving"
               ? "Saving…"
               : IS_PREVIEW

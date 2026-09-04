@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager, State};
 
+use crate::agent_status::AgentStatus;
 use crate::config;
 use crate::identity::{self, HostRegistration};
 use crate::matchmaker::{self, UreqTransport};
@@ -39,6 +40,7 @@ pub fn save_sharing_config(
     let clamped = config.clamped_to(&state.hardware);
 
     config::save(&dir, &clamped).map_err(|error| error.to_string())?;
+    crate::tray::refresh(&app);
 
     Ok(clamped)
 }
@@ -53,6 +55,35 @@ pub fn get_config_file_path(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub fn load_host_registration(app: AppHandle) -> Result<Option<HostRegistration>, String> {
     identity::load(&config_dir(&app)?).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_agent_status(
+    app: AppHandle,
+    state: State<'_, AgentState>,
+) -> Result<AgentStatus, String> {
+    let dir = config_dir(&app)?;
+    let config =
+        config::load_for_hardware(&dir, &state.hardware).map_err(|error| error.to_string())?;
+    Ok(AgentStatus::from_flags(
+        config.sharing_enabled,
+        state.occupancy.is_in_session(),
+    ))
+}
+
+/// FR11: write `sharingEnabled` immediately so the heartbeat loop sees pause
+/// on the next tick. Does not take slider drafts from the webview.
+#[tauri::command]
+pub fn set_sharing_enabled(
+    app: AppHandle,
+    state: State<'_, AgentState>,
+    enabled: bool,
+) -> Result<SharingConfig, String> {
+    let dir = config_dir(&app)?;
+    let stored = config::set_sharing_enabled(&dir, &state.hardware, enabled)
+        .map_err(|error| error.to_string())?;
+    crate::tray::refresh(&app);
+    Ok(stored)
 }
 
 /// Reads the on-disk config (not the webview payload), clamps again, then

@@ -49,3 +49,23 @@ export interface HostRegistration {
   shareGpu: boolean;
   sharedGpuId: string | null;
 }
+
+export type SharingPresence = "paused" | "idle" | "inSession";
+
+export interface AgentStatus {
+  presence: SharingPresence;
+  sharingEnabled: boolean;
+  inSession: boolean;
+  earningsNote: string;
+}
+
+export function presenceLabel(presence: SharingPresence): string {
+  switch (presence) {
+    case "paused":
+      return "Paused";
+    case "idle":
+      return "Idle";
+    case "inSession":
+      return "In session";
+  }
+}

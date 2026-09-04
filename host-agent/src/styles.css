@@ -126,10 +126,59 @@ body {
   white-space: nowrap;
 }
 
-.pill[data-active="true"] {
+.pill[data-presence="idle"],
+.pill[data-presence="in-session"] {
   border-color: rgb(var(--accent-rgb) / 0.35);
   background: rgb(var(--accent-rgb) / 0.1);
   color: var(--accent);
+}
+
+.pill[data-presence="in-session"] {
+  background: rgb(var(--accent-rgb) / 0.18);
+}
+
+.status-board {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--gap);
+  flex-wrap: wrap;
+}
+
+.status-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 9ch 1fr;
+  gap: 6px 14px;
+  min-width: min(100%, 280px);
+}
+
+.status-facts dt {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.status-facts dd {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.panel > .hint {
+  margin: 12px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.preview-occupancy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .panel {

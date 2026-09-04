@@ -38,7 +38,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 9: pytest 81, cargo test 77, vitest 26.
+  Counts after phase 10: pytest 81, cargo test 89, vitest 26.
 
 ## Contracts to keep stable
 
@@ -222,8 +222,8 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR7 session history + billing/credits | Missing | Phase 11 |
 | FR8 declare CPU/RAM slice + exclusive GPU | Implemented except availability schedule | Schedule can wait; do not break `sharedGpuId` |
 | FR9 auto mesh join + signed image pull | Missing | Phase 13 (images); phase 14 mesh — **ask human first** |
-| FR10 tray status (idle / in-session / earnings) | Missing | Phase 10 |
-| FR11 pause/stop sharing | Partial: local `sharingEnabled` stops heartbeats | Phase 10 (tray); no Matchmaker pause field yet |
+| FR10 tray status (idle / in-session / earnings) | Window + Rust tray: idle / in-session / paused; earnings placeholder | Phase 11 for metering |
+| FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | no Matchmaker pause field |
 | FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Phase 12 / later telemetry |
 | FR13 match on tier, latency, reliability | Partial: tier fit + declared caps; latency/reliability not measured | Phase 16 |
 | FR14 provision, heartbeat, auto teardown | Partial: mock provision + 45s stale for **new** books; no live hypervisor; silence does not end an active session | Phase 6 stubs; GATE-* for real VMs; phase 12 for teardown |

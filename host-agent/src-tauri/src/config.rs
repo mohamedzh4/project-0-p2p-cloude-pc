@@ -88,6 +88,21 @@ pub fn load_for_hardware(
     })
 }
 
+/// FR11: persist pause/resume immediately. Caps stay whatever is already on
+/// disk (re-clamped). The webview is untrusted, so this does not take a draft
+/// payload — only the boolean.
+pub fn set_sharing_enabled(
+    dir: &Path,
+    hardware: &HardwareSnapshot,
+    enabled: bool,
+) -> Result<SharingConfig, ConfigError> {
+    let mut config = load_for_hardware(dir, hardware)?;
+    config.sharing_enabled = enabled;
+    let clamped = config.clamped_to(hardware);
+    save(dir, &clamped)?;
+    Ok(clamped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +252,36 @@ mod tests {
 
         assert_eq!(loaded.shared_gpu_id.as_deref(), Some("GPU-TEST-4070"));
         assert!(loaded.share_gpu);
+    }
+
+    #[test]
+    fn set_sharing_enabled_only_flips_the_pause_flag() {
+        let dir = tempdir().unwrap();
+        save(dir.path(), &config()).unwrap();
+        let hardware = snapshot(8, 16 * BYTES_PER_GIB, vec![nvidia_gpu()]);
+
+        let paused = set_sharing_enabled(dir.path(), &hardware, false).unwrap();
+        assert!(!paused.sharing_enabled);
+        assert_eq!(paused.shared_logical_cores, 4);
+        assert_eq!(paused.shared_memory_bytes, 8 * BYTES_PER_GIB);
+        assert!(paused.share_gpu);
+        assert_eq!(paused.shared_gpu_id.as_deref(), Some("GPU-TEST-4070"));
+
+        let resumed = set_sharing_enabled(dir.path(), &hardware, true).unwrap();
+        assert!(resumed.sharing_enabled);
+        assert_eq!(resumed.shared_logical_cores, 4);
+        assert_eq!(load(dir.path()).unwrap().unwrap().sharing_enabled, true);
+    }
+
+    #[test]
+    fn set_sharing_enabled_persists_recommended_caps_on_first_run() {
+        let dir = tempdir().unwrap();
+        let hardware = snapshot(8, 16 * BYTES_PER_GIB, vec![nvidia_gpu()]);
+
+        let stored = set_sharing_enabled(dir.path(), &hardware, true).unwrap();
+
+        assert!(stored.sharing_enabled);
+        assert_eq!(stored.shared_logical_cores, 4);
+        assert_eq!(load(dir.path()).unwrap(), Some(stored));
     }
 }

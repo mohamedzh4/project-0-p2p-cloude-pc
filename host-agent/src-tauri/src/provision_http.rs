@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
+use crate::agent_status::Occupancy;
 use crate::provision::{plan, HostOs, LabTier, ProvisionError, ProvisionRequest};
 
 const PROVISION_PATH: &str = "/v1/provision";
@@ -70,7 +71,9 @@ pub struct HttpProvisionOutput {
 }
 
 /// Env: `HOST_AGENT_LISTEN_ADDR=127.0.0.1:7842` (or `off`). Token required if listening.
-pub fn listen_config_from_env<F>(mut lookup: F) -> Result<Option<ListenConfig>, ProvisionListenError>
+pub fn listen_config_from_env<F>(
+    mut lookup: F,
+) -> Result<Option<ListenConfig>, ProvisionListenError>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -84,7 +87,8 @@ where
     if addr.parse::<SocketAddr>().is_err() {
         return Err(ProvisionListenError::InvalidAddr);
     }
-    let token = nonempty(lookup("HOST_BOOTSTRAP_TOKEN")).ok_or(ProvisionListenError::MissingToken)?;
+    let token =
+        nonempty(lookup("HOST_BOOTSTRAP_TOKEN")).ok_or(ProvisionListenError::MissingToken)?;
     Ok(Some(ListenConfig::new(addr, token)))
 }
 
@@ -149,18 +153,45 @@ pub fn respond(
     }
 }
 
-pub fn serve(config: &ListenConfig, os: HostOs) -> Result<(), ProvisionListenError> {
+/// Same as [`respond`], then records local occupancy on HTTP 200 so the tray
+/// can show in-session. Pause still wins in [`crate::agent_status::presence`].
+pub fn respond_and_track(
+    method: &str,
+    path: &str,
+    authorization: Option<&str>,
+    body: &[u8],
+    expected_token: &str,
+    os: HostOs,
+    occupancy: &Occupancy,
+) -> HttpProvisionOutput {
+    let output = respond(method, path, authorization, body, expected_token, os);
+    if output.status == 200 {
+        occupancy.mark_in_session();
+    }
+    output
+}
+
+pub fn serve(
+    config: &ListenConfig,
+    os: HostOs,
+    occupancy: &Occupancy,
+) -> Result<(), ProvisionListenError> {
     let server = Server::http(&config.addr).map_err(|error| ProvisionListenError::Bind {
         addr: config.addr.clone(),
         detail: error.to_string(),
     })?;
     for request in server.incoming_requests() {
-        let _ = dispatch(request, &config.token, os);
+        let _ = dispatch(request, &config.token, os, occupancy);
     }
     Ok(())
 }
 
-fn dispatch(mut request: Request, expected_token: &str, os: HostOs) -> std::io::Result<()> {
+fn dispatch(
+    mut request: Request,
+    expected_token: &str,
+    os: HostOs,
+    occupancy: &Occupancy,
+) -> std::io::Result<()> {
     let method = method_name(request.method());
     let url = request.url().to_string();
     let authorization = header_value(&request, "Authorization");
@@ -170,15 +201,17 @@ fn dispatch(mut request: Request, expected_token: &str, os: HostOs) -> std::io::
         .take(BODY_MAX as u64 + 1)
         .read_to_end(&mut body);
 
-    let output = respond(
+    let output = respond_and_track(
         &method,
         &url,
         authorization.as_deref(),
         &body,
         expected_token,
         os,
+        occupancy,
     );
-    let mut response = Response::from_string(output.body).with_status_code(StatusCode(output.status));
+    let mut response =
+        Response::from_string(output.body).with_status_code(StatusCode(output.status));
     if let Ok(header) = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]) {
         response = response.with_header(header);
     }
@@ -313,7 +346,14 @@ mod tests {
 
     #[test]
     fn missing_bearer_is_unauthorized() {
-        let output = respond("POST", "/v1/provision", None, &standard_body(), TOKEN, HostOs::Linux);
+        let output = respond(
+            "POST",
+            "/v1/provision",
+            None,
+            &standard_body(),
+            TOKEN,
+            HostOs::Linux,
+        );
         assert_eq!(output.status, 401);
     }
 
@@ -380,8 +420,9 @@ mod tests {
             .to_ip()
             .expect("provision test listens on TCP");
         thread::spawn(move || {
+            let occupancy = Occupancy::new();
             let request = server.recv().unwrap();
-            dispatch(request, TOKEN, HostOs::Linux).unwrap();
+            dispatch(request, TOKEN, HostOs::Linux, &occupancy).unwrap();
         });
 
         let agent = ureq::AgentBuilder::new().redirects(0).build();
@@ -397,5 +438,53 @@ mod tests {
             body["connectionUrl"],
             format!("{STUB_CONNECTION_ORIGIN}/firecracker")
         );
+    }
+
+    #[test]
+    fn successful_provision_marks_local_occupancy() {
+        let occupancy = Occupancy::new();
+        let output = respond_and_track(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &standard_body(),
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+        );
+        assert_eq!(output.status, 200);
+        assert!(occupancy.is_in_session());
+    }
+
+    #[test]
+    fn rejected_provision_does_not_mark_occupancy() {
+        let occupancy = Occupancy::new();
+        let output = respond_and_track(
+            "POST",
+            "/v1/provision",
+            None,
+            &standard_body(),
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+        );
+        assert_eq!(output.status, 401);
+        assert!(!occupancy.is_in_session());
+    }
+
+    #[test]
+    fn macos_reject_does_not_mark_occupancy() {
+        let occupancy = Occupancy::new();
+        let output = respond_and_track(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &standard_body(),
+            TOKEN,
+            HostOs::MacOs,
+            &occupancy,
+        );
+        assert_eq!(output.status, 400);
+        assert!(!occupancy.is_in_session());
     }
 }

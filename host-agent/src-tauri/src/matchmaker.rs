@@ -36,7 +36,9 @@ pub enum MatchmakerError {
     MissingEnv(&'static str),
     #[error("MATCHMAKER_URL must be an http or https URL (origin only, no /v1 suffix required)")]
     InvalidUrl,
-    #[error("HOST_AGENT_URL must be an http or https URL (Matchmaker must be able to reach this agent)")]
+    #[error(
+        "HOST_AGENT_URL must be an http or https URL (Matchmaker must be able to reach this agent)"
+    )]
     InvalidAgentUrl,
     #[error("shareGpu is true but sharedGpuId is missing; GPU assignment is exclusive for the session, not a concurrent slice")]
     GpuIdRequired,
@@ -702,11 +704,7 @@ mod tests {
         let hardware = snapshot(8, 16 * BYTES_PER_GIB, vec![nvidia_gpu()]);
         let config = sharing(4, 8 * BYTES_PER_GIB, false, None);
         config::save(dir.path(), &config).unwrap();
-        let transport = RecordingTransport::ok(
-            "11111111-2222-3333-4444-555555555555",
-            false,
-            None,
-        );
+        let transport = RecordingTransport::ok("11111111-2222-3333-4444-555555555555", false, None);
 
         register_declared_caps(
             dir.path(),
@@ -894,6 +892,51 @@ mod tests {
         )
         .unwrap();
         assert_eq!(outcome, HeartbeatOutcome::SkippedSharingPaused);
+    }
+
+    #[test]
+    fn pausing_via_set_sharing_enabled_stops_heartbeats() {
+        let dir = tempdir().unwrap();
+        persist_registered_sharing(dir.path(), true);
+        let hardware = snapshot(8, 16 * BYTES_PER_GIB, Vec::new());
+
+        let stored = config::set_sharing_enabled(dir.path(), &hardware, false).unwrap();
+        assert!(!stored.sharing_enabled);
+        assert_eq!(stored.shared_logical_cores, 4);
+
+        let outcome = heartbeat_tick(
+            dir.path(),
+            |_| panic!("paused hosts do not need env"),
+            &PanicTransport,
+        )
+        .unwrap();
+        assert_eq!(outcome, HeartbeatOutcome::SkippedSharingPaused);
+    }
+
+    #[test]
+    fn resuming_via_set_sharing_enabled_sends_a_heartbeat() {
+        let dir = tempdir().unwrap();
+        persist_registered_sharing(dir.path(), false);
+        let hardware = snapshot(8, 16 * BYTES_PER_GIB, Vec::new());
+        config::set_sharing_enabled(dir.path(), &hardware, true).unwrap();
+        let transport = RecordingTransport {
+            status: 200,
+            body: api_body(
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                4,
+                8 * BYTES_PER_GIB,
+                false,
+                None,
+            ),
+            calls: Mutex::new(Vec::new()),
+        };
+
+        let outcome = heartbeat_tick(dir.path(), heartbeat_lookup, &transport).unwrap();
+        assert_eq!(outcome, HeartbeatOutcome::Sent);
+        assert_eq!(
+            transport.last().url,
+            "http://matchmaker.test/v1/hosts/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/heartbeat"
+        );
     }
 
     #[test]
