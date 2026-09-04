@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-04, after phase 8 (FR2 intent capture)
+# Project Status — last updated: 2026-09-04, after phase 9 (ranking HostSelector swap)
 
 ## Done
 
@@ -6,20 +6,20 @@
   exclusivity, four planes). On `main`.
 - Hardware-gate runbooks (gates remain **OPEN**): `docs/runbooks/gate-fc.md`,
   `docs/runbooks/gate-whpx.md`, `docs/runbooks/gate-pro.md`.
-- Execution phases 1–8 **software** on local `main` (not pushed):
+- Execution phases 1–9 **software** on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats); OS-conditional
     provisioner stubs + opt-in `POST /v1/provision`. No hypervisor invoked.
-    **77/77** `cargo test` (2026-09-04, phase 8 re-run).
+    **77/77** `cargo test` (2026-09-04, phase 9 re-run).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
     `sessions_one_active_per_host` / `sessions_one_active_per_user`;
     `HostSelector.select(db, *, lab_tier) -> Host | None` via
-    `get_host_selector()`; `HostProvisioner` after occupancy commit.
-    **66/66** pytest (2026-09-04, phase 8). Session JSON still has no `intent`
-    field. `POST /v1/sessions` with `labTier: pro` still 409 when inventory is
-    Standard-only.
+    `get_host_selector()` → `RankedHostSelector` (declared CPU then RAM, then
+    host id; Pro requires a dedicated GPU id). `HostProvisioner` after
+    occupancy commit. **81/81** pytest (2026-09-04, phase 9). Session JSON
+    still has no `intent` field. No latency/reliability columns.
   - Web harness: signup/login, FR2 intent prompt → `labTier`, request/end
     session, camelCase types aligned with Matchmaker; `isLiveKasmUrl` rejects
     RFC 2606 `.invalid`. **26/26** vitest; `npm run typecheck` clean.
@@ -28,14 +28,14 @@
 
 - Cahier Phase 1 overall (MVP Standard Lab). Control-plane software loop is in
   place; a usable desktop still needs hardware gates. Next **software** session
-  is execution **phase 9** (ranking `HostSelector` swap). Do not start it in the
-  session that is wrapping phase 8.
+  is execution **phase 10** (Host Agent tray, pause, status). Do not start it
+  in the session that is wrapping phase 9.
 
 ## Up Next
 
-1. Phase 9 — Ranking `HostSelector` swap (FR3, FR12 load/score slice, FR13).
-   See `PHASE_PLAN.md`. Inject via `get_host_selector()`; do not inline ranking
-   in `sessions.py`.
+1. Phase 10 — Host Agent tray, pause, status (FR10–FR11). See `PHASE_PLAN.md`.
+   Keep CSP / `freezePrototype` / narrowed capabilities. Do not `fetch` the
+   Matchmaker from the webview.
 2. Human: GATE-FC / GATE-WHPX / GATE-PRO runbooks when a Linux/Windows host PC
    is available. Agents must not close these.
 
@@ -46,7 +46,7 @@
   `SEED_HOST_KASM_URL` (seed example is still `https://example.invalid/kasm`).
   This Mac cannot host. Closing a gate requires the runbook result file **and**
   an explicit human confirmation.
-- Local `main` is ahead of `origin/main` (planning + phases 1–8). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–9). Nothing was
   pushed this session.
 - Host register/heartbeat/provision auth uses a shared `HOST_BOOTSTRAP_TOKEN`.
   Per-host tokens are not in this MVP.
@@ -63,9 +63,12 @@
 - Intent text stays in the harness. It is not persisted and is not on the
   session JSON. Keyword mapping is a smallest-slice heuristic (office/code →
   Standard; GPU/game/3D/training → Pro).
-- No Tailscale/Headscale, Storj, billing, ranking selector, or tray UI. Guest
-  egress via platform exit nodes is still on paper (legal exposure at public
-  launch — architecture §9 item 5).
+- Ranking uses declared caps on the host row. There is no measured latency or
+  reliability score. A concurrent race on the same top-ranked host is still
+  201+409 (no re-select of the runner-up on IntegrityError; that is phase 12).
+- No Tailscale/Headscale, Storj, billing, or tray UI. Guest egress via
+  platform exit nodes is still on paper (legal exposure at public launch —
+  architecture §9 item 5).
 - Aikido MCP `namespaceStatus: error` this session; not a scan pass. Run
   `/aikido:setup` if a scan is required.
 - Consumer GPU EULAs and ToS/liability still need legal review (architecture
@@ -73,11 +76,11 @@
 
 ## Notes for next agent/session
 
-- You are starting **phase 9** (ranking `HostSelector` swap). Read
+- You are starting **phase 10** (Host Agent tray, pause, status). Read
   `PHASE_PLAN.md`, this file, and `docs/phase-logs/` (including
-  `phase-8-intent-capture.md`).
+  `phase-9-ranked-host-selector.md`).
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
-  import `SingleApprovedHostSelector` in `sessions.py`. Do not put
+  import `RankedHostSelector` in `sessions.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.
 - Stale threshold is **45 seconds**. Agent ping interval is **10 seconds**.
   Never-seen hosts are not selectable.

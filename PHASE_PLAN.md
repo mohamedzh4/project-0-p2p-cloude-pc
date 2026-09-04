@@ -30,14 +30,15 @@ Handoffs for the next agent: `docs/phase-logs/`.
   `sessions_one_active_per_host` / `sessions_one_active_per_user`). No app-level
   locks.
 - Callers use `HostSelector.select(db, *, lab_tier) -> Host | None` via
-  `get_host_selector()`. Do not import `SingleApprovedHostSelector` outside
-  `matching.py` / `deps.py`.
+  `get_host_selector()`. Do not import `RankedHostSelector` (or any concrete
+  selector) in the session router. `SingleApprovedHostSelector` was replaced
+  in phase 9.
 - Do not regress Host Agent CSP, `freezePrototype`, narrowed Tauri capabilities,
   Argon2id, or JWT-from-env.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 8: pytest 66, cargo test 77, vitest 26.
+  Counts after phase 9: pytest 81, cargo test 77, vitest 26.
 
 ## Contracts to keep stable
 
@@ -82,7 +83,7 @@ The Host Agent HTTP port is `POST /v1/provision` (`provision_http.rs`); it calls
 `plan` and returns `{ connectionUrl, hypervisorInvoked, gpuExclusive }`.
 Matchmaker session booking, after `HostSelector.select` and occupancy commit,
 calls a `HostProvisioner` port (`get_host_provisioner()`), not a hypervisor and
-not `SingleApprovedHostSelector`. Origin: `host.agentUrl`, else optional
+not a concrete selector. Origin: `host.agentUrl`, else optional
 `HOST_AGENT_PROVISION_URL`. If that call is unavailable, the seeded/placeholder
 `kasmUrl` on the host row is kept. Do not put Firecracker/QEMU/WHPX names in
 `sessions.py`.
@@ -214,7 +215,7 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | --- | --- | --- |
 | FR1 signup/login | Implemented (Matchmaker + `web/`) | — |
 | FR2 intent prompt → lab tier | Implemented (`web/` harness) | — |
-| FR3 match to most suitable host | Partial: one approved live host | Phase 9 (swap selector) |
+| FR3 match to most suitable host | Partial: `RankedHostSelector` (declared CPU then RAM; Pro GPU id) | Phase 16 when latency can be measured |
 | FR4 encrypted persistent files | Missing | Phase 15 — **ask human first** (Storj account) |
 | FR5 live streamed desktop | Partial: harness opens a URL; no live Kasm | GATE-FC / GATE-WHPX |
 | FR6 logout final save + “saved as of” | Missing | Phase 15 — **ask human first** |
@@ -223,8 +224,8 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR9 auto mesh join + signed image pull | Missing | Phase 13 (images); phase 14 mesh — **ask human first** |
 | FR10 tray status (idle / in-session / earnings) | Missing | Phase 10 |
 | FR11 pause/stop sharing | Partial: local `sharingEnabled` stops heartbeats | Phase 10 (tray); no Matchmaker pause field yet |
-| FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; no load/score | Phase 9 / 12 |
-| FR13 match on tier, latency, reliability | Missing (single approved host) | Phase 9 |
+| FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Phase 12 / later telemetry |
+| FR13 match on tier, latency, reliability | Partial: tier fit + declared caps; latency/reliability not measured | Phase 16 |
 | FR14 provision, heartbeat, auto teardown | Partial: mock provision + 45s stale for **new** books; no live hypervisor; silence does not end an active session | Phase 6 stubs; GATE-* for real VMs; phase 12 for teardown |
 | FR15 re-match on host disconnect | Missing | Phase 12 |
 | FR16 meter usage / payouts | Missing | Phase 11 |
@@ -311,8 +312,8 @@ on logout; “saved as of HH:MM”.
 ### Phase 16 — Pro/Gamer automation (cahier 3)
 
 Wire Pro backends beyond stubs (VFIO / Hyper-V GPU + Sunshine/Moonlight). Blocked
-on **GATE-PRO** for a real session. Latency-aware ranking belongs in the phase 9
-selector, not a second matcher.
+on **GATE-PRO** for a real session. Latency-aware ranking belongs in
+`RankedHostSelector`, not a second matcher.
 
 ## Handoff template
 

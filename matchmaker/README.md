@@ -1,13 +1,16 @@
 # Matchmaker
 
 Control-plane service for the Distributed Compute Lab (software MVP after
-execution phase 8): auth, host inventory, heartbeats, and session occupancy.
+execution phase 9): auth, host inventory, heartbeats, and session occupancy.
 Hosts register declared caps and start **pending**; sessions book a manually
-approved host whose last heartbeat is fresh (within 45s). After occupancy
-commit, the Matchmaker calls a Host Agent **provision port** (HTTP, or a test
-double) for a stub connection URL. Occupancy stays on session indexes, not a
-host flag. FR2 intent mapping lives in `web/`; this API still takes `labTier`.
-No ranking algorithm, no billing, no real hypervisor, no Tailscale.
+approved host whose last heartbeat is fresh (within 45s). Among eligible hosts,
+`RankedHostSelector` prefers more declared CPU, then more RAM, then host id.
+Pro bookings also require a dedicated GPU id. After occupancy commit, the
+Matchmaker calls a Host Agent **provision port** (HTTP, or a test double) for
+a stub connection URL. Occupancy stays on session indexes, not a host flag.
+FR2 intent mapping lives in `web/`; this API still takes `labTier`.
+No measured latency/reliability scores, no billing, no real hypervisor, no
+Tailscale.
 
 How Matchmaker finds the agent: `hosts.agent_url` from inventory, else optional
 `HOST_AGENT_PROVISION_URL`. If neither is usable, the seeded/placeholder
@@ -34,10 +37,12 @@ Rust (`plan_provision`); this service does not name Firecracker/QEMU/WHPX.
   stored on the host row. Session JSON shape is unchanged.
 - `POST /v1/sessions/{id}/end` frees the host so another user can take it
 
-Matching is isolated in `SingleApprovedHostSelector` (`status == approved`,
-fresh `last_seen_at`, and no active session). Staleness lives in the selector
-(and helpers it calls), not the session router. Swap that class later for real
-ranking (latency, reliability, inventory). Provisioning is a `HostProvisioner`
+Matching is isolated in `RankedHostSelector` (`status == approved`, matching
+tier, fresh `last_seen_at`, no active session, then declared CPU/RAM). Pro
+requires `shareGpu` plus a non-empty `sharedGpuId`. Staleness lives in the
+selector (and helpers it calls), not the session router. Latency/reliability
+scores wait until they can be measured — extend this class, do not inline
+ranking in the session router. Provisioning is a `HostProvisioner`
 injected via `get_host_provisioner()` — tests swap a fake; production POSTs
 `/v1/provision` on the agent. Comments in the session router mark where
 Headscale, Storj, and billing will plug in.
@@ -141,7 +146,7 @@ Needs the test database in `TEST_DATABASE_URL` (created by compose).
 pytest
 ```
 
-Expect 66 passed on the phase-7 baseline (plus the existing Starlette/httpx
+Expect 81 passed on the phase-9 baseline (plus the existing Starlette/httpx
 deprecation warning).
 
 ## API
@@ -171,7 +176,7 @@ with the host bootstrap Bearer. It is not fetched from the webview.
 
 ## Out of scope
 
-- Real matching across many hosts
+- Real measured latency / reliability scoring (declared-cap ranking is in)
 - Billing / credits
 - Invoking Firecracker, QEMU, Kasm, Sunshine, or VFIO
 - Interrupting an active session when heartbeats go silent

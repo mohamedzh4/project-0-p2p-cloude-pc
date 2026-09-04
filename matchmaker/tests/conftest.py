@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic import command
@@ -114,6 +115,45 @@ def seeded_host(db: Session) -> Host:
     db.commit()
     db.refresh(host)
     return host
+
+
+_FRESH_NOW = object()
+
+
+@pytest.fixture
+def make_approved_host(db: Session) -> Callable[..., Host]:
+    def _make(
+        *,
+        display_name: str = "ranked-host",
+        lab_tier: str = LabTier.STANDARD,
+        shared_logical_cores: int = 4,
+        shared_memory_bytes: int = 8 * 1024 * 1024 * 1024,
+        share_gpu: bool = False,
+        shared_gpu_id: str | None = None,
+        status: str = HostStatus.APPROVED,
+        last_seen_at: Any = _FRESH_NOW,
+        kasm_url: str = KASM_URL,
+        kasm_token: str | None = KASM_TOKEN,
+    ) -> Host:
+        seen = datetime.now(timezone.utc) if last_seen_at is _FRESH_NOW else last_seen_at
+        host = Host(
+            display_name=display_name,
+            lab_tier=lab_tier,
+            shared_logical_cores=shared_logical_cores,
+            shared_memory_bytes=shared_memory_bytes,
+            share_gpu=share_gpu,
+            shared_gpu_id=shared_gpu_id,
+            kasm_url=kasm_url,
+            kasm_token=kasm_token,
+            status=status,
+            last_seen_at=seen,
+        )
+        db.add(host)
+        db.commit()
+        db.refresh(host)
+        return host
+
+    return _make
 
 
 @pytest.fixture

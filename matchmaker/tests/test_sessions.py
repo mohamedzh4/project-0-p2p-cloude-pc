@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
@@ -9,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from matchmaker.auth import hash_password
-from matchmaker.models import Host, LabSession, SessionStatus, User
+from matchmaker.models import Host, HostStatus, LabSession, LabTier, SessionStatus, User
 from tests.helpers import KASM_TOKEN, KASM_URL, PROVISION_URL, auth_header, heartbeat, signup
 
 
@@ -57,6 +58,7 @@ def test_session_router_does_not_name_backends_or_the_concrete_selector() -> Non
     source = Path(__file__).resolve().parents[1] / "src/matchmaker/routers/sessions.py"
     text = source.read_text(encoding="utf-8")
     assert "SingleApprovedHostSelector" not in text
+    assert "RankedHostSelector" not in text
     assert "Firecracker" not in text
     assert "QEMU" not in text
     assert "WHPX" not in text
@@ -272,3 +274,110 @@ def test_never_seen_approved_host_is_unavailable(
     token = signup(client)["accessToken"]
     response = client.post("/v1/sessions", headers=auth_header(token))
     assert response.status_code == 409
+
+
+def test_two_free_hosts_book_the_higher_ranked(
+    client: TestClient, make_approved_host: Callable[..., Host]
+) -> None:
+    weaker = make_approved_host(display_name="weaker", shared_logical_cores=2)
+    stronger = make_approved_host(display_name="stronger", shared_logical_cores=8)
+
+    token = signup(client)["accessToken"]
+    response = client.post("/v1/sessions", headers=auth_header(token), json={"labTier": "standard"})
+    assert response.status_code == 201
+    assert response.json()["hostId"] == str(stronger.id)
+    assert response.json()["hostId"] != str(weaker.id)
+
+
+def test_second_user_gets_runner_up_when_winner_is_occupied(
+    client: TestClient, make_approved_host: Callable[..., Host]
+) -> None:
+    runner_up = make_approved_host(display_name="runner-up", shared_logical_cores=2)
+    winner = make_approved_host(display_name="winner", shared_logical_cores=8)
+
+    first_token = signup(client, "one@example.com")["accessToken"]
+    second_token = signup(client, "two@example.com")["accessToken"]
+    created = client.post("/v1/sessions", headers=auth_header(first_token))
+    other = client.post("/v1/sessions", headers=auth_header(second_token))
+    assert created.status_code == 201
+    assert created.json()["hostId"] == str(winner.id)
+    assert other.status_code == 201
+    assert other.json()["hostId"] == str(runner_up.id)
+
+
+def test_ranking_excludes_occupied_stale_pending_and_wrong_tier(
+    client: TestClient, make_approved_host: Callable[..., Host]
+) -> None:
+    live = make_approved_host(display_name="live-small", shared_logical_cores=2)
+    occupied = make_approved_host(display_name="occupied-huge", shared_logical_cores=64)
+    occupant = signup(client, "holder@example.com")["accessToken"]
+    held = client.post("/v1/sessions", headers=auth_header(occupant))
+    assert held.status_code == 201
+    assert held.json()["hostId"] == str(occupied.id)
+
+    make_approved_host(
+        display_name="stale-huge",
+        shared_logical_cores=32,
+        last_seen_at=datetime.now(timezone.utc) - timedelta(seconds=60),
+    )
+    make_approved_host(
+        display_name="pending-huge",
+        shared_logical_cores=16,
+        status=HostStatus.PENDING,
+    )
+    make_approved_host(
+        display_name="pro-gpu",
+        lab_tier=LabTier.PRO,
+        shared_logical_cores=16,
+        share_gpu=True,
+        shared_gpu_id="GPU-PRO",
+    )
+
+    token = signup(client, "guest@example.com")["accessToken"]
+    booked = client.post("/v1/sessions", headers=auth_header(token), json={"labTier": "standard"})
+    assert booked.status_code == 201
+    assert booked.json()["hostId"] == str(live.id)
+
+
+def test_concurrent_requests_on_one_ranked_host_are_201_and_409(
+    client: TestClient, make_approved_host: Callable[..., Host]
+) -> None:
+    host = make_approved_host(display_name="only", shared_logical_cores=8)
+    token_a = signup(client, "a@example.com")["accessToken"]
+    token_b = signup(client, "b@example.com")["accessToken"]
+
+    def take(token: str):
+        return client.post("/v1/sessions", headers=auth_header(token))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [future.result() for future in [pool.submit(take, token_a), pool.submit(take, token_b)]]
+
+    codes = sorted(response.status_code for response in results)
+    assert codes == [201, 409], [response.json() for response in results]
+    winners = [response.json() for response in results if response.status_code == 201]
+    assert winners[0]["hostId"] == str(host.id)
+
+
+def test_pro_session_requires_dedicated_gpu_host(
+    client: TestClient, make_approved_host: Callable[..., Host]
+) -> None:
+    make_approved_host(
+        display_name="pro-no-gpu",
+        lab_tier=LabTier.PRO,
+        share_gpu=False,
+        shared_gpu_id=None,
+    )
+    token = signup(client)["accessToken"]
+    missing = client.post("/v1/sessions", headers=auth_header(token), json={"labTier": "pro"})
+    assert missing.status_code == 409
+
+    gpu_host = make_approved_host(
+        display_name="pro-gpu",
+        lab_tier=LabTier.PRO,
+        share_gpu=True,
+        shared_gpu_id="GPU-BOOK",
+    )
+    booked = client.post("/v1/sessions", headers=auth_header(token), json={"labTier": "pro"})
+    assert booked.status_code == 201
+    assert booked.json()["hostId"] == str(gpu_host.id)
+    assert booked.json()["labTier"] == "pro"

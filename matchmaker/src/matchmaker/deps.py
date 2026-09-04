@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from matchmaker.auth import decode_access_token
 from matchmaker.config import get_settings
 from matchmaker.db import get_db
-from matchmaker.matching import HostSelector, SingleApprovedHostSelector
+from matchmaker.matching import HostSelector, RankedHostSelector
 from matchmaker.models import User
 from matchmaker.provision import HostProvisioner, HttpHostProvisioner
 
@@ -62,7 +62,7 @@ def get_current_user(
 
 
 def get_host_selector() -> HostSelector:
-    return SingleApprovedHostSelector()
+    return RankedHostSelector()
 
 
 def get_host_provisioner() -> HostProvisioner:

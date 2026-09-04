@@ -14,6 +14,7 @@ class Base(DeclarativeBase):
 
 class LabTier(StrEnum):
     STANDARD = "standard"
+    PRO = "pro"
 
 
 class HostStatus(StrEnum):

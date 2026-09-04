@@ -92,7 +92,9 @@ def request_session(
         return _session_response(existing, _host_or_error(db, existing.host_id))
 
     # --- later plug-ins (do not implement here) ---
-    # 1. Real matching: swap the HostSelector implementation for latency/reliability ranking.
+    # 1. Matching: ranking lives in the HostSelector implementation (declared
+    #    caps today; latency/reliability when those can be measured). Do not
+    #    inline it here — swap the injected class.
     # 2. Headscale/Tailscale: mint a per-session mesh identity and scoped ACLs.
     # 3. Storj/rclone: mount the user's bucket inside the guest.
     # 4. Billing: start metering once the session is actually ready.
