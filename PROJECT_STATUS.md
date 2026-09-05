@@ -37,24 +37,25 @@
     occupancy commit, now advertising `imageDigest` + `imageSignature` for the
     booked lab tier plus optional `storageEndpoint`. `GET /v1/images/{labTier}`
     is checksum metadata only. `POST /v1/hosts/{id}/mesh/preauth` mints a
-    Headscale preauth key tagged **`tag:host`**. `GET /v1/storage` and session
-    JSON `storage` provision a per-user renterd S3 bucket (`dcl-<uuid>`) and
-    a guest rclone command (keys for the guest, not host disk). Bucket
-    provision runs **before** occupy; renterd failure is 502 without taking
-    the host. Session end meters `startedAt` → `endedAt` into `ledger_entries`.
+    Headscale preauth key tagged **`tag:host`**. `POST`/`GET /v1/storage` and
+    session JSON `storage` issue a per-user renterd S3 bucket (`dcl-<uuid>`)
+    and guest rclone locators (**no access keys** on the wire). `GET` is 404
+    until issued. Bucket provision on book runs **before** occupy; renterd
+    failure is 502 without taking the host. Session end meters `startedAt` →
+    `endedAt` into `ledger_entries`.
     Silence (~45s) on an occupied host marks the session `interrupted`,
     settles the ledger once, and rematches via one `select` (same renterd
     bucket follows the user; rematch does not call renterd). Required env
     includes `CREDITS_PER_MINUTE`, the four `IMAGE_*` pairs, `HEADSCALE_*`,
-    and `RENTERD_S3_ENDPOINT` / `RENTERD_S3_ACCESS_KEY` /
-    `RENTERD_S3_SECRET_KEY`. **143/143** pytest (2026-09-05). Session JSON
+    and `S3_ENDPOINT` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` (or `RENTERD_S3_*`
+    aliases). **145/145** pytest (2026-09-05). Session JSON
     still has no `intent` field. No latency/reliability columns. No
     Matchmaker pause field. No payment processor. No image CDN / multi-GB
     download. No live Sia network in unit tests.
   - Web harness: signup/login, FR2 intent prompt → `labTier`, request/end
     session, session history + credits debited, optional storage locator
     (endpoint/bucket only — not secrets). **27/27** vitest;
-    `npm run typecheck` not re-run this session beyond vitest.
+    `npm run typecheck` passed.
   - Headscale compose in `headscale/` (image `0.26.1`) with checked-in
     default-deny `acl.hujson`. renterd compose in `renterd/` (image
     `ghcr.io/siafoundation/renterd:2.9.3`, zen testnet, S3 on loopback
@@ -88,8 +89,8 @@
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
 - Existing local `matchmaker/.env` must have `HOST_BOOTSTRAP_TOKEN` and
   `HOST_APPROVE_TOKEN` (different values), `CREDITS_PER_MINUTE`, the four
-  `IMAGE_*` digest/signature pairs, `HEADSCALE_*`, and `RENTERD_S3_*` or
-  uvicorn fails at startup. Pytest overwrites Headscale and renterd env to
+  `IMAGE_*` digest/signature pairs, `HEADSCALE_*`, and `S3_*` (or
+  `RENTERD_S3_*` aliases) or uvicorn fails at startup. Pytest overwrites Headscale and renterd env to
   `.invalid` so a local `.env` cannot point tests at a live instance. Do not
   commit `.env`, renterd seeds, or `renterd/data/`. Copy fixture `IMAGE_*`
   values from `.env.example` for local stub verify; they are not a production
@@ -99,7 +100,7 @@
   secret in the agent or Matchmaker runtime.
 - A long-running Matchmaker on `:8000` from before this phase will not mint
   `tag:host` keys or return `storage` on sessions. Restart uvicorn after
-  pulling this commit, with `HEADSCALE_*` and `RENTERD_S3_*` set. Recreate
+  pulling this commit, with `HEADSCALE_*` and `S3_*` (or `RENTERD_S3_*`) set. Recreate
   Headscale so `acl.hujson` is mounted. Apply `alembic upgrade head`
   (`0006_user_storage_bucket`).
 - Pause is still local `sharingEnabled=false` (no Matchmaker field). Skipping

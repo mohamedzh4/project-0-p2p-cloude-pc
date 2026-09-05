@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Protocol
 from urllib.parse import quote, urlparse
+from xml.etree import ElementTree
 import hmac
 
 import httpx
@@ -29,17 +30,16 @@ class RenterdError(Exception):
 
 @dataclass(frozen=True)
 class StorageGrant:
-    """Guest-side S3 mount grant. `secret_access_key` is a secret — do not log it."""
+    """Guest-side S3 locators. Credentials stay in Matchmaker/guest env, not JSON."""
 
     endpoint: str
     region: str
     bucket: str
     prefix: str
     path_style: bool
-    access_key_id: str
-    secret_access_key: str
     mount_inside_guest: bool
     rclone: str
+    objects: tuple[str, ...]
 
 
 class RenterdClient(Protocol):
@@ -48,6 +48,9 @@ class RenterdClient(Protocol):
 
     def put_object(self, bucket: str, key: str, body: bytes) -> None:
         """PUT an object (path-style)."""
+
+    def list_object_keys(self, bucket: str, prefix: str) -> list[str]:
+        """List object keys under `prefix` (path-style ListObjectsV2)."""
 
 
 class HttpRenterdClient:
@@ -87,6 +90,14 @@ class HttpRenterdClient:
         status, _ = self._request("PUT", path, body=body)
         if status not in {200, 201, 204}:
             raise RenterdError(f"renterd rejected PutObject (HTTP {status})")
+
+    def list_object_keys(self, bucket: str, prefix: str) -> list[str]:
+        query = _canonical_query({"list-type": "2", "prefix": prefix})
+        path = f"/{quote(bucket, safe='-')}?{query}"
+        status, body = self._request("GET", path, body=b"")
+        if status != 200:
+            raise RenterdError(f"renterd rejected ListObjectsV2 (HTTP {status})")
+        return _keys_from_list_xml(body)
 
     def _request(self, method: str, path: str, *, body: bytes) -> tuple[int, bytes]:
         url = f"{self._endpoint}{path}"
@@ -180,3 +191,22 @@ def _signing_key(secret_key: str, date_stamp: str, region: str) -> bytes:
     region_key = hmac.new(date_key, region.encode("utf-8"), sha256).digest()
     service_key = hmac.new(region_key, _SERVICE.encode("utf-8"), sha256).digest()
     return hmac.new(service_key, b"aws4_request", sha256).digest()
+
+
+def _canonical_query(params: dict[str, str]) -> str:
+    return "&".join(
+        f"{quote(key, safe='-_.~')}={quote(value, safe='-_.~')}"
+        for key, value in sorted(params.items())
+    )
+
+
+def _keys_from_list_xml(body: bytes) -> list[str]:
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError as exc:
+        raise RenterdError("renterd ListObjectsV2 XML was invalid") from exc
+    keys: list[str] = []
+    for element in root.iter():
+        if element.tag.endswith("Key") and element.text:
+            keys.append(element.text)
+    return keys

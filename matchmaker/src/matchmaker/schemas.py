@@ -41,13 +41,29 @@ class SessionRequest(CamelModel):
     lab_tier: str = Field(default="standard", min_length=1, max_length=32)
 
 
+class MoonlightInfo(CamelModel):
+    """Moonlight (GameStream) client hint. Stub host until GATE-PRO."""
+
+    host: str
+    app: str = "Desktop"
+
+
 class ConnectionInfo(CamelModel):
-    kasm_url: str
+    """Desktop locator. Standard is Kasm; Pro is Sunshine — not Kasm renamed."""
+
+    streamer: str
+    kasm_url: str | None = None
     kasm_token: str | None = None
+    sunshine_url: str | None = None
+    moonlight: MoonlightInfo | None = None
+    gpu_exclusive: bool = False
 
 
 class StorageMountInfo(CamelModel):
-    """S3 grant for rclone **inside the guest**. Not for the volunteer host OS."""
+    """S3 locators for rclone **inside the guest**. Not for the volunteer host OS.
+
+    Access keys stay in Matchmaker/guest env (`S3_*` / `RENTERD_S3_*`).
+    """
 
     provider: str = "renterd"
     endpoint: str
@@ -55,10 +71,9 @@ class StorageMountInfo(CamelModel):
     bucket: str
     prefix: str
     path_style: bool = True
-    access_key_id: str
-    secret_access_key: str
     mount_inside_guest: bool = True
     rclone: str
+    objects: list[str] = Field(default_factory=list)
 
 
 class SessionResponse(CamelModel):

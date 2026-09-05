@@ -51,9 +51,9 @@ docker compose run --rm -it renterd config
 When asked for a seed, type `seed` to generate one. Paste the phrase into
 `renterd/.env` as `RENTERD_SEED=...`. Set `RENTERD_API_PASSWORD` to a long
 random password. Pick an S3 access key (≥16 characters) and secret
-(≥16 characters) and put them in `RENTERD_S3_ACCESS_KEY` /
-`RENTERD_S3_SECRET_KEY` in `matchmaker/.env` (and optionally commented in
-`renterd/.env` as a reminder). Never commit those files.
+(≥16 characters) and put them in `S3_ACCESS_KEY` / `S3_SECRET_KEY` in
+`matchmaker/.env` (`RENTERD_S3_*` aliases also work). Optionally comment
+the same pair in `renterd/.env` as a reminder. Never commit those files.
 
 ## 2. Start compose
 
@@ -82,11 +82,11 @@ pair you chose in §1:
 ```bash
 cd renterd
 set -a && source .env && set +a
-# ACCESS and SECRET are the Matchmaker RENTERD_S3_* values, not the API password.
+# ACCESS and SECRET are the Matchmaker S3_* (or RENTERD_S3_*) values, not the API password.
 curl -sS -u ":${RENTERD_API_PASSWORD}" \
   -X PUT "http://127.0.0.1:9980/api/bus/settings/s3" \
   -H "Content-Type: application/json" \
-  -d "{\"v4Keypairs\":{\"${RENTERD_S3_ACCESS_KEY}\":\"${RENTERD_S3_SECRET_KEY}\"}}"
+  -d "{\"v4Keypairs\":{\"${S3_ACCESS_KEY:-$RENTERD_S3_ACCESS_KEY}\":\"${S3_SECRET_KEY:-$RENTERD_S3_SECRET_KEY}\"}}"
 ```
 
 Confirm:
@@ -104,15 +104,16 @@ chat logs or git.
 In `matchmaker/.env` (never commit the real file):
 
 ```
-RENTERD_S3_ENDPOINT=http://127.0.0.1:8081
-RENTERD_S3_GUEST_ENDPOINT=
-RENTERD_S3_REGION=us-east-1
-RENTERD_S3_ACCESS_KEY=<same as renterd bus v4 keypair>
-RENTERD_S3_SECRET_KEY=<same as renterd bus v4 keypair>
+S3_ENDPOINT=http://127.0.0.1:8081
+S3_GUEST_ENDPOINT=
+S3_REGION=us-east-1
+S3_ACCESS_KEY=<same as renterd bus v4 keypair>
+S3_SECRET_KEY=<same as renterd bus v4 keypair>
 ```
 
-Leave `RENTERD_S3_GUEST_ENDPOINT` empty to reuse `RENTERD_S3_ENDPOINT`. For
-guests on other machines, set it to a mesh-reachable URL of this S3 port
+Leave `S3_GUEST_ENDPOINT` empty to reuse `S3_ENDPOINT`. `RENTERD_S3_*`
+aliases work if you already named the vars that way. For
+guests on other machines, set `S3_GUEST_ENDPOINT` to a mesh-reachable URL of this S3 port
 (not the volunteer’s LAN IP). Restart uvicorn after editing.
 
 Apply the storage migration if this Matchmaker database predates phase 15:
@@ -127,21 +128,27 @@ alembic upgrade head
 With Matchmaker up and a logged-in user JWT:
 
 ```bash
+curl -sS -X POST -H "Authorization: Bearer ${USER_JWT}" http://127.0.0.1:8000/v1/storage
 curl -sS -H "Authorization: Bearer ${USER_JWT}" http://127.0.0.1:8000/v1/storage
 ```
 
 Expect `provider: renterd`, `mountInsideGuest: true`, a `dcl-<uuid>` bucket,
-and an `rclone` command that does **not** embed the secret. Booking
-`POST /v1/sessions` returns the same object under `storage`. If renterd S3
-is down, that book returns 502 and does **not** occupy a host.
+an `objects` list (includes `files/.dcl/provisioned` after first issue), and
+an `rclone` command that does **not** embed the secret. There is no
+`accessKeyId` / `secretAccessKey` on the JSON. Booking `POST /v1/sessions`
+returns the same locators under `storage`. `GET /v1/storage` is 404 until
+issue or a book. If renterd S3 is down, that book returns 502 and does **not**
+occupy a host.
 
 ## 6. Guest rclone (inside the VM only)
 
-On the **guest**, not the volunteer host:
+On the **guest**, not the volunteer host. Inject keys from operator env
+(`S3_ACCESS_KEY` / `S3_SECRET_KEY` in Matchmaker `.env`) — they are not
+returned by the API:
 
 ```bash
-export AWS_ACCESS_KEY_ID=<accessKeyId from the grant>
-export AWS_SECRET_ACCESS_KEY=<secretAccessKey from the grant>
+export AWS_ACCESS_KEY_ID=<S3_ACCESS_KEY from matchmaker/.env>
+export AWS_SECRET_ACCESS_KEY=<S3_SECRET_KEY from matchmaker/.env>
 # use the rclone field from GET /v1/storage (or session.storage.rclone)
 rclone mount :s3:<bucket>/files /home/user/Persistent \
   --s3-provider Other \
@@ -164,7 +171,7 @@ Record (no secrets):
 
 1. `docker compose ps` shows `renterd` healthy.
 2. `GET /api/bus/settings/s3` lists your access key (not the secret).
-3. Matchmaker `GET /v1/storage` returns 200 with `mountInsideGuest: true`.
+3. Matchmaker `POST` then `GET /v1/storage` returns 201/200 with `mountInsideGuest: true` and no access keys.
 4. Confirm the Host Agent was **not** asked to rclone (provision body has
    `storageEndpoint` only).
 

@@ -55,17 +55,43 @@ def _require_sha256_hex(name: str) -> str:
     return raw.lower()
 
 
-def _renterd_s3_region() -> str:
-    raw = os.environ.get("RENTERD_S3_REGION", "us-east-1").strip()
-    return raw if raw else "us-east-1"
+def _first_nonempty_env(*names: str) -> str | None:
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is not None and raw.strip() != "":
+            return name
+    return None
+
+
+def _require_first_http_url(*names: str) -> str:
+    chosen = _first_nonempty_env(*names)
+    if chosen is None:
+        raise RuntimeError(f"{names[0]} is required")
+    return _require_http_url(chosen)
+
+
+def _require_first_s3_key(*names: str) -> str:
+    chosen = _first_nonempty_env(*names)
+    if chosen is None:
+        raise RuntimeError(f"{names[0]} is required")
+    return _require_s3_key(chosen)
+
+
+def _s3_region() -> str:
+    chosen = _first_nonempty_env("S3_REGION", "RENTERD_S3_REGION")
+    if chosen is None:
+        return "us-east-1"
+    return os.environ[chosen].strip()
 
 
 def _guest_s3_endpoint() -> str:
     """URL guests rclone against. Defaults to the Matchmaker→renterd endpoint."""
-    guest = _optional_http_url("RENTERD_S3_GUEST_ENDPOINT")
-    if guest is not None:
-        return guest
-    return _require_http_url("RENTERD_S3_ENDPOINT")
+    guest_name = _first_nonempty_env("S3_GUEST_ENDPOINT", "RENTERD_S3_GUEST_ENDPOINT")
+    if guest_name is not None:
+        guest = _optional_http_url(guest_name)
+        if guest is not None:
+            return guest
+    return _require_first_http_url("S3_ENDPOINT", "RENTERD_S3_ENDPOINT")
 
 
 def _require_s3_key(name: str) -> str:
@@ -166,11 +192,17 @@ class Settings:
             headscale_api_key=_require_env("HEADSCALE_API_KEY"),
             headscale_user=_require_env("HEADSCALE_USER"),
             headscale_login_server=_require_http_url("HEADSCALE_LOGIN_SERVER"),
-            renterd_s3_endpoint=_require_http_url("RENTERD_S3_ENDPOINT"),
+            renterd_s3_endpoint=_require_first_http_url(
+                "S3_ENDPOINT", "RENTERD_S3_ENDPOINT"
+            ),
             renterd_s3_guest_endpoint=_guest_s3_endpoint(),
-            renterd_s3_region=_renterd_s3_region(),
-            renterd_s3_access_key=_require_s3_key("RENTERD_S3_ACCESS_KEY"),
-            renterd_s3_secret_key=_require_s3_key("RENTERD_S3_SECRET_KEY"),
+            renterd_s3_region=_s3_region(),
+            renterd_s3_access_key=_require_first_s3_key(
+                "S3_ACCESS_KEY", "RENTERD_S3_ACCESS_KEY"
+            ),
+            renterd_s3_secret_key=_require_first_s3_key(
+                "S3_SECRET_KEY", "RENTERD_S3_SECRET_KEY"
+            ),
         )
 
 

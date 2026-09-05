@@ -38,7 +38,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 15: pytest TBD, cargo test TBD, vitest 27.
+  Counts after phase 15: pytest 145, cargo test 121, vitest 27.
 
 ## Contracts to keep stable
 
@@ -59,10 +59,10 @@ Matchmaker JSON is camelCase.
 | GET | `/v1/hosts/{id}/earnings` | Host bootstrap Bearer; `{ hostId, creditsAccrued }` |
 | GET | `/v1/images/{labTier}` | Public; `{ labTier, digestSha256, signature, algorithm, digestAlgorithm }`. `standard` / `pro` only. Not a blob download. |
 | POST | `/v1/hosts/{id}/mesh/preauth` | Host bootstrap Bearer; `{ loginServer, preauthKey, user, reusable, ephemeral, expiresAt }`. Headscale mint tagged `tag:host`. Not a per-session identity. |
-| POST | `/v1/storage` | User Bearer; issue per-user renterd prefix. 201 new, 200 existing. `{ provider, bucket, prefix, endpoint, region, objects }`. No access keys. |
+| POST | `/v1/storage` | User Bearer; issue per-user renterd bucket `dcl-<uuid>` + prefix `files/`. 201 new, 200 existing. `{ provider, bucket, prefix, endpoint, region, objects, pathStyle, mountInsideGuest, rclone }`. No access keys. |
 | GET | `/v1/storage` | User Bearer; 200 same shape or 404 if never issued. |
 
-Session response: `{ sessionId, hostId, labTier, startedAt, connection: { kasmUrl, kasmToken } }`.
+Session response: `{ sessionId, hostId, labTier, startedAt, connection: { kasmUrl, kasmToken }, storage }` where `storage` is the same locator object as `/v1/storage` (no access keys).
 End response: `{ sessionId, status, endedAt, creditsDebited }`.
 History `status` is `active` | `ended` (user end) | `interrupted` (heartbeat
 silence). End response is `ended` or already-`interrupted`. Occupied silent

@@ -146,7 +146,7 @@ This is the one component with no off-the-shelf substitute. Most of the engineer
 (human decision). rclone still belongs inside the guest; session keys must
 not live on the volunteer host’s bare disk. See `docs/runbooks/renterd.md`.
 
-- **At rest:** Storj's client-side sharding and encryption mean no single storage node — or the host — ever holds plaintext
+- **At rest:** Implemented path is renterd S3 (not Storj). Architecture still requires client-side encryption so no volunteer host disk holds plaintext; rclone/VFS stays inside the guest.
 - **In transit:** every hop (user↔VM, VM↔storage) rides inside the WireGuard tunnel Tailscale already provides
 - **On the host's physical disk:** rclone's local VFS cache should itself sit on an encrypted virtual disk (a LUKS-backed file on Linux, a BitLocker-backed file on Windows, or simply the guest's own virtual block device) — so even the temporary cached fragments on the host's real drive are unreadable without a session key that lives only inside the guest and is discarded at teardown
 - **Sync cadence:** the 5–10 minute background timer is a floor, not the only trigger. Pair it with an immediate flush on explicit "save" and on logout, so the worst-case data-loss window shrinks from "up to 10 minutes" to "since your last save"

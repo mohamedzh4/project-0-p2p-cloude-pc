@@ -91,8 +91,8 @@ Edit `.env` and set `POSTGRES_PASSWORD`, `JWT_SECRET`, `HOST_BOOTSTRAP_TOKEN`,
 `HOST_APPROVE_TOKEN`, `CREDITS_PER_MINUTE` (integer credits per billed
 minute; `0` is allowed), the `IMAGE_*` digest/signature pairs, the
 Headscale vars (`HEADSCALE_URL`, `HEADSCALE_LOGIN_SERVER`, `HEADSCALE_API_KEY`,
-`HEADSCALE_USER`), and the renterd S3 vars (`RENTERD_S3_ENDPOINT`,
-`RENTERD_S3_ACCESS_KEY`, `RENTERD_S3_SECRET_KEY`). Keep `DATABASE_URL` /
+`HEADSCALE_USER`), and the renterd S3 vars (`S3_ENDPOINT` / `S3_ACCESS_KEY` /
+`S3_SECRET_KEY`, or the `RENTERD_S3_*` aliases). Keep `DATABASE_URL` /
 `TEST_DATABASE_URL` in sync with the password. See `docs/runbooks/headscale.md`
 and `docs/runbooks/renterd.md`.
 
@@ -106,8 +106,8 @@ on first run if it does not already exist.
 You can point `DATABASE_URL` at any Postgres 16 instance instead of Docker; the
 app will not start if `DATABASE_URL`, `JWT_SECRET`, `HOST_BOOTSTRAP_TOKEN`,
 `HOST_APPROVE_TOKEN`, `CREDITS_PER_MINUTE`, the four `IMAGE_*` registry
-variables, the four `HEADSCALE_*` mesh variables, or the `RENTERD_S3_*`
-variables are missing.
+variables, the four `HEADSCALE_*` mesh variables, or the `S3_*` /
+`RENTERD_S3_*` storage variables are missing.
 
 ### 2. Python
 
@@ -232,12 +232,13 @@ Headscale (required at Matchmaker startup): `HEADSCALE_URL` (API origin),
 Compose for Headscale lives in `headscale/` — see `docs/runbooks/headscale.md`.
 Pytest never calls a live Headscale.
 
-renterd S3 (required at Matchmaker startup): `RENTERD_S3_ENDPOINT` (Matchmaker
-→ renterd S3 origin; lab default `http://127.0.0.1:8081`), `RENTERD_S3_ACCESS_KEY`,
-`RENTERD_S3_SECRET_KEY` (≥16 chars). Optional `RENTERD_S3_REGION` (default
-`us-east-1`) and `RENTERD_S3_GUEST_ENDPOINT` (what guests rclone; defaults to
-`RENTERD_S3_ENDPOINT`). Compose lives in `renterd/` — see
+renterd S3 (required at Matchmaker startup): `S3_ENDPOINT` (Matchmaker
+→ renterd S3 origin; lab default `http://127.0.0.1:8081`), `S3_ACCESS_KEY`,
+`S3_SECRET_KEY` (≥16 chars). `RENTERD_S3_*` aliases are accepted.
+Optional `S3_REGION` (default `us-east-1`) and `S3_GUEST_ENDPOINT` (what
+guests rclone; defaults to `S3_ENDPOINT`). Compose lives in `renterd/` — see
 `docs/runbooks/renterd.md`. Pytest never calls a live renterd or Sia network.
+JSON locators never include access keys.
 
 The Host Agent provision listener (not this process) is `POST /v1/provision`
 with the host bootstrap Bearer. The JSON body includes `imageDigest` and

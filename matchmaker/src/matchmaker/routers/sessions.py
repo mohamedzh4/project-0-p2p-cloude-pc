@@ -26,10 +26,9 @@ from matchmaker.ledger import (
 )
 from matchmaker.matching import HostSelector
 from matchmaker.models import Host, LabSession, SessionStatus, User
-from matchmaker.provision import HostProvisioner, provision_booked_host
+from matchmaker.provision import HostProvisioner, provision_booked_host, session_connection
 from matchmaker.renterd import RenterdClient, RenterdError, StorageGrant
 from matchmaker.schemas import (
-    ConnectionInfo,
     EndSessionResponse,
     SessionHistoryItem,
     SessionHistoryResponse,
@@ -50,7 +49,7 @@ def _session_response(
         host_id=host.id,
         lab_tier=host.lab_tier,
         started_at=session.started_at,
-        connection=ConnectionInfo(kasm_url=host.kasm_url, kasm_token=host.kasm_token),
+        connection=session_connection(host),
         storage=mount_info_from_grant(grant),
     )
 
@@ -64,8 +63,6 @@ def _ensure_storage(db: Session, user: User, renterd: RenterdClient) -> StorageG
             renterd,
             endpoint=settings.renterd_s3_guest_endpoint,
             region=settings.renterd_s3_region,
-            access_key_id=settings.renterd_s3_access_key,
-            secret_access_key=settings.renterd_s3_secret_key,
         )
     except RenterdError as exc:
         raise HTTPException(

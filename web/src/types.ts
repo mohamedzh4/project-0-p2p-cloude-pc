@@ -21,10 +21,9 @@ export interface StorageMountInfo {
   bucket: string;
   prefix: string;
   pathStyle: boolean;
-  accessKeyId: string;
-  secretAccessKey: string;
   mountInsideGuest: boolean;
   rclone: string;
+  objects: string[];
 }
 
 export interface SessionResponse {

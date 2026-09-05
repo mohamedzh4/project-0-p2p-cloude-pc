@@ -27,6 +27,11 @@ def _required_env(monkeypatch) -> None:
     monkeypatch.setenv("RENTERD_S3_SECRET_KEY", "test-renterd-secret-key")
     monkeypatch.setenv("RENTERD_S3_REGION", "us-east-1")
     monkeypatch.delenv("RENTERD_S3_GUEST_ENDPOINT", raising=False)
+    monkeypatch.delenv("S3_ENDPOINT", raising=False)
+    monkeypatch.delenv("S3_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("S3_SECRET_KEY", raising=False)
+    monkeypatch.delenv("S3_REGION", raising=False)
+    monkeypatch.delenv("S3_GUEST_ENDPOINT", raising=False)
     monkeypatch.delenv("HOST_AGENT_PROVISION_URL", raising=False)
 
 
@@ -183,9 +188,28 @@ def test_renterd_s3_env_is_required(monkeypatch) -> None:
     monkeypatch.delenv("RENTERD_S3_SECRET_KEY", raising=False)
     try:
         Settings.from_env()
-        raise AssertionError("expected RENTERD_S3_SECRET_KEY to fail fast")
+        raise AssertionError("expected S3_SECRET_KEY to fail fast")
     except RuntimeError as exc:
-        assert "RENTERD_S3_SECRET_KEY is required" in str(exc)
+        assert "S3_SECRET_KEY is required" in str(exc)
+
+
+def test_s3_primary_env_names_are_accepted(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.delenv("RENTERD_S3_ENDPOINT", raising=False)
+    monkeypatch.delenv("RENTERD_S3_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("RENTERD_S3_SECRET_KEY", raising=False)
+    monkeypatch.delenv("RENTERD_S3_REGION", raising=False)
+    monkeypatch.setenv("S3_ENDPOINT", "http://s3.primary.test.invalid")
+    monkeypatch.setenv("S3_ACCESS_KEY", "primary-access-key")
+    monkeypatch.setenv("S3_SECRET_KEY", "primary-secret-key")
+    monkeypatch.setenv("S3_REGION", "eu-west-1")
+    settings = Settings.from_env()
+    assert settings.renterd_s3_endpoint == "http://s3.primary.test.invalid"
+    assert settings.renterd_s3_region == "eu-west-1"
+    dumped = repr(settings)
+    assert "primary-secret-key" not in dumped
+    assert "primary-access-key" not in dumped
 
 
 def test_renterd_s3_endpoint_must_be_http(monkeypatch) -> None:

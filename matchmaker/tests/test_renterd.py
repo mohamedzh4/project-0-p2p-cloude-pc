@@ -50,6 +50,38 @@ def test_http_client_create_bucket_and_put_object_against_mocked_s3() -> None:
     assert put_req.content == b"ok\n"
 
 
+def test_http_client_lists_prefix_against_mocked_s3() -> None:
+    recorded: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append(request)
+        if request.method == "GET" and request.url.params.get("list-type") == "2":
+            xml = (
+                '<?xml version="1.0"?>'
+                "<ListBucketResult>"
+                "<Contents><Key>files/.dcl/provisioned</Key></Contents>"
+                "</ListBucketResult>"
+            )
+            return httpx.Response(200, content=xml.encode("utf-8"))
+        return httpx.Response(500, text="unexpected")
+
+    client = HttpRenterdClient(
+        endpoint="http://renterd.test.invalid",
+        access_key=TEST_ACCESS,
+        secret_key=TEST_SECRET,
+        region="us-east-1",
+        transport=httpx.MockTransport(handler),
+    )
+    keys = client.list_object_keys("dcl-test-bucket", "files/")
+    assert keys == ["files/.dcl/provisioned"]
+    assert len(recorded) == 1
+    assert recorded[0].method == "GET"
+    assert recorded[0].url.path == "/dcl-test-bucket"
+    assert recorded[0].url.params["prefix"] == "files/"
+    assert recorded[0].headers["Authorization"].startswith("AWS4-HMAC-SHA256 ")
+    assert TEST_SECRET not in recorded[0].headers["Authorization"]
+
+
 def test_http_client_treats_409_as_existing_bucket() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(409)
@@ -100,8 +132,9 @@ def test_session_book_provisions_a_per_user_bucket(
     assert storage["pathStyle"] is True
     assert storage["mountInsideGuest"] is True
     assert storage["endpoint"] == "http://renterd.test.invalid"
-    assert storage["accessKeyId"] == TEST_ACCESS
-    assert storage["secretAccessKey"] == TEST_SECRET
+    assert "accessKeyId" not in storage
+    assert "secretAccessKey" not in storage
+    assert PROVISION_MARKER_KEY in storage["objects"]
     assert "rclone mount" in storage["rclone"]
     assert "--s3-force-path-style" in storage["rclone"]
     assert "--s3-env-auth" in storage["rclone"]
@@ -133,21 +166,31 @@ def test_get_storage_requires_auth_and_returns_guest_grant(
     token = signup(client)["accessToken"]
     me = client.get("/v1/auth/me", headers=auth_header(token))
     user_id = UUID(me.json()["id"])
+    unseen = client.get("/v1/storage", headers=auth_header(token))
+    assert unseen.status_code == 404
+
+    created = client.post("/v1/storage", headers=auth_header(token))
+    assert created.status_code == 201
+    reused = client.post("/v1/storage", headers=auth_header(token))
+    assert reused.status_code == 200
     response = client.get("/v1/storage", headers=auth_header(token))
     assert response.status_code == 200
     body = response.json()
     assert body["bucket"] == bucket_name_for_user(user_id)
     assert body["mountInsideGuest"] is True
+    assert PROVISION_MARKER_KEY in body["objects"]
+    assert "accessKeyId" not in body
+    assert "secretAccessKey" not in body
     assert fake_renterd.created == [body["bucket"]]
 
 
 def test_two_users_get_distinct_buckets(client: TestClient, fake_renterd: FakeRenterd) -> None:
     first = signup(client, "one@example.com")["accessToken"]
     second = signup(client, "two@example.com")["accessToken"]
-    one = client.get("/v1/storage", headers=auth_header(first))
-    two = client.get("/v1/storage", headers=auth_header(second))
-    assert one.status_code == 200
-    assert two.status_code == 200
+    one = client.post("/v1/storage", headers=auth_header(first))
+    two = client.post("/v1/storage", headers=auth_header(second))
+    assert one.status_code == 201
+    assert two.status_code == 201
     assert one.json()["bucket"] != two.json()["bucket"]
     assert one.json()["prefix"] == two.json()["prefix"] == "files/"
     assert len(fake_renterd.created) == 2

@@ -1,7 +1,7 @@
 """Per-user renterd bucket records and guest rclone instructions.
 
 Mount belongs **inside the guest**. Never rclone on the volunteer host OS.
-Keys in the session JSON are for the guest process, not for host-disk cache.
+S3 credentials stay in Matchmaker/guest env — never on session JSON.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from matchmaker.renterd import RenterdClient, StorageGrant
 from matchmaker.schemas import StorageMountInfo
 
 USER_FILES_PREFIX = "files/"
-PROVISION_MARKER_KEY = ".dcl/provisioned"
+PROVISION_MARKER_KEY = f"{USER_FILES_PREFIX}.dcl/provisioned"
 
 
 def bucket_name_for_user(user_id: UUID) -> str:
@@ -46,21 +46,40 @@ def storage_grant(
     user_id: UUID,
     endpoint: str,
     region: str,
-    access_key_id: str,
-    secret_access_key: str,
     prefix: str = USER_FILES_PREFIX,
+    objects: tuple[str, ...] = (),
+    bucket: str | None = None,
 ) -> StorageGrant:
-    bucket = bucket_name_for_user(user_id)
+    resolved_bucket = bucket if bucket is not None else bucket_name_for_user(user_id)
     return StorageGrant(
         endpoint=endpoint,
         region=region,
-        bucket=bucket,
+        bucket=resolved_bucket,
         prefix=prefix,
         path_style=True,
-        access_key_id=access_key_id,
-        secret_access_key=secret_access_key,
         mount_inside_guest=True,
-        rclone=guest_rclone_mount_command(bucket=bucket, prefix=prefix, endpoint=endpoint),
+        rclone=guest_rclone_mount_command(
+            bucket=resolved_bucket, prefix=prefix, endpoint=endpoint
+        ),
+        objects=objects,
+    )
+
+
+def grant_from_row(
+    row: UserStorage,
+    renterd: RenterdClient,
+    *,
+    endpoint: str,
+    region: str,
+) -> StorageGrant:
+    objects = tuple(renterd.list_object_keys(row.bucket, row.prefix))
+    return storage_grant(
+        user_id=row.user_id,
+        endpoint=endpoint,
+        region=region,
+        prefix=row.prefix,
+        objects=objects,
+        bucket=row.bucket,
     )
 
 
@@ -71,16 +90,12 @@ def ensure_user_storage(
     *,
     endpoint: str,
     region: str,
-    access_key_id: str,
-    secret_access_key: str,
 ) -> StorageGrant:
     """Create the per-user bucket if needed and record it. Idempotent."""
     grant = storage_grant(
         user_id=user.id,
         endpoint=endpoint,
         region=region,
-        access_key_id=access_key_id,
-        secret_access_key=secret_access_key,
     )
     created = renterd.create_bucket(grant.bucket)
     if created:
@@ -100,7 +115,15 @@ def ensure_user_storage(
         row.bucket = grant.bucket
         row.prefix = grant.prefix
     db.commit()
-    return grant
+    objects = tuple(renterd.list_object_keys(grant.bucket, grant.prefix))
+    return storage_grant(
+        user_id=user.id,
+        endpoint=endpoint,
+        region=region,
+        objects=objects,
+        bucket=grant.bucket,
+        prefix=grant.prefix,
+    )
 
 
 def mount_info_from_grant(grant: StorageGrant) -> StorageMountInfo:
@@ -111,8 +134,7 @@ def mount_info_from_grant(grant: StorageGrant) -> StorageMountInfo:
         bucket=grant.bucket,
         prefix=grant.prefix,
         path_style=grant.path_style,
-        access_key_id=grant.access_key_id,
-        secret_access_key=grant.secret_access_key,
         mount_inside_guest=grant.mount_inside_guest,
         rclone=grant.rclone,
+        objects=list(grant.objects),
     )
