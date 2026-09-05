@@ -1,9 +1,9 @@
-# Local-lab Headscale config (image 0.26.1). Not a production ACL policy.
+# Local-lab Headscale config (image 0.26.1).
 # server_url must match HEADSCALE_SERVER_URL in .env (compose fail-closed).
-# policy.path is empty on purpose: default-deny / per-session tags are NOT
-# automated (architecture §9 item 4). Do not treat this file as production ACLs.
+# policy.path loads headscale/acl.hujson (default-deny). See that file for the
+# exact grants. Host mint tags tag:host; identities are not per-session.
 # Embedded DERP is off (needs TLS). Clients use Tailscale's public DERP map.
-# Exit nodes: see docs/runbooks/headscale.md — not configured here.
+# Platform exit node: docs/runbooks/headscale.md — not auto-applied to guests.
 
 server_url: http://127.0.0.1:8080
 listen_addr: 0.0.0.0:8080
@@ -50,8 +50,7 @@ log:
 
 policy:
   mode: file
-  # Empty: Headscale allows all nodes to talk. That is not default-deny.
-  path: ""
+  path: /etc/headscale/acl.hujson
 
 dns:
   magic_dns: true

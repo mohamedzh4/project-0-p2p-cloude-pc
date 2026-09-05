@@ -13,8 +13,9 @@ the machine. Guests get an on-demand virtual desktop in a browser. Stack so far:
 Host Agent (Rust + Tauri v2 + React), Matchmaker (Python FastAPI + Postgres),
 and a thin React harness in `web/`. Manual Firecracker/QEMU+Kasm validation is
 **not evidenced in this repo** (open hardware gate). Self-hosted Headscale
-mint+join is in (no Tailscale SaaS); default-deny ACLs and exit-node egress
-are not. No Storj. Matchmaker-triggered provision is a **stub** (fake/HTTP
+mint+join is in (no Tailscale SaaS); default-deny ACL file + host `tag:host`
+are in; per-session identities are not; exit-node guest egress is a runbook,
+not auto-applied. No Storj. Matchmaker-triggered provision is a **stub** (fake/HTTP
 port, no hypervisor).
 
 Remote: [github.com/mohamedzh4/project-0-p2p-cloude-pc](https://github.com/mohamedzh4/project-0-p2p-cloude-pc)
@@ -26,12 +27,12 @@ From `docs/cahier-des-charges-distributed-compute-lab.md` §11.
 | Phase | Content | Status |
 | --- | --- | --- |
 | 0 | Manual Firecracker+Kasm (Linux) and QEMU+WHPX+Kasm (Windows), plus one Pro GPU session | **Open / not evidenced in-repo** — runbooks in `docs/runbooks/`; no human result file, guest image, or live Kasm URL. This Mac cannot host. |
-| 1 | MVP Standard Lab, hosts approved manually | **Software loop done (execution phases 1–14):** Matchmaker auth + host inventory (pending → manual approve) + occupancy + heartbeats + internal credits ledger + silence teardown/`interrupted` + rematch via `HostSelector`; Host Agent Rust client; OS-conditional **provisioner stubs** + Matchmaker `HostProvisioner`; signed image digest+Ed25519 verify before stub boot; self-hosted Headscale preauth mint + Rust join (no Tailscale SaaS); `web/` harness with FR2 intent → `labTier` and session history; `RankedHostSelector` on declared caps; Host Agent tray + immediate pause + idle/in-session/paused + accrued earnings. **Not a usable desktop** until GATE-FC / GATE-WHPX. Next software: execution phase 15 (Storj — ask human first). |
+| 1 | MVP Standard Lab, hosts approved manually | **Software loop done (execution phases 1–14c):** Matchmaker auth + host inventory (pending → manual approve) + occupancy + heartbeats + internal credits ledger + silence teardown/`interrupted` + rematch via `HostSelector`; Host Agent Rust client; OS-conditional **provisioner stubs** + Matchmaker `HostProvisioner`; signed image digest+Ed25519 verify before stub boot; self-hosted Headscale preauth mint + Rust join (no Tailscale SaaS) + default-deny ACL file + host `tag:host`; `web/` harness with FR2 intent → `labTier` and session history; `RankedHostSelector` on declared caps; Host Agent tray + immediate pause + idle/in-session/paused + accrued earnings. **Not a usable desktop** until GATE-FC / GATE-WHPX. Next software: execution phase 15 (Storj — ask human first). |
 | 2 | Full Matchmaker (matching + billing), automated host onboarding | Matching is `RankedHostSelector` (declared caps; no latency/reliability telemetry). Internal ledger meters sessions; payouts deferred. Silence teardown + rematch in. Plan phases 13–15. |
 | 3 | Pro/Gamer Lab, latency-aware matching | Stubs only (Pro backends in `provision.rs`). Phase 16 + GATE-PRO. |
-| 4 | Hardening: image signing, exit nodes, reliability scoring | Image signing software contract in (phase 13). Mesh mint+join in (phase 14). Exit nodes / default-deny ACLs: **14c**. |
+| 4 | Hardening: image signing, exit nodes, reliability scoring | Image signing software contract in (phase 13). Mesh mint+join in (phase 14). Default-deny ACL file + host tags in (14c). Exit-node **runbook exists, not auto-applied**. |
 
-**FR1** signup/login: done. **FR2** intent → `labTier`: harness mapping in `web/src/intent.ts`; Pro 409 if no GPU host. **FR3** most suitable host: `RankedHostSelector` (declared CPU then RAM; Pro dedicated GPU id). **FR8** CPU/RAM + optional dedicated GPU: done except schedule. **FR5** streamed desktop: harness can open a URL; seed is still `example.invalid`. **FR7** session history + internal credits. **FR10** idle / in-session / paused + accrued earnings (not paid out); Rust tray. **FR11** immediate pause stops heartbeats (after 45s Matchmaker treats that as silence). **FR12** inventory: caps + heartbeats; ranking uses declared caps; no load/reliability score. **FR13** partial (tier + caps; no latency). **FR14**: mock provision + heartbeats + occupied silence teardown; no live hypervisor. **FR16** metering done; payouts deferred. **FR15** software rematch on silence (no Storj follow-along). **FR9** image verify + host mesh mint/join in (no default-deny ACLs, no exit-node egress). **FR4, FR6** not implemented (see `PHASE_PLAN.md` phases 15–16).
+**FR1** signup/login: done. **FR2** intent → `labTier`: harness mapping in `web/src/intent.ts`; Pro 409 if no GPU host. **FR3** most suitable host: `RankedHostSelector` (declared CPU then RAM; Pro dedicated GPU id). **FR8** CPU/RAM + optional dedicated GPU: done except schedule. **FR5** streamed desktop: harness can open a URL; seed is still `example.invalid`. **FR7** session history + internal credits. **FR10** idle / in-session / paused + accrued earnings (not paid out); Rust tray. **FR11** immediate pause stops heartbeats (after 45s Matchmaker treats that as silence). **FR12** inventory: caps + heartbeats; ranking uses declared caps; no load/reliability score. **FR13** partial (tier + caps; no latency). **FR14**: mock provision + heartbeats + occupied silence teardown; no live hypervisor. **FR16** metering done; payouts deferred. **FR15** software rematch on silence (no Storj follow-along). **FR9** image verify + host mesh mint/join + default-deny ACL file (host-tagged, not per-session; exit-node runbook not auto-applied). **FR4, FR6** not implemented (see `PHASE_PLAN.md` phases 15–16).
 
 ## Layout
 
@@ -53,7 +54,7 @@ project-0-p2p-cloude-pc/
 | Pro needs VFIO / Hyper-V GPU assignment — Firecracker has no PCI passthrough | Forced; Pro stubs exist, no live passthrough |
 | Hosts keep using the PC. CPU/RAM is a concurrent slice; GPU is exclusive for the session | Adopted in Host Agent UI + config v2 |
 | Kasm runs *inside* the guest; the hypervisor is the isolation boundary | Adopted on paper; not evidenced in-repo |
-| Guest egress via platform exit nodes, never the host's home IP | On paper (**14c**). Mesh join does not advertise exit-node on volunteers |
+| Guest egress via platform exit nodes, never the host's home IP | Runbook + opt-in compose overlay exist (**not auto-applied**). Mesh join does not advertise exit-node on volunteers |
 | Host Agent is Rust + Tauri v2; detection/config take plain paths, no Tauri types | Implemented |
 | Webview is untrusted — config writes are re-clamped in Rust | Implemented |
 | Matchmaker is a separate FastAPI+SQLAlchemy+Alembic+Postgres service | Implemented |
@@ -76,21 +77,20 @@ Live in workspace `../.cursor/`.
 
 ## Current state
 
-**Host Agent (`host-agent/`)** — CPU/RAM via `sysinfo` 0.39; NVIDIA GPUs via `nvml-wrapper` (Windows/Linux), graceful empty list otherwise. UI: sliders + GPU picker with exclusivity copy, status board (paused / idle / in-session), immediate pause, accrued earnings from Matchmaker. Config v2 (`sharedGpuId`); v1 files still load. Rust Matchmaker client registers clamped caps, pings every 10s while sharing is on, and GETs host earnings. After register, optional Headscale join from Rust (`HEADSCALE_LOGIN_SERVER` + minted preauth; never `--advertise-exit-node`). Provisioner stubs: `plan_provision` (Linux→Firecracker, Windows→QEMU+WHPX, Pro→VFIO/Hyper-V GPU, macOS unsupported) plus opt-in `POST /v1/provision` that verifies SHA-256 + Ed25519 **before** the stub plan. Rust tray (no JS tray APIs). Image public key from env when listening. **116** Rust tests; clippy `-D warnings`. Not built: default-deny ACLs, exit-node egress, real VMs, payouts.
+**Host Agent (`host-agent/`)** — CPU/RAM via `sysinfo` 0.39; NVIDIA GPUs via `nvml-wrapper` (Windows/Linux), graceful empty list otherwise. UI: sliders + GPU picker with exclusivity copy, status board (paused / idle / in-session), immediate pause, accrued earnings from Matchmaker. Config v2 (`sharedGpuId`); v1 files still load. Rust Matchmaker client registers clamped caps, pings every 10s while sharing is on, and GETs host earnings. After register, optional Headscale join from Rust (`HEADSCALE_LOGIN_SERVER` + minted preauth tagged `tag:host`; never `--advertise-exit-node`). Provisioner stubs: `plan_provision` (Linux→Firecracker, Windows→QEMU+WHPX, Pro→VFIO/Hyper-V GPU, macOS unsupported) plus opt-in `POST /v1/provision` that verifies SHA-256 + Ed25519 **before** the stub plan. Rust tray (no JS tray APIs). Image public key from env when listening. **116** Rust tests; clippy `-D warnings`. Not built: per-session mesh identities, auto `--exit-node` on guests, real VMs, payouts.
 
-**Matchmaker (`matchmaker/`)** — signup/login/me; host register/update (pending) + manual approve; heartbeats stamp `lastSeenAt`; `RankedHostSelector` ranks declared CPU/RAM among approved live free hosts (Pro needs a dedicated GPU id); `POST /v1/sessions` calls a `HostProvisioner` after occupancy commit (body includes image digest+signature); silent occupied hosts are `interrupted` and rematched via `HostSelector.select`; session end writes `ledger_entries`; `GET /v1/images/{labTier}` advertises checksums; `POST /v1/hosts/{id}/mesh/preauth` mints a Headscale key; camelCase JSON; Alembic through `0004_ledger_entries`. **123 pytest cases**. `SEED_HOST_KASM_URL` is still the `example.invalid` placeholder. Needs `HOST_BOOTSTRAP_TOKEN`, `HOST_APPROVE_TOKEN`, `CREDITS_PER_MINUTE`, `IMAGE_*`, and `HEADSCALE_*` in `.env` to boot.
+**Matchmaker (`matchmaker/`)** — signup/login/me; host register/update (pending) + manual approve; heartbeats stamp `lastSeenAt`; `RankedHostSelector` ranks declared CPU/RAM among approved live free hosts (Pro needs a dedicated GPU id); `POST /v1/sessions` calls a `HostProvisioner` after occupancy commit (body includes image digest+signature); silent occupied hosts are `interrupted` and rematched via `HostSelector.select`; session end writes `ledger_entries`; `GET /v1/images/{labTier}` advertises checksums; `POST /v1/hosts/{id}/mesh/preauth` mints a Headscale key tagged `tag:host`; camelCase JSON; Alembic through `0004_ledger_entries`. Pytest count is in `PROJECT_STATUS.md`. `SEED_HOST_KASM_URL` is still the `example.invalid` placeholder. Needs `HOST_BOOTSTRAP_TOKEN`, `HOST_APPROVE_TOKEN`, `CREDITS_PER_MINUTE`, `IMAGE_*`, and `HEADSCALE_*` in `.env` to boot.
 
 **Web (`web/`)** — Vite/React harness: signup/login, FR2 intent prompt mapped to `labTier`, request session, open a **live** Kasm URL in a new tab (not `.invalid`), end session, session history + credits. Needs `VITE_MATCHMAKER_URL`. Vitest for intent mapping, placeholders, 200/409 mapping, API errors, history GET. Not a payment UI, not an iframe.
 
 **Known issues**
 
-- Matchmaker / `web/` / Host Agent are on local `main` after execution phase 14; `origin/main` is still behind until someone pushes.
+- Matchmaker / `web/` / Host Agent are on local `main` after execution phase 14c; `origin/main` is still behind until someone pushes.
 - Aikido MCP still fails here; use `security-reviewer` until `/aikido:setup` works.
 - This Mac cannot *host*: Firecracker is Linux/KVM; Windows Standard needs QEMU+WHPX. Follow `docs/runbooks/` — do not mark GATE-* closed without a human result.
 
 ## Recent changes
 
-Execution phase 14 added self-hosted Headscale (compose + Matchmaker preauth
-mint + Host Agent Rust join). No Tailscale SaaS. Default-deny ACLs and
-platform exit-node egress remain 14c. Hardware gates remain open.
-See `PROJECT_STATUS.md`.
+Execution phase 14c added a default-deny Headscale ACL file, host `tag:host`
+on mint, and a platform exit-node runbook (not auto-applied). No Tailscale
+SaaS. Hardware gates remain open. See `PROJECT_STATUS.md`.

@@ -2,15 +2,13 @@
 
 Architecture §7: the agent asks the Matchmaker for a pre-auth key and joins
 the mesh. This module talks to a self-hosted Headscale instance (no Tailscale
-SaaS). It does not implement default-deny ACLs or per-session tagged identities
-(architecture §9 item 4). It does not route guest egress through platform exit
-nodes (architecture §9 item 5) — see docs/runbooks/headscale.md.
+SaaS).
 
-TODO(phase-14c): mint ephemeral per-session identities with default-deny ACLs
-allowing only VM ↔ Matchmaker and VM ↔ assigned user.
-
-TODO(phase-14c): do not treat volunteer Host Agent nodes as exit nodes. Guest
-internet must egress via platform-operated exit nodes, never the host ISP.
+Phase 14c: mint tags the Host Agent node `tag:host` so the checked-in
+default-deny policy (`headscale/acl.hujson`) can distinguish volunteers from
+guests. That is **host-tagged**, not a per-session identity. Guest/user tags
+are not minted here. Volunteer hosts must not become exit nodes — see
+`docs/runbooks/headscale.md`.
 """
 
 from __future__ import annotations
@@ -24,6 +22,10 @@ import httpx
 _PREAUTH_PATH = "/api/v1/preauthkey"
 _REQUEST_TIMEOUT_SECONDS = 10.0
 _PREAUTH_TTL = timedelta(hours=1)
+
+# Applied on every Host Agent preauth. Not ephemeral, not per-session.
+HOST_ACL_TAG = "tag:host"
+HOST_ACL_TAGS = (HOST_ACL_TAG,)
 
 
 class HeadscaleError(Exception):
@@ -40,11 +42,12 @@ class PreauthGrant:
     reusable: bool
     ephemeral: bool
     expires_at: str
+    acl_tags: tuple[str, ...]
 
 
 class HeadscaleClient(Protocol):
     def mint_host_preauth(self) -> PreauthGrant:
-        """Create a single-use preauth key for a Host Agent node."""
+        """Create a single-use preauth key for a Host Agent node (`tag:host`)."""
 
 
 class HttpHeadscaleClient:
@@ -74,11 +77,15 @@ class HttpHeadscaleClient:
         expiration = (datetime.now(timezone.utc) + _PREAUTH_TTL).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
+        tags = list(HOST_ACL_TAGS)
         payload = {
             "user": self._user,
             "reusable": False,
             "ephemeral": False,
             "expiration": expiration,
+            # Headscale 0.26 proto JSON uses acl_tags; later HTTP uses aclTags.
+            "aclTags": tags,
+            "acl_tags": tags,
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -114,6 +121,7 @@ class HttpHeadscaleClient:
             reusable=False,
             ephemeral=False,
             expires_at=expiration,
+            acl_tags=HOST_ACL_TAGS,
         )
 
 

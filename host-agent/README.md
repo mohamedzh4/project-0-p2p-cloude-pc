@@ -30,7 +30,7 @@ does these things and nothing else:
 9. If `HEADSCALE_LOGIN_SERVER` is set, after register it POSTs
    `/v1/hosts/{id}/mesh/preauth` from Rust and runs `tailscale up` with that
    login-server (env) and the minted key. Missing mesh/Matchmaker env fails
-   fast. It does **not** pass `--advertise-exit-node`. Omit the login-server
+   fast. It does **not** pass `--advertise-exit-node` or `--exit-node`. Omit the login-server
    env to skip join (UI-only).
 10. Sits in the system tray (Rust, not the webview): tooltip, pause/resume,
     open window, quit. Closing the window hides to the tray when the icon
@@ -248,8 +248,9 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 ## Notes for the next phase
 
 - Phase 15 is Storj + rclone in the guest. **Ask the human first** — it needs
-  a Storj account. Hardware gates stay OPEN. Mesh join is the software
-  contract; default-deny ACLs and platform exit-node egress are **14c** (see
+  a Storj account. Hardware gates stay OPEN. Mesh join is host-tagged
+  (`tag:host`); default-deny ACLs are the Headscale policy file. Platform
+  exit-node guest egress is a runbook, **not auto-applied** (see
   `docs/runbooks/headscale.md`). Still do not invoke a real hypervisor from
   this agent. On macOS, `POST /v1/provision` returns 400 (`UnsupportedHostOs`);
   Matchmaker then keeps the seeded `kasmUrl`. Local in-session occupancy is

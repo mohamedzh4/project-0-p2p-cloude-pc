@@ -63,8 +63,9 @@ ranking in the session router. Provisioning is a `HostProvisioner`
 injected via `get_host_provisioner()` — tests swap a fake; production POSTs
 `/v1/provision` on the agent. `POST /v1/hosts/{id}/mesh/preauth` mints a
 Host Agent Headscale key via `get_headscale_client()` (tests swap a fake;
-no live Headscale in pytest). Per-session ACLs and exit-node routing are
-not in this call. Metering is in `ledger.py`, called at user
+no live Headscale in pytest). Host mint is tagged `tag:host`. Default-deny
+ACLs live in `headscale/acl.hujson`. Per-session identities and auto
+`--exit-node` on guests are not in this call. Metering is in `ledger.py`, called at user
 end and on silence interrupt.
 
 ## Manual steps
@@ -188,7 +189,7 @@ deprecation warning). Unit tests mock Headscale HTTP; they do not start Docker.
 | POST | `/v1/sessions/{id}/end` | User Bearer | owner only; frees the host; meters duration into ledger rows. `status` is `ended` or already-`interrupted`. |
 | GET | `/v1/sessions` | User Bearer | session history + lifetime `creditsDebited`; reclaims silent occupied hosts (may rematch) |
 | GET | `/v1/hosts/{id}/earnings` | Host bootstrap Bearer | `{ hostId, creditsAccrued }` — accrued, not paid out |
-| POST | `/v1/hosts/{id}/mesh/preauth` | Host bootstrap Bearer | `{ loginServer, preauthKey, user, reusable, ephemeral, expiresAt }`. Mints via Headscale HTTP. 404 unknown host; 502 if Headscale mint fails. Not per-session ACLs. |
+| POST | `/v1/hosts/{id}/mesh/preauth` | Host bootstrap Bearer | `{ loginServer, preauthKey, user, reusable, ephemeral, expiresAt }`. Mints via Headscale HTTP with `tag:host`. 404 unknown host; 502 if Headscale mint fails. Not a per-session identity. |
 | GET | `/v1/images/{labTier}` | no | `{ labTier, digestSha256, signature, algorithm: ed25519, digestAlgorithm: sha256 }` for `standard` or `pro`. Checksums only; not a disk download. |
 
 JSON is camelCase. Passwords and host tokens are never returned. Host inventory
@@ -227,7 +228,7 @@ with the host bootstrap Bearer. The JSON body includes `imageDigest` and
 - Real measured latency / reliability scoring (declared-cap ranking is in)
 - Payment processors / host payouts (internal ledger only)
 - Invoking Firecracker, QEMU, Kasm, Sunshine, or VFIO
-- Default-deny / per-session Headscale ACLs (host preauth mint is in)
-- Platform exit-node guest egress (architecture §9 item 5) — 14c
+- Per-session / ephemeral Headscale identities (host mint is `tag:host` only)
+- Auto-applied `--exit-node` on guests (platform overlay + runbook exist; not applied)
 - Storj mounts
 - The user-facing web app

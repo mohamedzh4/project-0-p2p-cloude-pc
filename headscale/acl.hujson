@@ -1,0 +1,90 @@
+// Default-deny Headscale policy for Distributed Compute Lab (phase 14c).
+// Headscale 0.26.1 reads `acls`, not `grants`. An omitted `acls` key is not
+// an allow-all here: this file always sets `acls` to the accepts below.
+// Empty / missing policy.path (phase 14) allowed every node to talk.
+//
+// Operator user must be named `dcl` (`headscale users create dcl`). Policy
+// usernames need a trailing `@` (`dcl@`); Headscale strips it when matching.
+//
+// Identities are tag-based, not per-session. Matchmaker mint only tags Host
+// Agent nodes (`tag:host`). `tag:guest`, `tag:user`, and `tag:matchmaker` are
+// reserved for later joins. Do not treat this file as per-session ACLs.
+//
+// Exact grants (architecture §9 items 4–5, this stage):
+//   1. Matchmaker coordination: tag:host ↔ tag:matchmaker,
+//      tag:guest ↔ tag:matchmaker, tag:user ↔ tag:matchmaker
+//   2. Assigned user ↔ VM: tag:user ↔ tag:guest
+//   3. Guest internet via platform exit nodes only:
+//      tag:guest → tag:exit and tag:guest → autogroup:internet
+// Not granted (and therefore denied):
+//   - guest → host (no guest→host LAN / volunteer Tailscale IP)
+//   - guest ↔ guest, host ↔ host, host → autogroup:internet
+//   - volunteer hosts as exit nodes (autoApprovers.exitNode is tag:exit only)
+
+{
+  "groups": {
+    "group:operators": ["dcl@"]
+  },
+  "tagOwners": {
+    "tag:host": ["group:operators"],
+    "tag:guest": ["group:operators"],
+    "tag:user": ["group:operators"],
+    "tag:matchmaker": ["group:operators"],
+    "tag:exit": ["group:operators"]
+  },
+  "autoApprovers": {
+    "exitNode": ["tag:exit"]
+  },
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["tag:host"],
+      "dst": ["tag:matchmaker:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:matchmaker"],
+      "dst": ["tag:host:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:guest"],
+      "dst": ["tag:matchmaker:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:matchmaker"],
+      "dst": ["tag:guest:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:user"],
+      "dst": ["tag:matchmaker:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:matchmaker"],
+      "dst": ["tag:user:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:user"],
+      "dst": ["tag:guest:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:guest"],
+      "dst": ["tag:user:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:guest"],
+      "dst": ["tag:exit:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:guest"],
+      "dst": ["autogroup:internet:*"]
+    }
+  ]
+}

@@ -25,18 +25,19 @@ Everything in this document fits into one of these four planes.
 ## Implemented vs this paper (2026-09-04)
 
 This file is the **target** architecture. Software on local `main` after
-execution phase 14 is the **control-plane MVP with stubs**, plus a Headscale
-mint+join contract. It is not a live lab and not default-deny ACLs.
+execution phase 14c is the **control-plane MVP with stubs**, plus a Headscale
+mint+join contract, a default-deny ACL file, and a platform exit-node
+**runbook** (not auto-applied to guests). It is not a live lab.
 
 | Paper | In-repo now |
 | --- | --- |
-| Four planes | Control plane (Matchmaker). Compute is OS-conditional **stubs**. Network plane: Headscale mint+join only (no ACLs/exit nodes). Storage not wired |
+| Four planes | Control plane (Matchmaker). Compute is OS-conditional **stubs**. Network plane: Headscale mint+join, default-deny ACL file, host `tag:host`. Exit-node runbook not auto-applied. Storage not wired |
 | Standard: Firecracker (Linux) / QEMU+WHPX (Windows) + Kasm in the guest | `plan_provision` + `POST /v1/provision` return `https://provision.invalid/{backend}`. No hypervisor, no guest image. GATE-FC / GATE-WHPX open |
 | Pro: VFIO / Hyper-V GPU + Sunshine | Stubs require `sharedGpuId` and set `gpuExclusive`. GATE-PRO open |
 | Intent capture, ranking, billing | FR2 harness maps intent → `labTier`; ranking is `RankedHostSelector` (declared CPU/RAM, Pro GPU id); internal `ledger_entries` meter at session end (no payment processor) |
-| Tailscale/Headscale + exit-node egress | Phase 14: self-hosted Headscale compose + Matchmaker preauth mint + Host Agent Rust join. **No Tailscale SaaS.** Default-deny ACLs and platform exit-node egress are **not** done (14c, §9 items 4–5) |
+| Tailscale/Headscale + exit-node egress | Phase 14: self-hosted Headscale compose + Matchmaker preauth mint + Host Agent Rust join. **No Tailscale SaaS.** Phase 14c: default-deny `acl.hujson` + host `tag:host`. Platform exit-node **runbook exists, not auto-applied** (§9 items 4–5) |
 | Storj + rclone | Not implemented. Phase 15 — ask human first |
-| Host Agent tray / mesh / signed images | Tray + pause + presence. Signed image **verify** before stub boot (fixture bytes, no CDN). Host mesh mint+join in; per-session ACLs / exit nodes still missing |
+| Host Agent tray / mesh / signed images | Tray + pause + presence. Signed image **verify** before stub boot (fixture bytes, no CDN). Host mesh mint+join tagged `tag:host`; per-session identities still missing; exit-node not auto-applied |
 
 Do not treat a passing pytest/cargo suite as GATE-FC/WHPX/PRO.
 

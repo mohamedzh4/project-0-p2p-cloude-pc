@@ -9,7 +9,13 @@ import httpx
 from fastapi.testclient import TestClient
 
 from matchmaker.deps import get_headscale_client
-from matchmaker.headscale import HeadscaleError, HttpHeadscaleClient, PreauthGrant
+from matchmaker.headscale import (
+    HOST_ACL_TAG,
+    HOST_ACL_TAGS,
+    HeadscaleError,
+    HttpHeadscaleClient,
+    PreauthGrant,
+)
 from matchmaker.main import app
 from tests.helpers import host_auth_header, inventory_payload, signup, auth_header
 
@@ -38,6 +44,7 @@ def _grant() -> PreauthGrant:
         reusable=False,
         ephemeral=False,
         expires_at="2026-09-05T12:00:00Z",
+        acl_tags=HOST_ACL_TAGS,
     )
 
 
@@ -54,6 +61,8 @@ def test_http_client_mints_preauth_against_mocked_headscale() -> None:
         assert body["user"] == "1"
         assert body["reusable"] is False
         assert body["ephemeral"] is False
+        assert body["aclTags"] == [HOST_ACL_TAG]
+        assert body["acl_tags"] == [HOST_ACL_TAG]
         assert "expiration" in body
         return httpx.Response(
             200,
@@ -73,6 +82,7 @@ def test_http_client_mints_preauth_against_mocked_headscale() -> None:
     assert grant.login_server == "http://login.headscale.test.invalid"
     assert grant.reusable is False
     assert grant.ephemeral is False
+    assert grant.acl_tags == HOST_ACL_TAGS
     assert len(recorded) == 1
     assert recorded[0].url.scheme == "http"
 
@@ -199,3 +209,101 @@ def test_headscale_modules_do_not_name_backends_or_the_concrete_selector() -> No
         assert "VFIO" not in text
         assert "tskey-auth-" not in text
         assert "HEADSCALE_API_KEY=" not in text
+
+
+def test_mint_endpoint_does_not_advertise_acl_tags_on_the_wire(
+    client: TestClient, pending_host
+) -> None:
+    fake = FakeHeadscale(grant=_grant())
+    app.dependency_overrides[get_headscale_client] = lambda: fake
+    try:
+        response = client.post(
+            f"/v1/hosts/{pending_host.id}/mesh/preauth",
+            headers=host_auth_header(),
+        )
+    finally:
+        app.dependency_overrides.pop(get_headscale_client, None)
+
+    body = response.json()
+    assert response.status_code == 200
+    assert "aclTags" not in body
+    assert "acl_tags" not in body
+    assert set(body) == {
+        "loginServer",
+        "preauthKey",
+        "user",
+        "reusable",
+        "ephemeral",
+        "expiresAt",
+    }
+
+
+_HEADSCALE_DIR = Path(__file__).resolve().parents[2] / "headscale"
+
+
+def _load_acl_policy() -> dict:
+    text = (_HEADSCALE_DIR / "acl.hujson").read_text(encoding="utf-8")
+    assert text.strip(), "acl.hujson must be non-empty"
+    stripped_lines: list[str] = []
+    for line in text.splitlines():
+        if "//" in line:
+            line = line[: line.index("//")]
+        stripped_lines.append(line)
+    return json.loads("\n".join(stripped_lines))
+
+
+def _acl_pairs(policy: dict) -> set[tuple[str, str]]:
+    pairs: set[tuple[str, str]] = set()
+    for rule in policy["acls"]:
+        for src in rule["src"]:
+            for dst in rule["dst"]:
+                dest = dst.rsplit(":", 1)[0]
+                pairs.add((src, dest))
+    return pairs
+
+
+def test_acl_policy_is_default_deny_with_architecture_grants() -> None:
+    policy = _load_acl_policy()
+    assert "grants" not in policy
+    acls = policy["acls"]
+    assert isinstance(acls, list) and acls
+    for rule in acls:
+        assert rule["action"] == "accept"
+        joined_src = " ".join(rule["src"])
+        joined_dst = " ".join(rule["dst"])
+        assert joined_src != "*"
+        assert "*:*" not in joined_dst
+
+    pairs = _acl_pairs(policy)
+    assert ("tag:host", "tag:matchmaker") in pairs
+    assert ("tag:matchmaker", "tag:host") in pairs
+    assert ("tag:guest", "tag:matchmaker") in pairs
+    assert ("tag:matchmaker", "tag:guest") in pairs
+    assert ("tag:user", "tag:guest") in pairs
+    assert ("tag:guest", "tag:user") in pairs
+    assert ("tag:guest", "tag:exit") in pairs
+    assert ("tag:guest", "autogroup:internet") in pairs
+    assert ("tag:guest", "tag:host") not in pairs
+    assert ("tag:host", "tag:guest") not in pairs
+    assert ("tag:host", "autogroup:internet") not in pairs
+    assert ("*", "*") not in pairs
+
+    owners = policy["tagOwners"]
+    for tag in ("tag:host", "tag:guest", "tag:user", "tag:matchmaker", "tag:exit"):
+        assert owners[tag] == ["group:operators"]
+    assert policy["groups"]["group:operators"] == ["dcl@"]
+    assert policy["autoApprovers"]["exitNode"] == ["tag:exit"]
+
+
+def test_headscale_config_loads_checked_in_acl_and_exit_node_is_opt_in() -> None:
+    config = (_HEADSCALE_DIR / "config.yaml").read_text(encoding="utf-8")
+    compose = (_HEADSCALE_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+    overlay = (_HEADSCALE_DIR / "docker-compose.exit-node.yml").read_text(encoding="utf-8")
+
+    assert "path: /etc/headscale/acl.hujson" in config
+    assert 'path: ""' not in config
+    assert "./acl.hujson:/etc/headscale/acl.hujson:ro" in compose
+    assert "advertise-exit-node" not in compose
+    assert "--advertise-exit-node" in overlay
+    assert "HEADSCALE_EXIT_AUTHKEY" in overlay
+    assert "network_mode: host" in overlay

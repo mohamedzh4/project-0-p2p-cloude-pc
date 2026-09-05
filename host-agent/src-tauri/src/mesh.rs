@@ -5,10 +5,10 @@
 //! builds a `tailscale up` invocation from **env** (`HEADSCALE_LOGIN_SERVER`)
 //! plus that key. No API key, preauth key, or login server is hardcoded.
 //!
-//! Architecture §9 item 4 (default-deny per-session ACLs) is not applied here.
-//! Architecture §9 item 5 (platform exit-node guest egress) is not applied
-//! here — this join must never pass `--advertise-exit-node`. Volunteer ISP
-//! egress is a launch blocker, not solved by joining the mesh. See
+//! Matchmaker mint tags this node `tag:host` (not a per-session identity).
+//! Default-deny ACLs live in Headscale's policy file, not in these join args.
+//! This join must never pass `--advertise-exit-node` or `--exit-node`.
+//! Platform exit-node guest egress is operator-manual — see
 //! `docs/runbooks/headscale.md`.
 
 use std::fmt;
@@ -412,6 +412,7 @@ mod tests {
         assert!(args.contains(&"--accept-dns=false".to_string()));
         assert!(args.contains(&"--accept-routes=false".to_string()));
         assert!(!args.iter().any(|a| a.contains("advertise-exit-node")));
+        assert!(!args.iter().any(|a| a.contains("advertise-tags")));
         assert!(!args.iter().any(|a| a == "--exit-node" || a.starts_with("--exit-node=")));
         assert!(!args.iter().any(|a| a.contains("headscale.from-matchmaker")));
         let debug = format!("{plan:?}");
@@ -447,6 +448,7 @@ mod tests {
             "Host Agent must not read the Matchmaker Headscale API secret"
         );
         assert!(!production.contains("\"--advertise-exit-node\""));
+        assert!(!production.contains("advertise-tags"));
         assert!(
             !production.contains("tskey-auth-"),
             "production mesh.rs must not embed a tskey"

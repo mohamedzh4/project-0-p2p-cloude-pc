@@ -136,10 +136,10 @@ def mint_host_mesh_preauth(
     _: Annotated[None, Depends(require_host_bootstrap)],
     headscale: Annotated[HeadscaleClient, Depends(get_headscale_client)],
 ) -> MeshPreauthResponse:
-    """Mint a Host Agent preauth key via Headscale. Not a per-session ACL.
+    """Mint a Host Agent preauth key via Headscale, tagged `tag:host`.
 
-    Architecture §9 items 4–5 (default-deny tags, platform exit-node egress)
-    are not implemented here. See docs/runbooks/headscale.md.
+    Default-deny policy lives in `headscale/acl.hujson`. This is host-tagged,
+    not a per-session identity. Platform exit-node use is not applied here.
     """
     host = db.get(Host, host_id)
     if host is None:

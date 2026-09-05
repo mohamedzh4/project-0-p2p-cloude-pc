@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-05, after phase 14 (self-hosted Headscale mesh)
+# Project Status — last updated: 2026-09-05, after phase 14c (Headscale ACLs + exit-node runbook)
 
 ## Done
 
@@ -6,8 +6,9 @@
   exclusivity, four planes). On `main`.
 - Hardware-gate runbooks (gates remain **OPEN**): `docs/runbooks/gate-fc.md`,
   `docs/runbooks/gate-whpx.md`, `docs/runbooks/gate-pro.md`.
-- Headscale operator runbook: `docs/runbooks/headscale.md`.
-- Execution phases 1–14 **software** on local `main` (not pushed):
+- Headscale operator runbook: `docs/runbooks/headscale.md` (ACL grants +
+  platform exit-node steps).
+- Execution phases 1–14c **software** on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -20,7 +21,8 @@
     `IMAGE_SIGNING_PUBLIC_KEY` and `IMAGE_LOCAL_DIGEST` (required when the
     provision listener is on). After register, if `HEADSCALE_LOGIN_SERVER` is
     set, `mesh.rs` POSTs `/v1/hosts/{id}/mesh/preauth` from Rust and runs
-    `tailscale up` with that env URL + the minted key (never `--advertise-exit-node`).
+    `tailscale up` with that env URL + the minted key (never
+    `--advertise-exit-node`, `--exit-node`, or `--advertise-tags`).
     **116/116** `cargo test` (2026-09-05).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
@@ -29,23 +31,27 @@
     `get_host_selector()` → `RankedHostSelector`. `HostProvisioner` after
     occupancy commit, now advertising `imageDigest` + `imageSignature` for the
     booked lab tier. `GET /v1/images/{labTier}` is checksum metadata only.
-    `POST /v1/hosts/{id}/mesh/preauth` mints a Headscale preauth key (self-hosted;
-    no Tailscale SaaS). Session end meters `startedAt` → `endedAt` into
+    `POST /v1/hosts/{id}/mesh/preauth` mints a Headscale preauth key tagged
+    **`tag:host`** (self-hosted; no Tailscale SaaS; not a per-session
+    identity). Session end meters `startedAt` → `endedAt` into
     `ledger_entries`. Silence (~45s) on an occupied host marks the session
     `interrupted`, settles the ledger once, and rematches via one `select`.
     `GET /v1/sessions` history; `GET /v1/hosts/{id}/earnings` accrued credits.
     Required env includes `CREDITS_PER_MINUTE`, the four `IMAGE_*` pairs, and
     `HEADSCALE_URL` / `HEADSCALE_LOGIN_SERVER` / `HEADSCALE_API_KEY` /
-    `HEADSCALE_USER`. **123/123** pytest (2026-09-05). Session JSON still has
-    no `intent` field. No latency/reliability columns. No Matchmaker pause
-    field. No payment processor. No image CDN / multi-GB download.
+    `HEADSCALE_USER`. **126/126** pytest (2026-09-05). Session JSON still has
+    no `intent` field. No latency/reliability columns.
+    No Matchmaker pause field. No payment processor. No image CDN / multi-GB
+    download.
   - Web harness: signup/login, FR2 intent prompt → `labTier`, request/end
     session, session history + credits debited, camelCase types aligned with
     Matchmaker; `isLiveKasmUrl` rejects RFC 2606 `.invalid`. History already
     renders `status` (`interrupted` included). **27/27** vitest;
     `npm run typecheck` clean.
-  - Headscale compose in `headscale/` (image `0.26.1`). Required
-    `HEADSCALE_SERVER_URL` interpolation. No Tailscale cloud account.
+  - Headscale compose in `headscale/` (image `0.26.1`) with checked-in
+    default-deny `acl.hujson`. Required `HEADSCALE_SERVER_URL` interpolation.
+    Opt-in `docker-compose.exit-node.yml` (not started by default). No
+    Tailscale cloud account.
 
 ## In Progress
 
@@ -59,11 +65,7 @@
 1. Phase 15 — Storj + rclone in the guest (FR4, FR6). **Needs a human Storj
    account.** Do not start it in an agent session without asking. Do not close
    GATE-* from that work.
-2. **14c** (not a new cahier phase): default-deny per-session Headscale ACLs
-   and platform-operated **exit-node** guest egress (architecture §9 items
-   4–5). Mesh mint+join does **not** close those. See
-   `docs/runbooks/headscale.md`.
-3. Human: GATE-FC / GATE-WHPX / GATE-PRO runbooks when a Linux/Windows host PC
+2. Human: GATE-FC / GATE-WHPX / GATE-PRO runbooks when a Linux/Windows host PC
    is available. Agents must not close these.
 
 ## Known Risks / Open Items
@@ -73,7 +75,7 @@
   `SEED_HOST_KASM_URL` (seed example is still `https://example.invalid/kasm`).
   This Mac cannot host. Closing a gate requires the runbook result file **and**
   an explicit human confirmation.
-- Local `main` is ahead of `origin/main` (planning + phases 1–14). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–14c). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
@@ -88,7 +90,8 @@
   and `IMAGE_LOCAL_DIGEST` (fail fast). Public key only — never a signing
   secret in the agent or Matchmaker runtime.
 - A long-running Matchmaker on `:8000` from before this phase will not mint
-  mesh keys. Restart uvicorn after pulling this commit, with `HEADSCALE_*` set.
+  `tag:host` keys. Restart uvicorn after pulling this commit, with `HEADSCALE_*`
+  set. Recreate/restart the Headscale container so `acl.hujson` is mounted.
 - Pause is still local `sharingEnabled=false` (no Matchmaker field). Skipping
   heartbeats looks like disconnect: after 45s the occupied session is
   interrupted and may rematch.
@@ -113,22 +116,27 @@
 - **Real host payouts and user card charges are deferred.** The ledger records
   credits only. Do not add Stripe/PayPal.
 - **Tailscale SaaS is not used.** Self-hosted Headscale mint+join is in.
-  `headscale/config.yaml` has an empty policy path: that is **not**
-  default-deny. Per-session tagged identities are not minted on book.
-- **14c / architecture §9 item 5 still open:** guest egress via platform exit
-  nodes is on paper. Host Agent join never advertises `--advertise-exit-node`.
-  Do not treat mesh join as routing guest traffic off the volunteer's ISP.
-  Rematch does not move guest files (Storj is phase 15).
-- Aikido MCP `namespaceStatus: error` this session; not a scan pass. Run
-  `/aikido:setup` if a scan is required.
+  Default-deny ACLs are `headscale/acl.hujson`. Mint tags **`tag:host` only**
+  — not per-session / ephemeral guest or user identities. `tag:guest` /
+  `tag:user` / `tag:matchmaker` are reserved in policy and unused by mint.
+- **Architecture §9 item 5 — runbook exists, not auto-applied.** Opt-in
+  `headscale/docker-compose.exit-node.yml` plus numbered steps in
+  `docs/runbooks/headscale.md`. Host Agent join never advertises
+  `--advertise-exit-node` and never sets `--exit-node`. Guests are not
+  configured to use the platform exit node in code. Do not treat mesh join as
+  routing guest traffic off the volunteer's ISP. Rematch does not move guest
+  files (Storj is phase 15).
 - Consumer GPU EULAs and ToS/liability still need legal review (architecture
   §9 items 10–11).
+- Aikido MCP `namespaceStatus: error` this session; not a scan pass. Run
+  `/aikido:setup` if a scan is required.
 
 ## Notes for next agent/session
 
 - You are starting **phase 15** only after a human agrees (Storj account). If
   they have not, stop. Read `PHASE_PLAN.md`, this file, and `docs/phase-logs/`
-  (including `phase-14-headscale-mesh.md`). Do not start Tailscale SaaS.
+  (including `phase-14c-headscale-acls-exit-node.md`). Do not start Tailscale
+  SaaS. Do not close GATE-*.
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.
@@ -136,8 +144,9 @@
   standard base64 Ed25519; public key is 64 hex chars. Matchmaker does not
   hold the private key. Tests use a documented fixture seed in Rust only.
 - Mesh: Matchmaker holds `HEADSCALE_API_KEY`; the agent never does. Join uses
-  `HEADSCALE_LOGIN_SERVER` from agent env plus a minted preauth key. Unit tests
-  mock Headscale HTTP. Hostscale 0.26.1 wants a numeric `HEADSCALE_USER`.
+  `HEADSCALE_LOGIN_SERVER` from agent env plus a minted preauth key tagged
+  `tag:host`. Unit tests mock Headscale HTTP. Headscale 0.26.1 wants a numeric
+  `HEADSCALE_USER`. Policy expects the Headscale user named `dcl` (`dcl@`).
 - Metering is `ledger.settle_ended_session` at user end and on silence
   interrupt. Unique `(session_id, party)` prevents double-credit. Rate is
   `CREDITS_PER_MINUTE`.

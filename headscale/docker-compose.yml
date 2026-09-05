@@ -1,4 +1,4 @@
-# Self-hosted Headscale (phase 14). No Tailscale SaaS account.
+# Self-hosted Headscale (phase 14 / 14c). No Tailscale SaaS account.
 # Copy .env.example to .env in this directory, then:
 #   docker compose up -d
 # Compose interpolates required env and fails if HEADSCALE_SERVER_URL is missing,
@@ -10,8 +10,12 @@
 #   docker compose exec headscale headscale users list
 #   docker compose exec headscale headscale apikeys create
 #
-# Guest egress via platform exit nodes (architecture §9 item 5) is NOT wired.
-# See docs/runbooks/headscale.md. Default-deny per-session ACLs are NOT loaded.
+# Default-deny ACLs: ./acl.hujson mounted read-only. Recreate/restart this
+# container after pulling so policy.path is not empty.
+#
+# Platform exit node is NOT this service. Opt-in overlay:
+#   docker compose -f docker-compose.yml -f docker-compose.exit-node.yml up -d
+# See docs/runbooks/headscale.md. Guests are not auto-configured to --exit-node.
 
 services:
   headscale:
@@ -24,6 +28,7 @@ services:
       - "${HEADSCALE_PORT:-8080}:8080"
     volumes:
       - ./config.yaml:/etc/headscale/config.yaml:ro
+      - ./acl.hujson:/etc/headscale/acl.hujson:ro
       - headscale_data:/var/lib/headscale
       - headscale_run:/var/run/headscale
 

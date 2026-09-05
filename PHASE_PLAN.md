@@ -38,7 +38,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 14: pytest 123, cargo test 116, vitest 27.
+  Counts after phase 14c: pytest 126, cargo test 116, vitest 27.
 
 ## Contracts to keep stable
 
@@ -58,7 +58,7 @@ Matchmaker JSON is camelCase.
 | GET | `/v1/sessions` | owner history + lifetime `creditsDebited` |
 | GET | `/v1/hosts/{id}/earnings` | Host bootstrap Bearer; `{ hostId, creditsAccrued }` |
 | GET | `/v1/images/{labTier}` | Public; `{ labTier, digestSha256, signature, algorithm, digestAlgorithm }`. `standard` / `pro` only. Not a blob download. |
-| POST | `/v1/hosts/{id}/mesh/preauth` | Host bootstrap Bearer; `{ loginServer, preauthKey, user, reusable, ephemeral, expiresAt }`. Headscale mint. Not per-session ACLs. |
+| POST | `/v1/hosts/{id}/mesh/preauth` | Host bootstrap Bearer; `{ loginServer, preauthKey, user, reusable, ephemeral, expiresAt }`. Headscale mint tagged `tag:host`. Not a per-session identity. |
 
 Session response: `{ sessionId, hostId, labTier, startedAt, connection: { kasmUrl, kasmToken } }`.
 End response: `{ sessionId, status, endedAt, creditsDebited }`.
@@ -115,7 +115,7 @@ iframe it in early phases.
 | 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs). Live desktop still GATE-FC / GATE-WHPX |
 | 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
 | 3 Pro/Gamer + latency | Execution phase 16 + GATE-PRO |
-| 4 Hardening | Execution phase 13 (images, done); phase 14 mesh mint+join (ACLs/exit nodes 14c); Storj ask human first |
+| 4 Hardening | Execution phase 13 (images, done); phase 14 mesh mint+join; 14c default-deny ACLs + host tags + exit-node runbook (not auto-applied). Storj ask human first |
 
 ## Execution phases
 
@@ -237,7 +237,7 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR6 logout final save + “saved as of” | Missing | Phase 15 — **ask human first** |
 | FR7 session history + billing/credits | Internal ledger + `GET /v1/sessions` | Phase 11 done; no payouts |
 | FR8 declare CPU/RAM slice + exclusive GPU | Implemented except availability schedule | Schedule can wait; do not break `sharedGpuId` |
-| FR9 auto mesh join + signed image pull | Partial: signed digest+sig verify; host preauth mint + Rust join (no Tailscale SaaS). Default-deny ACLs / exit nodes are 14c | Phase 15 Storj — **ask human first** |
+| FR9 auto mesh join + signed image pull | Partial: signed digest+sig verify; host preauth mint + Rust join (no Tailscale SaaS). Default-deny ACL file + host `tag:host`. Not per-session identities. Exit-node runbook not auto-applied | Phase 15 Storj — **ask human first** |
 | FR10 tray status (idle / in-session / earnings) | Window + Rust tray; earnings from ledger | Accrued, not paid out |
 | FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | After 45s Matchmaker treats skip as silence (interrupts). No pause field |
 | FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Later telemetry |
@@ -326,12 +326,22 @@ Done as a software contract (fixture bytes + Ed25519, no image CDN). See
 via the Headscale API; Host Agent joins from **Rust** (env login-server +
 minted key). Fail fast if Headscale/Matchmaker mesh env is missing.
 
-**Do not:** Tailscale SaaS. Do not silently claim default-deny ACLs or
-platform exit-node guest egress.
+**Do not:** Tailscale SaaS. Do not silently claim per-session identities or
+that guests already egress via a platform exit node.
 
 Done as a software contract (mocked Headscale HTTP in tests). Default-deny
-per-session tags and exit-node routing remain **14c**. See
-`docs/phase-logs/phase-14-headscale-mesh.md` and `docs/runbooks/headscale.md`.
+ACL file + host `tag:host` on mint, and a platform exit-node **runbook**
+(not auto-applied to guests) are **14c**. See
+`docs/phase-logs/phase-14-headscale-mesh.md`,
+`docs/phase-logs/phase-14c-headscale-acls-exit-node.md`, and
+`docs/runbooks/headscale.md`.
+
+### Phase 14c — default-deny ACLs + platform exit-node runbook
+
+Done. Checked-in `headscale/acl.hujson` (Headscale 0.26 `acls`). Mint tags
+**`tag:host` only** — not per-session identities. Platform exit node is an
+opt-in compose overlay + numbered runbook; `--exit-node` is not auto-applied.
+See `docs/phase-logs/phase-14c-headscale-acls-exit-node.md`.
 
 ### Phase 15 — Storj + rclone in the guest (FR4, FR6)
 

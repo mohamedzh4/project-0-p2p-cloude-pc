@@ -94,10 +94,10 @@ def request_session(
     # 1. Matching: ranking lives in the HostSelector implementation (declared
     #    caps today; latency/reliability when those can be measured). Do not
     #    inline it here — swap the injected class.
-    # 2. Headscale: host join is POST /v1/hosts/{id}/mesh/preauth (phase 14).
-    #    Per-session tagged identities, default-deny ACLs, and platform
-    #    exit-node egress are not automated (14c). Do not mint a guest
-    #    identity here, and do not route guest traffic via the volunteer ISP.
+    # 2. Headscale: host join is POST /v1/hosts/{id}/mesh/preauth (tag:host).
+    #    Default-deny ACLs are the Headscale policy file, not this router.
+    #    Do not mint a per-session guest identity here. Do not route guest
+    #    traffic via the volunteer ISP; exit-node use is operator-manual.
     # 3. Storj/rclone: mount the user's bucket inside the guest.
     # 4. Billing: duration is metered at end or silence interrupt (startedAt →
     #    endedAt) into ledger_entries. Occupancy start is the clock; no
