@@ -1,15 +1,18 @@
 # Platform-operated Tailscale exit node (architecture §9 item 5).
-# Not started by `docker compose up` in this directory — include this file.
+# Guest-path default: Matchmaker guest join plans use --exit-node=dcl-platform-exit
+# (HEADSCALE_EXIT_NODE). This overlay is how that hostname exists.
 #
+# Not started by `docker compose up` in this directory — include this file.
 # Linux operator host only (`network_mode: host` so login-server
 # http://127.0.0.1:8080 reaches Headscale on the same machine). Do not run
 # this on a volunteer Host Agent PC. Docker Desktop on macOS is not a
 # substitute for a Linux VM you operate.
 #
-# Mint a tag:exit key (never a Host Agent preauth), put it in .env, then:
+# Mint a tag:exit key (never a Host Agent or session guest/user preauth), put it
+# in .env, then:
 #   docker compose -f docker-compose.yml -f docker-compose.exit-node.yml up -d
 #
-# Guests/hosts are NOT given --exit-node by Matchmaker or the Host Agent.
+# Host Agent join never passes --advertise-exit-node or --exit-node.
 # See docs/runbooks/headscale.md.
 
 services:

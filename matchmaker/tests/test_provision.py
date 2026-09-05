@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 
 from matchmaker.images import ImageManifest
+from matchmaker.mesh import GuestMeshHint
 from matchmaker.models import Host, HostStatus, LabTier
 from matchmaker.provision import (
     STREAMER_SUNSHINE,
@@ -15,6 +16,7 @@ from matchmaker.provision import (
     agent_origin,
     session_connection,
 )
+from matchmaker.storage import GuestStorageLocators
 from tests.helpers import (
     KASM_TOKEN,
     KASM_URL,
@@ -139,6 +141,68 @@ def test_http_provisioner_posts_storage_endpoint_without_s3_secrets() -> None:
     assert "secretAccessKey" not in body
     assert "accessKeyId" not in body
     assert "RENTERD_S3_SECRET_KEY" not in json.dumps(body)
+
+
+def test_http_provisioner_posts_guest_locators_and_mesh_hint_without_secrets() -> None:
+    captured: dict[str, object] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            captured["body"] = json.loads(self.rfile.read(length))
+            payload = json.dumps(
+                {"connectionUrl": PROVISION_URL, "hypervisorInvoked": False}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        provisioner = HttpHostProvisioner(bearer_token="test-host-bootstrap-token")
+        result = provisioner.provision(
+            _host(agent_url=origin),
+            lab_tier="standard",
+            storage=GuestStorageLocators(
+                endpoint="http://renterd.test.invalid",
+                bucket="dcl-example",
+                prefix="files/",
+                region="us-east-1",
+            ),
+            guest_mesh=GuestMeshHint(
+                login_server="http://headscale.test.invalid",
+                hostname="dcl-guest-example",
+                exit_node="dcl-platform-exit",
+                acl_tags=("tag:guest",),
+            ),
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert result is not None
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["storageEndpoint"] == "http://renterd.test.invalid"
+    assert body["storageBucket"] == "dcl-example"
+    assert body["storagePrefix"] == "files/"
+    assert body["storageRegion"] == "us-east-1"
+    assert body["guestMesh"]["hostname"] == "dcl-guest-example"
+    assert body["guestMesh"]["exitNode"] == "dcl-platform-exit"
+    assert body["guestMesh"]["aclTags"] == ["tag:guest"]
+    assert "preauthKey" not in body
+    assert "preauthKey" not in json.dumps(body["guestMesh"])
+    assert "secretAccessKey" not in body
+    assert "accessKeyId" not in body
+    assert "AWS_SECRET_ACCESS_KEY" not in json.dumps(body)
 
 
 def test_http_provisioner_advertises_signed_image_metadata() -> None:

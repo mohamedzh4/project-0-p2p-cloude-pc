@@ -8,8 +8,8 @@
 //! Matchmaker mint tags this node `tag:host` (not a per-session identity).
 //! Default-deny ACLs live in Headscale's policy file, not in these join args.
 //! This join must never pass `--advertise-exit-node` or `--exit-node`.
-//! Platform exit-node guest egress is operator-manual — see
-//! `docs/runbooks/headscale.md`.
+//! Guest VMs get `--exit-node` from Matchmaker session JSON (`HEADSCALE_EXIT_NODE`),
+//! not from this Host Agent. See `docs/runbooks/headscale.md`.
 
 use std::fmt;
 use std::path::Path;

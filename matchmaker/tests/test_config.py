@@ -33,6 +33,7 @@ def _required_env(monkeypatch) -> None:
     monkeypatch.delenv("S3_REGION", raising=False)
     monkeypatch.delenv("S3_GUEST_ENDPOINT", raising=False)
     monkeypatch.delenv("HOST_AGENT_PROVISION_URL", raising=False)
+    monkeypatch.delenv("HEADSCALE_EXIT_NODE", raising=False)
 
 
 def test_credits_per_minute_is_required(monkeypatch) -> None:
@@ -175,11 +176,26 @@ def test_headscale_secrets_are_redacted_in_repr(monkeypatch) -> None:
     assert settings.headscale_url == "http://headscale.test.invalid"
     assert settings.headscale_login_server == "http://headscale.test.invalid"
     assert settings.headscale_user == "1"
+    assert settings.headscale_exit_node == "dcl-platform-exit"
     assert settings.renterd_s3_endpoint == "http://renterd.test.invalid"
     assert settings.renterd_s3_guest_endpoint == "http://renterd.test.invalid"
     assert settings.renterd_s3_region == "us-east-1"
     assert "test-renterd-secret-key" not in dumped
     assert "test-renterd-access" not in dumped
+
+
+def test_headscale_exit_node_defaults_to_platform_overlay_hostname(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.delenv("HEADSCALE_EXIT_NODE", raising=False)
+    assert Settings.from_env().headscale_exit_node == "dcl-platform-exit"
+
+
+def test_headscale_exit_node_off_disables_guest_auto_apply(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.setenv("HEADSCALE_EXIT_NODE", "off")
+    assert Settings.from_env().headscale_exit_node is None
 
 
 def test_renterd_s3_env_is_required(monkeypatch) -> None:

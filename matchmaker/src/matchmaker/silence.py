@@ -8,7 +8,7 @@ HostSelector.select call — ranking stays in the injected selector.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -16,8 +16,12 @@ from sqlalchemy.orm import Session
 
 from matchmaker.ledger import settle_ended_session
 from matchmaker.matching import HostSelector, heartbeat_freshness_cutoff
-from matchmaker.models import Host, LabSession, SessionStatus
+from matchmaker.config import get_settings
+from matchmaker.headscale import HeadscaleClient, HeadscaleError
+from matchmaker.mesh import expire_session_mesh, guest_mesh_hint, mint_session_mesh
+from matchmaker.models import Host, LabSession, SessionStatus, UserStorage
 from matchmaker.provision import HostProvisioner, provision_booked_host
+from matchmaker.storage import GuestStorageLocators
 
 
 def reclaim_stale_sessions(
@@ -27,6 +31,7 @@ def reclaim_stale_sessions(
     *,
     credits_per_minute: int,
     now: datetime | None = None,
+    headscale: HeadscaleClient | None = None,
 ) -> list[UUID]:
     """Interrupt stale occupied sessions, then try one rematch each.
 
@@ -47,12 +52,18 @@ def reclaim_stale_sessions(
         ):
             continue
         interrupted_ids.append(session_id)
+        if headscale is not None:
+            try:
+                expire_session_mesh(headscale, session_id=session_id)
+            except HeadscaleError:
+                pass
         _rematch_user(
             db,
             user_id=user_id,
             lab_tier=lab_tier,
             selector=selector,
             provisioner=provisioner,
+            headscale=headscale,
         )
     return interrupted_ids
 
@@ -109,6 +120,7 @@ def _rematch_user(
     lab_tier: str,
     selector: HostSelector,
     provisioner: HostProvisioner,
+    headscale: HeadscaleClient | None = None,
 ) -> LabSession | None:
     existing = _active_session_for_user(db, user_id)
     if existing is not None:
@@ -118,7 +130,22 @@ def _rematch_user(
     if host is None:
         return None
 
+    session_id = uuid4()
+    settings = get_settings()
+    mesh = None
+    if headscale is not None:
+        try:
+            mesh = mint_session_mesh(
+                headscale,
+                session_id=session_id,
+                login_server=settings.headscale_login_server,
+                exit_node=settings.headscale_exit_node,
+            )
+        except HeadscaleError:
+            return None
+
     session = LabSession(
+        id=session_id,
         user_id=user_id,
         host_id=host.id,
         status=SessionStatus.ACTIVE,
@@ -132,7 +159,15 @@ def _rematch_user(
         return _active_session_for_user(db, user_id)
 
     db.refresh(session)
-    provision_booked_host(db, host, provisioner, lab_tier=lab_tier)
+    storage = _storage_locators_for_user(db, user_id)
+    provision_booked_host(
+        db,
+        host,
+        provisioner,
+        lab_tier=lab_tier,
+        storage=storage,
+        guest_mesh=guest_mesh_hint(mesh) if mesh is not None else None,
+    )
     return session
 
 
@@ -143,6 +178,19 @@ def _active_session_for_user(db: Session, user_id: UUID) -> LabSession | None:
             LabSession.status == SessionStatus.ACTIVE,
         )
     ).first()
+
+
+def _storage_locators_for_user(db: Session, user_id: UUID) -> GuestStorageLocators | None:
+    row = db.get(UserStorage, user_id)
+    if row is None:
+        return None
+    settings = get_settings()
+    return GuestStorageLocators(
+        endpoint=settings.renterd_s3_guest_endpoint,
+        bucket=row.bucket,
+        prefix=row.prefix,
+        region=settings.renterd_s3_region,
+    )
 
 
 def _as_utc(now: datetime | None) -> datetime:

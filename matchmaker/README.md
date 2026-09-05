@@ -1,10 +1,11 @@
 # Matchmaker
 
 Control-plane service for the Distributed Compute Lab (software MVP after
-execution phase 16): auth, host inventory, heartbeats, session occupancy,
+execution phase 17): auth, host inventory, heartbeats, session occupancy,
 an internal credits ledger, signed base-image **metadata**, Headscale
-**preauth mint** for Host Agent mesh join (self-hosted; no Tailscale SaaS),
-and **renterd** S3 bucket provision for guest mounts (not Storj).
+**preauth mint** for Host Agent mesh join plus session ephemeral guest/user
+keys (self-hosted; no Tailscale SaaS), and **renterd** S3 bucket provision
+for guest rclone (not Storj).
 Hosts register declared caps and start **pending**;
 sessions book a manually approved host whose last heartbeat is fresh (within
 45s). Among eligible hosts, `RankedHostSelector` prefers more declared CPU,
@@ -17,8 +18,9 @@ active session is marked `interrupted`, billed once, and rematched via
 `HostSelector.select` when another eligible host is free. FR2 intent mapping
 lives in `web/`; this API still takes `labTier`. No measured
 latency/reliability scores, no payment processor, no real hypervisor.
-Default-deny ACLs are a Headscale policy file; platform exit-node egress is
-runbook-only (not auto-applied). rclone belongs **inside the guest**.
+Default-deny ACLs are a Headscale policy file (role tags, not pairwise).
+Guest join plans include `--exit-node=$HEADSCALE_EXIT_NODE` (default
+`dcl-platform-exit`). rclone belongs **inside the guest**.
 
 How Matchmaker finds the agent: `hosts.agent_url` from inventory, else optional
 `HOST_AGENT_PROVISION_URL`. If neither is usable, the seeded/placeholder
@@ -47,9 +49,12 @@ Rust (`plan_provision`); this service does not name Firecracker/QEMU/WHPX.
   stub result when the agent is reachable; otherwise the URL already stored
   on the host row (`hosts.kasm_url`). Before booking, the router reclaims
   sessions on silent hosts (same as history and heartbeat) and provisions a
-  **renterd** per-user bucket. Session JSON `storage` is locators only (S3
-  endpoint, bucket, prefix, rclone argv for the **guest** — no access keys).
-  Mount is not on the volunteer host.
+  **renterd** per-user bucket and mints ephemeral Headscale `tag:guest` /
+  `tag:user` keys. Session JSON `storage` is locators only (S3 endpoint,
+  bucket, prefix, `rcloneArgs` with `--s3-env-auth` for the **guest** — no
+  access keys). Session JSON `mesh` is guest/user hostnames, tags, preauth
+  keys, and guest `--exit-node` argv. Mount is not on the volunteer host.
+  Provision POST may include locators + a guest-mesh **hint** (no preauth).
 - `POST /v1/sessions/{id}/end` frees the host so another user can take it and
   writes ledger rows (user debit, host credit) from session duration. Ending an
   already-`interrupted` session is idempotent and does not rename the status.
@@ -61,7 +66,8 @@ Rust (`plan_provision`); this service does not name Firecracker/QEMU/WHPX.
   or `pro`. Provision POSTs those fields to the Host Agent. Not a disk CDN.
 - `POST /v1/storage` issues a per-user renterd bucket; `GET /v1/storage` returns
   the same locators (or 404 if never issued). rclone belongs inside the guest.
-  Host Agent provision may include `storageEndpoint` (URL only — no S3 secrets).
+  Host Agent provision may include storage locators (endpoint/bucket/prefix —
+  no S3 secrets) plus a guest-mesh hint (no preauth).
 
 Matching is isolated in `RankedHostSelector` (`status == approved`, matching
 tier, fresh `last_seen_at`, no active session, then declared CPU/RAM). Pro
@@ -73,11 +79,12 @@ ranking in the session router. Provisioning is a `HostProvisioner`
 injected via `get_host_provisioner()` — tests swap a fake; production POSTs
 `/v1/provision` on the agent. `POST /v1/hosts/{id}/mesh/preauth` mints a
 Host Agent Headscale key via `get_headscale_client()` (tests swap a fake;
-no live Headscale in pytest). Host mint is tagged `tag:host`. Default-deny
-ACLs live in `headscale/acl.hujson`. Per-session identities and auto
-`--exit-node` on guests are not in this call. Metering is in `ledger.py`, called at user
-end and on silence interrupt. renterd S3 is `get_renterd_client()` (tests swap
-a fake; no live Sia network in pytest).
+no live Headscale in pytest). Host mint is tagged `tag:host`. Session book
+mints ephemeral `tag:guest` / `tag:user` via `mesh.py`. Default-deny ACLs
+live in `headscale/acl.hujson` (role-based; not pairwise session tags).
+Guest `--exit-node` comes from `HEADSCALE_EXIT_NODE`. Metering is in
+`ledger.py`, called at user end and on silence interrupt. renterd S3 is
+`get_renterd_client()` (tests swap a fake; no live Sia network in pytest).
 
 ## Manual steps
 
@@ -185,8 +192,8 @@ Needs the test database in `TEST_DATABASE_URL` (created by compose).
 pytest
 ```
 
-Expect more than the phase-14c baseline of 126. Unit tests mock renterd S3
-and Headscale HTTP; they do not start Docker or talk to a live Sia network.
+Expect **161** passed (phase 17). Unit tests mock renterd S3 and Headscale
+HTTP; they do not start Docker or talk to a live Sia network.
 
 ## API
 
@@ -199,11 +206,11 @@ and Headscale HTTP; they do not start Docker or talk to a live Sia network.
 | PUT | `/v1/hosts/{id}` | Host bootstrap Bearer | 200 update caps; 201 if that id is new; status unchanged |
 | POST | `/v1/hosts/{id}/heartbeat` | Host bootstrap Bearer | 200 stamps `lastSeenAt`; 404 if unknown; does not approve. Then reclaims other silent occupied hosts. |
 | POST | `/v1/hosts/{id}/approve` | Approve Bearer | 200 `approved`; bootstrap token is rejected |
-| POST | `/v1/sessions` | User Bearer | 201 new, 200 if you already have one (including a silence rematch), 409 if no approved host is free. New bookings call the provision port after occupancy commit. Reclaims silent occupied hosts first. |
+| POST | `/v1/sessions` | User Bearer | 201 new, 200 if you already have one (including a silence rematch), 409 if no approved host is free. New bookings mint session mesh then occupy, then call the provision port. 502 if Headscale mint or renterd fails (no occupy). Reclaims silent occupied hosts first. JSON includes `mesh` and locators-only `storage`. |
 | POST | `/v1/sessions/{id}/end` | User Bearer | owner only; frees the host; meters duration into ledger rows. `status` is `ended` or already-`interrupted`. |
 | GET | `/v1/sessions` | User Bearer | session history + lifetime `creditsDebited`; reclaims silent occupied hosts (may rematch) |
 | GET | `/v1/hosts/{id}/earnings` | Host bootstrap Bearer | `{ hostId, creditsAccrued }` — accrued, not paid out |
-| POST | `/v1/hosts/{id}/mesh/preauth` | Host bootstrap Bearer | `{ loginServer, preauthKey, user, reusable, ephemeral, expiresAt }`. Mints via Headscale HTTP with `tag:host`. 404 unknown host; 502 if Headscale mint fails. Not a per-session identity. |
+| POST | `/v1/hosts/{id}/mesh/preauth` | Host bootstrap Bearer | `{ loginServer, preauthKey, user, reusable, ephemeral, expiresAt }`. Mints via Headscale HTTP with `tag:host`. 404 unknown host; 502 if Headscale mint fails. Host identity only — guest/user keys are on session JSON `mesh`. |
 | POST | `/v1/storage` | User Bearer | issue per-user renterd bucket. 201 new, 200 existing. Locators only (no access keys). |
 | GET | `/v1/storage` | User Bearer | same locators, or 404 if never issued. rclone **inside the guest**. |
 | GET | `/v1/images/{labTier}` | no | `{ labTier, digestSha256, signature, algorithm: ed25519, digestAlgorithm: sha256 }` for `standard` or `pro`. Checksums only; not a disk download. |
@@ -231,9 +238,10 @@ Agent verifies with `IMAGE_SIGNING_PUBLIC_KEY` before a stub boot.
 Headscale (required at Matchmaker startup): `HEADSCALE_URL` (API origin),
 `HEADSCALE_LOGIN_SERVER` (returned to agents as `--login-server`),
 `HEADSCALE_API_KEY` (from `headscale apikeys create`), `HEADSCALE_USER`
-(numeric id on Headscale 0.26.1). Placeholders only in `.env.example`.
-Compose for Headscale lives in `headscale/` — see `docs/runbooks/headscale.md`.
-Pytest never calls a live Headscale.
+(numeric id on Headscale 0.26.1). Optional `HEADSCALE_EXIT_NODE` (default
+`dcl-platform-exit`; `off` omits guest `--exit-node`). Placeholders only in
+`.env.example`. Compose for Headscale lives in `headscale/` — see
+`docs/runbooks/headscale.md`. Pytest never calls a live Headscale.
 
 renterd S3 (required at Matchmaker startup): `S3_ENDPOINT` (Matchmaker
 → renterd S3 origin; lab default `http://127.0.0.1:8081`), `S3_ACCESS_KEY`,
@@ -245,16 +253,17 @@ JSON locators never include access keys.
 
 The Host Agent provision listener (not this process) is `POST /v1/provision`
 with the host bootstrap Bearer. The JSON body includes `imageDigest` and
-`imageSignature` from this registry, and may include `storageEndpoint` (URL
-only). It is not fetched from the webview.
+`imageSignature` from this registry, optional storage locators (endpoint /
+bucket / prefix / region — no keys), and optional `guestMesh` (login-server,
+hostname, exit node, tags — **no preauthKey**). It is not fetched from the
+webview.
 
 ## Out of scope
 
 - Real measured latency / reliability scoring (declared-cap ranking is in)
 - Payment processors / host payouts (internal ledger only)
 - Invoking Firecracker, QEMU, Kasm, Sunshine, or VFIO
-- Per-session / ephemeral Headscale identities (host mint is `tag:host` only)
-- Auto-applied `--exit-node` on guests (platform overlay + runbook exist; not applied)
-- rclone inside a live guest (Host Agent plan stub + runbook; needs GATE-* + guest image)
+- Pairwise `tag:session-<uuid>` ACLs (Headscale 0.26 file policy; role tags remain)
+- rclone / Tailscale inside a live guest (argv/plan exist; no guest image in-repo)
 - Storj
 - The user-facing web app

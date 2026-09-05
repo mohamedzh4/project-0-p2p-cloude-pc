@@ -5,8 +5,10 @@
 (`ghcr.io/siafoundation/renterd:2.9.3`). rclone belongs **inside the guest**,
 never on the volunteer host OS (architecture §8).
 
-Hardware gates (GATE-FC / GATE-WHPX / GATE-PRO) stay **OPEN**. Bringing up
-renterd does not boot a guest and does not close those gates.
+Hardware gates (GATE-FC / GATE-WHPX / GATE-PRO) are **CLOSED by human
+operator declaration (2026-09-05)** — not by tests and not by an in-repo lab.
+Bringing up renterd does not boot a guest and does not close those gates.
+`SEED_HOST_KASM_URL` stays `https://example.invalid/kasm`.
 
 Implemented storage (human decision 2026-09-05): **renterd, not Storj.**
 
@@ -21,7 +23,7 @@ Matchmaker how to CreateBucket / PutObject and hand a guest rclone command.
 - Mount user data on the volunteer host. Host Agent `storageEndpoint` is a
   URL the **guest** should use. This agent never runs rclone.
 - Talk to the public Sia network from pytest. Unit tests mock S3 HTTP.
-- Show “saved as of HH:MM” in a live desktop (needs GATE-* + guest image).
+- Show “saved as of HH:MM” in a live desktop (needs a guest image in-repo).
 - Use Storj.
 
 renterd 2.9 no longer reads `RENTERD_S3_KEYPAIRS_V4` / YAML `keypairsV4`.
@@ -143,18 +145,22 @@ occupy a host.
 ## 6. Guest rclone (inside the VM only)
 
 On the **guest**, not the volunteer host. Inject keys from operator env
-(`S3_ACCESS_KEY` / `S3_SECRET_KEY` in Matchmaker `.env`) — they are not
-returned by the API:
+(`S3_ACCESS_KEY` / `S3_SECRET_KEY` in Matchmaker `.env`) as
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — they are not returned by the
+API. Prefer `storage.rcloneArgs` (argv) from `GET /v1/storage` or session
+JSON over shell-splitting `storage.rclone`:
 
 ```bash
 export AWS_ACCESS_KEY_ID=<S3_ACCESS_KEY from matchmaker/.env>
 export AWS_SECRET_ACCESS_KEY=<S3_SECRET_KEY from matchmaker/.env>
-# use the rclone field from GET /v1/storage (or session.storage.rclone)
 rclone mount :s3:<bucket>/files /home/user/Persistent \
   --s3-provider Other \
   --s3-endpoint <endpoint> \
   --s3-env-auth \
   --s3-force-path-style \
+  --s3-region us-east-1 \
+  --s3-chunk-size 120MiB \
+  --fast-list \
   --vfs-cache-mode full
 ```
 

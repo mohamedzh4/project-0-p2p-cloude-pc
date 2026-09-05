@@ -2,10 +2,12 @@
 
 A small Vite + React + TypeScript page whose only job is to exercise the
 Matchmaker API (auth, FR2 intent → `labTier`, session book/end, session
-history + credits). It is **not** the product: no payment processor, no Kasm
-iframe (a live desktop would open in a new tab). Seed and mock-provision URLs
-use the `.invalid` TLD; Open desktop stays hidden until GATE-FC / GATE-WHPX
-produce a real Kasm URL.
+history + credits, locators-only storage, mesh hostname/tags/exit-node). It
+is **not** the product: no payment processor, no Kasm iframe (a live desktop
+would open in a new tab). Seed and mock-provision URLs use the `.invalid`
+TLD. GATE-FC / GATE-WHPX / GATE-PRO are operator-declared closed (2026-09-05);
+Open desktop stays hidden until a live URL exists (`SEED_HOST_KASM_URL`
+remains `https://example.invalid/kasm`). Preauth keys are not shown.
 
 ## File structure
 
@@ -38,7 +40,8 @@ web/
    `kasmUrl` is a live `http(s)` URL whose host is not RFC 2606 `.invalid`
    (seed `example.invalid` and stub `provision.invalid` are placeholders).
    Token is shown, not stuffed into the URL. Pro sessions keep the exclusivity
-   note.
+   note. Held sessions also list guest/user mesh hostnames, ACL tags, and
+   whether `--exit-node` was applied — not the preauth secret.
 4. **History** — `GET /v1/sessions` under the booking panel: past sessions and
    lifetime credits on the internal ledger (not a card charge). `status` is
    `active`, `ended`, or `interrupted` (host went silent ~45s).

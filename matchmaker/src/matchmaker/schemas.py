@@ -63,6 +63,7 @@ class StorageMountInfo(CamelModel):
     """S3 locators for rclone **inside the guest**. Not for the volunteer host OS.
 
     Access keys stay in Matchmaker/guest env (`S3_*` / `RENTERD_S3_*`).
+    `rclone` is a display string; `rcloneArgs` is the argv a guest image can exec.
     """
 
     provider: str = "renterd"
@@ -73,7 +74,31 @@ class StorageMountInfo(CamelModel):
     path_style: bool = True
     mount_inside_guest: bool = True
     rclone: str
+    rclone_args: list[str] = Field(default_factory=list)
+    env_auth: bool = True
     objects: list[str] = Field(default_factory=list)
+
+
+class MeshPeerInfo(CamelModel):
+    """One Headscale identity for this session. `preauthKey` is a secret."""
+
+    hostname: str
+    acl_tags: list[str]
+    preauth_key: str
+    ephemeral: bool
+    reusable: bool
+    expires_at: str
+    tailscale_up: list[str]
+
+
+class SessionMeshInfo(CamelModel):
+    """Per-session guest+user mesh. Host Agent join is a different route (`tag:host`)."""
+
+    login_server: str
+    exit_node: str | None = None
+    exit_node_applied: bool = False
+    guest: MeshPeerInfo
+    user: MeshPeerInfo
 
 
 class SessionResponse(CamelModel):
@@ -83,6 +108,7 @@ class SessionResponse(CamelModel):
     started_at: datetime
     connection: ConnectionInfo
     storage: StorageMountInfo
+    mesh: SessionMeshInfo
 
 
 class EndSessionResponse(CamelModel):

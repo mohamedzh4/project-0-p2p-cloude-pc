@@ -3,26 +3,31 @@
 **This is not Tailscale SaaS.** There is no Tailscale cloud account. The
 control server is Headscale in `headscale/docker-compose.yml`.
 
-Hardware gates (GATE-FC / GATE-WHPX / GATE-PRO) stay **OPEN**. Joining the
-mesh does not boot a guest.
+Hardware gates (GATE-FC / GATE-WHPX / GATE-PRO) are **CLOSED by human
+operator declaration (2026-09-05)** — not by tests and not by an in-repo lab.
+Joining the mesh does not boot a guest. `SEED_HOST_KASM_URL` stays
+`https://example.invalid/kasm`.
 
 ## What this does / does not do
 
 **Does:** run Headscale locally with a checked-in **default-deny** ACL file;
 mint a Host Agent preauth key tagged `tag:host`; join that agent with
-`tailscale up --login-server` from Rust; document a **platform** exit-node
-path (opt-in compose overlay + steps below).
+`tailscale up --login-server` from Rust; mint **ephemeral** `tag:guest` and
+`tag:user` preauth keys on each session book (Headscale 0.26 `aclTags`); put
+`--exit-node=$HEADSCALE_EXIT_NODE` on the **guest** join plan (default
+hostname `dcl-platform-exit` from the compose overlay).
 
 **Does not:**
 
-- **Per-session** or ephemeral tailnet identities. Mint tags the **host
-  node** (`tag:host`) only. `tag:guest` / `tag:user` / `tag:matchmaker` are
-  reserved in the policy and are not minted on book.
-- Auto-apply `--exit-node` on guests or hosts. Architecture §9 item 5 is
-  **runbook exists, not auto-applied**. Volunteer hosts still must **not**
-  advertise `--advertise-exit-node`. Until a guest is actually started with
-  `--exit-node=<platform-node>`, guest internet can still egress via the
-  host path.
+- Pairwise per-session ACL tags. Headscale 0.26 file policy has no mint-time
+  API to add `tag:session-<uuid>` to `tagOwners`. Grants stay role-based:
+  every `tag:user` may reach every `tag:guest`. Unique **hostnames** and
+  ephemeral keys are the per-booking identity.
+- Live guest egress. Software points guests at the platform exit node; a
+  guest image still has to run `tailscale up` with that plan. Until a guest
+  actually joins, traffic does not flow.
+- `--advertise-exit-node` or `--exit-node` on the Host Agent. Volunteer
+  hosts must not become exits and must not hairpin guest internet.
 
 ## Exact ACL grants (`headscale/acl.hujson`)
 
@@ -91,6 +96,7 @@ HEADSCALE_URL=http://127.0.0.1:8080
 HEADSCALE_LOGIN_SERVER=http://127.0.0.1:8080
 HEADSCALE_API_KEY=<paste the apikeys create output>
 HEADSCALE_USER=1
+HEADSCALE_EXIT_NODE=dcl-platform-exit
 ```
 
 Restart uvicorn so Matchmaker reloads env. Missing Headscale vars fail fast
@@ -100,7 +106,8 @@ at process start.
 
 The Host Agent must already be registered (`POST /v1/hosts`) so it has a
 `hostId`. Pending hosts may join. The minted key is tagged **`tag:host`**
-on the Headscale side (not returned on the JSON body).
+on the Headscale side (not returned on the JSON body). Guest/user keys are
+minted on `POST /v1/sessions` (`mesh.guest` / `mesh.user`), not this route.
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8000/v1/hosts/HOST_UUID/mesh/preauth" \
@@ -130,13 +137,18 @@ It never sends `--advertise-exit-node`, `--exit-node`, or `--advertise-tags`
 (tags come from the preauth key). Missing Matchmaker URL, bootstrap token,
 or `HEADSCALE_LOGIN_SERVER` fails fast (no hardcoded keys).
 
-## 6. Platform exit nodes (runbook exists, not auto-applied)
+## 6. Platform exit nodes (guest-path overlay)
 
 Guest egress must leave through IPs **you** operate, not the volunteer's ISP
 (architecture §9 item 5). The Host Agent must never advertise an exit node.
-Guests are **not** started with `--exit-node` by Matchmaker or the agent.
 
-### 6.1 Mint a `tag:exit` key (CLI, not the host mint route)
+Matchmaker guest join plans always include
+`--exit-node=$HEADSCALE_EXIT_NODE` unless that env is `off`. The default
+value is `dcl-platform-exit` (the overlay `TS_HOSTNAME`). That is
+**software auto-applied on the guest argv**. It is not live egress until a
+guest image runs those args against a running exit node.
+
+### 6.1 Mint a `tag:exit` key (CLI, not the host or session mint routes)
 
 From `headscale/`:
 
@@ -145,7 +157,7 @@ docker compose exec headscale headscale preauthkeys create --user 1 --tags tag:e
 ```
 
 Copy the key into `headscale/.env` as `HEADSCALE_EXIT_AUTHKEY`. Never reuse a
-Host Agent preauth. Never commit `.env`.
+Host Agent or session guest/user preauth. Never commit `.env`.
 
 ### 6.2 Start the platform exit node
 
@@ -157,7 +169,8 @@ sudo tailscale up \
   --login-server "$HEADSCALE_SERVER_URL" \
   --authkey "$HEADSCALE_EXIT_AUTHKEY" \
   --advertise-exit-node \
-  --accept-dns=false
+  --accept-dns=false \
+  --hostname dcl-platform-exit
 ```
 
 Enable IPv4/IPv6 forwarding on that VM (`net.ipv4.ip_forward=1`,
@@ -165,7 +178,7 @@ Enable IPv4/IPv6 forwarding on that VM (`net.ipv4.ip_forward=1`,
 in the policy, so Headscale should accept the route without a manual
 `routes enable` when the node joined with that tag.
 
-**Optional local overlay** (Linux operator host with `/dev/net/tun`;
+**Guest-path overlay** (Linux operator host with `/dev/net/tun`;
 `network_mode: host` so `http://127.0.0.1:8080` reaches Headscale). Docker
 Desktop on macOS is not this path:
 
@@ -174,15 +187,13 @@ cd headscale
 docker compose -f docker-compose.yml -f docker-compose.exit-node.yml up -d
 ```
 
-### 6.3 Point guests at that node (manual, when a guest exists)
+### 6.3 Guest join plan (Matchmaker session JSON)
 
-When a guest Tailscale client exists (GATE-FC / GATE-WHPX — still **OPEN**):
+`POST /v1/sessions` returns `mesh.guest.tailscaleUp` already containing
+`--exit-node=dcl-platform-exit` (or `HEADSCALE_EXIT_NODE`). Inject that into
+the **guest** only. `mesh.user.tailscaleUp` does **not** set `--exit-node`.
 
-1. Read the platform node's Tailscale IP or MagicDNS name
-   (`dcl-platform-exit` for the overlay).
-2. On the **guest** only: `tailscale up ... --exit-node=<platform-node>`.
-3. Never pass `--advertise-exit-node` or `--exit-node` on the Host Agent.
+Never pass `--advertise-exit-node` or `--exit-node` on the Host Agent.
 
-Until step 6.3 is actually run on a guest, assume guest internet still exits
-via the host path. `PROJECT_STATUS.md` records this as **runbook exists, not
-auto-applied**.
+Until a guest image actually runs step 6.3, assume guest internet still
+exits via the host path. Software-complete ≠ live desktop.

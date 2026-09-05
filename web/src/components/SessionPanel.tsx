@@ -120,6 +120,21 @@ export function SessionPanel({
                 </dd>
               </>
             ) : null}
+            {session.mesh ? (
+              <>
+                <dt>guest mesh</dt>
+                <dd>
+                  {session.mesh.guest.hostname} · {session.mesh.guest.aclTags.join(", ")}
+                  {session.mesh.exitNodeApplied && session.mesh.exitNode
+                    ? ` · exit-node ${session.mesh.exitNode}`
+                    : " · exit-node not applied"}
+                </dd>
+                <dt>user mesh</dt>
+                <dd>
+                  {session.mesh.user.hostname} · {session.mesh.user.aclTags.join(", ")}
+                </dd>
+              </>
+            ) : null}
           </dl>
           {session.labTier === "pro" || isPro ? (
             <p className="exclusivity" role="status">
@@ -136,16 +151,15 @@ export function SessionPanel({
             <p className="hint">
               {isPro ? (
                 <>
-                  Stub Sunshine/Moonlight locators use the <code>.invalid</code> TLD. A real
-                  stream from <code>docs/runbooks/gate-pro.md</code> is required before a
-                  live Moonlight connect appears. GATE-PRO stays a human/hardware gate.
+                  Stub Sunshine/Moonlight locators use the <code>.invalid</code> TLD.
+                  GATE-PRO is operator-declared closed (2026-09-05); a live stream
+                  still is not in this repo.
                 </>
               ) : (
                 <>
-                  Seed and mock-provision URLs use the <code>.invalid</code> TLD. A real
-                  Kasm URL from <code>docs/runbooks/gate-fc.md</code> or{" "}
-                  <code>docs/runbooks/gate-whpx.md</code> is required before Open
-                  desktop appears.
+                  Seed and mock-provision URLs use the <code>.invalid</code> TLD.
+                  GATE-FC / GATE-WHPX are operator-declared closed (2026-09-05);
+                  Open desktop stays hidden until a live Kasm URL exists.
                 </>
               )}
             </p>

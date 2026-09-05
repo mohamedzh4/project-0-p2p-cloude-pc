@@ -2,8 +2,8 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is the Host Agent after execution phase 14 (Headscale mesh join). It
-does these things and nothing else:
+This is the Host Agent after execution phase 17 (session mesh hint + guest
+rclone plan). It does these things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU.
 2. Lets the host cap how much of each they are willing to share.
@@ -23,7 +23,9 @@ does these things and nothing else:
    digest + Ed25519 signature against `IMAGE_SIGNING_PUBLIC_KEY` and
    `IMAGE_LOCAL_DIGEST`, then calls `plan_provision` and returns
    `https://provision.invalid/{backend}`. Mismatch is 400 (no stub boot).
-   The webview does not `fetch` this.
+   Complete storage locators yield `guestRclone` (`--s3-env-auth`); guest-mesh
+   hints are accepted and not used for host `tailscale up`. The webview does
+   not `fetch` this.
 8. Shows local presence: paused / idle / in-session. Earnings are
    `{n} credits accrued (not paid out)` from `GET /v1/hosts/{id}/earnings`
    (Rust, not the webview). Zero if this machine has no host id yet.
@@ -73,11 +75,12 @@ host-agent/
     │   ├── config.rs         load/save the sharing config; immediate pause
     │   ├── identity.rs       persisted Matchmaker host id
     │   ├── matchmaker.rs     inventory + heartbeat + earnings GET (clamp, fail-fast env)
-    │   ├── mesh.rs           Matchmaker preauth mint + tailscale up from env (no secrets in source)
+    │   ├── mesh.rs           Matchmaker preauth mint + tailscale up from env (no secrets in source; never --exit-node)
+    │   ├── storage.rs        Guest rclone argv/plan from locators or env (no S3 secrets, no spawn)
     │   ├── agent_status.rs   paused / idle / in-session (no Tauri types)
     │   ├── provision.rs      OS-conditional stub backends (peers; no hypervisor)
     │   ├── image.rs          SHA-256 + Ed25519 verify (public key from env)
-    │   ├── provision_http.rs POST /v1/provision → verify image → plan (Bearer)
+    │   ├── provision_http.rs POST /v1/provision → verify image → plan + optional guestRclone (Bearer)
     │   ├── tray.rs           system tray in Rust (no webview tray APIs)
     │   ├── commands.rs       the command surface exposed to the UI
     │   └── lib.rs            app setup and state
@@ -247,20 +250,20 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 16 software is in: Pro `POST /v1/provision` returns `streamer:
-  sunshine`, stub `sunshineUrl`, and a Moonlight host hint. Standard stays
-  `streamer: kasm`. Still stubs — **GATE-PRO stays OPEN**. Storage is renterd
-  S3, not Storj. This agent never mounts user data on the host OS.
-  `GuestRcloneMount::from_env` is a guest-side rclone argv stub (no
-  `S3_SECRET_KEY`, no process spawn). Mesh join is host-tagged (`tag:host`);
-  default-deny ACLs are the Headscale policy file. Platform exit-node guest
-  egress is a runbook, **not auto-applied** (see `docs/runbooks/headscale.md`).
-  Still do not invoke a real hypervisor from this agent. On macOS,
-  `POST /v1/provision` returns 400 (`UnsupportedHostOs`); Matchmaker then
-  keeps the seeded locator. Local in-session occupancy is still not cleared
-  when Matchmaker interrupts a session (no teardown port). Real host payouts
-  are not in this agent; the ledger only accrues credits. This agent never
-  reads `HEADSCALE_API_KEY` or renterd S3 secrets. Do not fake latency.
+- Phase 17 software is in: session guest/user tags live on Matchmaker JSON;
+  this agent still joins as `tag:host` and never passes `--advertise-exit-node`
+  or `--exit-node`. Complete provision locators return `guestRclone` argv
+  (`--s3-env-auth`); `GuestRcloneMount::from_locators` / `from_env` never
+  spawn rclone and never take S3 keys. GATE-FC / GATE-WHPX / GATE-PRO are
+  **operator-declared closed (2026-09-05)** — still no live hypervisor or
+  stream in this repo. Storage is renterd S3, not Storj. Guest `--exit-node`
+  is a Matchmaker join plan, not this binary (see
+  `docs/runbooks/headscale.md`). On macOS, `POST /v1/provision` returns 400
+  (`UnsupportedHostOs`); Matchmaker then keeps the seeded locator. Local
+  in-session occupancy is still not cleared when Matchmaker interrupts a
+  session (no teardown port). Real host payouts are not in this agent; the
+  ledger only accrues credits. This agent never reads `HEADSCALE_API_KEY` or
+  renterd S3 secrets. Do not fake latency.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

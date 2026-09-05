@@ -32,7 +32,27 @@ export interface StorageMountInfo {
   pathStyle: boolean;
   mountInsideGuest: boolean;
   rclone: string;
+  rcloneArgs?: string[];
+  envAuth?: boolean;
   objects: string[];
+}
+
+export interface MeshPeerInfo {
+  hostname: string;
+  aclTags: string[];
+  preauthKey: string;
+  ephemeral: boolean;
+  reusable: boolean;
+  expiresAt: string;
+  tailscaleUp: string[];
+}
+
+export interface SessionMeshInfo {
+  loginServer: string;
+  exitNode: string | null;
+  exitNodeApplied: boolean;
+  guest: MeshPeerInfo;
+  user: MeshPeerInfo;
 }
 
 export interface SessionResponse {
@@ -42,6 +62,7 @@ export interface SessionResponse {
   startedAt: string;
   connection: ConnectionInfo;
   storage?: StorageMountInfo;
+  mesh?: SessionMeshInfo;
 }
 
 export interface EndSessionResponse {

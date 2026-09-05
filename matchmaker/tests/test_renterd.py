@@ -10,6 +10,7 @@ from matchmaker.renterd import HttpRenterdClient, RenterdError
 from matchmaker.storage import (
     PROVISION_MARKER_KEY,
     bucket_name_for_user,
+    guest_rclone_args,
     guest_rclone_mount_command,
 )
 from tests.helpers import FakeRenterd, auth_header, signup
@@ -138,7 +139,12 @@ def test_session_book_provisions_a_per_user_bucket(
     assert "rclone mount" in storage["rclone"]
     assert "--s3-force-path-style" in storage["rclone"]
     assert "--s3-env-auth" in storage["rclone"]
+    assert "--s3-region" in storage["rclone"]
+    assert storage["envAuth"] is True
+    assert storage["rcloneArgs"][0] == "mount"
+    assert "--s3-env-auth" in storage["rcloneArgs"]
     assert TEST_SECRET not in storage["rclone"]
+    assert TEST_SECRET not in "".join(storage["rcloneArgs"])
     assert fake_renterd.created == [expected_bucket]
     assert fake_renterd.objects == [(expected_bucket, PROVISION_MARKER_KEY)]
     assert "intent" not in response.json()
@@ -213,17 +219,34 @@ def test_storage_provision_maps_renterd_failure_to_502(
 
 
 def test_guest_rclone_command_does_not_embed_secrets() -> None:
+    args = guest_rclone_args(
+        bucket="dcl-example",
+        prefix="files/",
+        endpoint="http://renterd.test.invalid",
+        region="us-east-1",
+    )
     command = guest_rclone_mount_command(
         bucket="dcl-example",
         prefix="files/",
         endpoint="http://renterd.test.invalid",
+        region="us-east-1",
     )
+    assert args[0] == "mount"
+    assert args[1] == ":s3:dcl-example/files"
+    assert args[2] == "/home/user/Persistent"
+    assert "--s3-env-auth" in args
+    assert "--s3-force-path-style" in args
+    assert "--s3-region" in args
+    assert "us-east-1" in args
+    assert "--s3-chunk-size" in args
+    assert "120MiB" in args
+    assert "--fast-list" in args
     assert command.startswith("rclone mount :s3:dcl-example/files /home/user/Persistent")
     assert "--vfs-cache-mode full" in command
-    assert "--s3-env-auth" in command
-    assert "--s3-force-path-style" in command
     assert TEST_SECRET not in command
     assert TEST_ACCESS not in command
+    assert TEST_SECRET not in "".join(args)
+    assert "AWS_SECRET_ACCESS_KEY" not in command
 
 
 def test_renterd_modules_do_not_name_backends_or_the_concrete_selector() -> None:

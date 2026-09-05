@@ -41,7 +41,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 16: pytest 150, cargo test 123, vitest 31.
+  Counts after phase 17: pytest 161, cargo test 126, vitest 31.
 
 ## Contracts to keep stable
 
@@ -61,11 +61,11 @@ Matchmaker JSON is camelCase.
 | GET | `/v1/sessions` | owner history + lifetime `creditsDebited` |
 | GET | `/v1/hosts/{id}/earnings` | Host bootstrap Bearer; `{ hostId, creditsAccrued }` |
 | GET | `/v1/images/{labTier}` | Public; `{ labTier, digestSha256, signature, algorithm, digestAlgorithm }`. `standard` / `pro` only. Not a blob download. |
-| POST | `/v1/hosts/{id}/mesh/preauth` | Host bootstrap Bearer; `{ loginServer, preauthKey, user, reusable, ephemeral, expiresAt }`. Headscale mint tagged `tag:host`. Not a per-session identity. |
-| POST | `/v1/storage` | User Bearer; issue per-user renterd bucket `dcl-<uuid>` + prefix `files/`. 201 new, 200 existing. `{ provider, bucket, prefix, endpoint, region, objects, pathStyle, mountInsideGuest, rclone }`. No access keys. |
+| POST | `/v1/hosts/{id}/mesh/preauth` | Host bootstrap Bearer; `{ loginServer, preauthKey, user, reusable, ephemeral, expiresAt }`. Headscale mint tagged `tag:host`. Not a guest/user identity. |
+| POST | `/v1/storage` | User Bearer; issue per-user renterd bucket `dcl-<uuid>` + prefix `files/`. 201 new, 200 existing. `{ provider, bucket, prefix, endpoint, region, objects, pathStyle, mountInsideGuest, rclone, rcloneArgs, envAuth }`. No access keys. |
 | GET | `/v1/storage` | User Bearer; 200 same shape or 404 if never issued. |
 
-Session response: `{ sessionId, hostId, labTier, startedAt, connection, storage }` where `storage` is the same locator object as `/v1/storage` (no access keys). Standard `connection` is `{ streamer: "kasm", kasmUrl, kasmToken, sunshineUrl: null, moonlight: null, gpuExclusive: false }`. Pro `connection` is `{ streamer: "sunshine", kasmUrl: null, kasmToken: null, sunshineUrl, moonlight: { host, app }, gpuExclusive: true }` — not Kasm renamed. Locators still live in `hosts.kasm_url`. GATE-PRO is **operator-declared closed** (2026-09-05); Pro backends remain stubs and there is no live Sunshine/Moonlight session in this repo.
+Session response: `{ sessionId, hostId, labTier, startedAt, connection, storage, mesh }` where `storage` is the same locator object as `/v1/storage` (no access keys). `mesh` is `{ loginServer, exitNode, exitNodeApplied, guest, user }` with ephemeral Headscale preauth keys tagged `tag:guest` / `tag:user` and guest `tailscaleUp` including `--exit-node` when `HEADSCALE_EXIT_NODE` is set (default `dcl-platform-exit`). Host Agent join stays the preauth route (`tag:host`, never `--exit-node`). Standard `connection` is `{ streamer: "kasm", kasmUrl, kasmToken, sunshineUrl: null, moonlight: null, gpuExclusive: false }`. Pro `connection` is `{ streamer: "sunshine", kasmUrl: null, kasmToken: null, sunshineUrl, moonlight: { host, app }, gpuExclusive: true }` — not Kasm renamed. Locators still live in `hosts.kasm_url`. GATE-PRO is **operator-declared closed** (2026-09-05); Pro backends remain stubs and there is no live Sunshine/Moonlight session in this repo.
 End response: `{ sessionId, status, endedAt, creditsDebited }`.
 History `status` is `active` | `ended` (user end) | `interrupted` (heartbeat
 silence). End response is `ended` or already-`interrupted`. Occupied silent
@@ -123,7 +123,7 @@ iframe it in early phases.
 | 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs). Live desktop is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid`) |
 | 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
 | 3 Pro/Gamer + latency | Execution phase 16 software (Sunshine locators). GATE-PRO operator-declared closed; no live stream in-repo |
-| 4 Hardening | Execution phase 13 (images, done); phase 14 mesh mint+join; 14c default-deny ACLs + host tags + exit-node runbook (not auto-applied). Phase 15 renterd (not Storj) |
+| 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv. Live desktop / pairwise ACLs still paper |
 
 ## Execution phases
 
@@ -241,16 +241,16 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR1 signup/login | Implemented (Matchmaker + `web/`) | — |
 | FR2 intent prompt → lab tier | Implemented (`web/` harness) | — |
 | FR3 match to most suitable host | Partial: `RankedHostSelector` (declared CPU then RAM; Pro GPU id) | Phase 16 when latency can be measured |
-| FR4 encrypted persistent files | Partial: renterd S3 prefix metadata + guest rclone runbook/stub (not Storj) | Live mount needs a guest image in-repo |
+| FR4 encrypted persistent files | Partial: renterd S3 locators + guest rclone argv/plan (env auth, not Storj). Provision hook returns `guestRclone` from locators | Live mount still needs a guest image in-repo |
 | FR5 live streamed desktop | Partial: harness opens a URL; seed is still `example.invalid` | Operator declared GATE-FC / GATE-WHPX; no live Kasm in this repo |
-| FR6 logout final save + “saved as of” | Missing in the guest UI | Guest image still paper; rclone runbook exists |
+| FR6 logout final save + “saved as of” | Missing in the guest UI | Guest image still paper; rclone argv/plan exists |
 | FR7 session history + billing/credits | Internal ledger + `GET /v1/sessions` | Phase 11 done; no payouts |
 | FR8 declare CPU/RAM slice + exclusive GPU | Implemented except availability schedule | Schedule can wait; do not break `sharedGpuId` |
-| FR9 auto mesh join + signed image pull | Partial: signed digest+sig verify; host preauth mint + Rust join (no Tailscale SaaS). Default-deny ACL file + host `tag:host`. Not per-session identities. Exit-node runbook not auto-applied. Storage is renterd S3, not Storj | Live guest rclone needs a guest image |
+| FR9 auto mesh join + signed image pull | Partial: signed digest+sig verify; host preauth mint + Rust join (`tag:host`, no Tailscale SaaS). Session book mints ephemeral `tag:guest` + `tag:user`. Guest join plan includes `--exit-node` from `HEADSCALE_EXIT_NODE`. ACL file is still role-based (not pairwise session tags). Storage is renterd S3, not Storj | Live guest Tailscale/rclone still need a guest image |
 | FR10 tray status (idle / in-session / earnings) | Window + Rust tray; earnings from ledger | Accrued, not paid out |
 | FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | After 45s Matchmaker treats skip as silence (interrupts). No pause field |
 | FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Later telemetry |
-| FR13 match on tier, latency, reliability | Partial: tier fit + declared caps; latency/reliability not measured | Phase 16 |
+| FR13 match on tier, latency, reliability | Partial: tier fit + declared caps; latency/reliability not measured | Do not fake `latency_ms` |
 | FR14 provision, heartbeat, auto teardown | Partial: mock provision + 45s stale for new books and occupied teardown; no live hypervisor | Real VMs are still not in this repo |
 | FR15 re-match on host disconnect | Implemented: `interrupted` + one `HostSelector.select`; 409 if none | Same renterd bucket follows the user; no Storj |
 | FR16 meter usage / payouts | Metering + ledger; payouts deferred | Phase 11 metering done; no Stripe |
@@ -337,22 +337,25 @@ Done as a software contract (fixture bytes + Ed25519, no image CDN). See
 via the Headscale API; Host Agent joins from **Rust** (env login-server +
 minted key). Fail fast if Headscale/Matchmaker mesh env is missing.
 
-**Do not:** Tailscale SaaS. Do not silently claim per-session identities or
-that guests already egress via a platform exit node.
+**Do not:** Tailscale SaaS. Do not silently claim pairwise session ACLs or
+that guests already egress live via a platform exit node.
 
 Done as a software contract (mocked Headscale HTTP in tests). Default-deny
-ACL file + host `tag:host` on mint, and a platform exit-node **runbook**
-(not auto-applied to guests) are **14c**. See
+ACL file + host `tag:host` on mint are **14c**. Session guest/user tags and
+guest `--exit-node` join plans are **phase 17**. See
 `docs/phase-logs/phase-14-headscale-mesh.md`,
-`docs/phase-logs/phase-14c-headscale-acls-exit-node.md`, and
+`docs/phase-logs/phase-14c-headscale-acls-exit-node.md`,
+`docs/phase-logs/phase-17-complete-software.md`, and
 `docs/runbooks/headscale.md`.
 
 ### Phase 14c — default-deny ACLs + platform exit-node runbook
 
-Done. Checked-in `headscale/acl.hujson` (Headscale 0.26 `acls`). Mint tags
-**`tag:host` only** — not per-session identities. Platform exit node is an
-opt-in compose overlay + numbered runbook; `--exit-node` is not auto-applied.
-See `docs/phase-logs/phase-14c-headscale-acls-exit-node.md`.
+Done. Checked-in `headscale/acl.hujson` (Headscale 0.26 `acls`). Host mint
+tags **`tag:host`**. Phase 17 mints ephemeral `tag:guest` / `tag:user` on
+book. Platform exit node overlay is the guest-path compose; guest join
+plans include `--exit-node` (default `dcl-platform-exit`). See
+`docs/phase-logs/phase-14c-headscale-acls-exit-node.md` and
+`docs/phase-logs/phase-17-complete-software.md`.
 
 ### Phase 15 — renterd + rclone in the guest (FR4, FR6)
 
@@ -364,9 +367,11 @@ runbook. Mount inside the guest; do not write session keys to the volunteer
 host disk.
 
 Done as a software contract (mocked renterd S3 HTTP in tests — no live
-renterd / Sia network). See `docs/phase-logs/phase-15-renterd.md` and
-`docs/runbooks/renterd.md`. Live guest mount and “saved as of HH:MM” still
-need a guest image in-repo (not in this tree).
+renterd / Sia network). Phase 17 strengthens guest rclone argv (`rcloneArgs`,
+`--s3-env-auth`) and the Host Agent provision hook (`guestRclone` from
+locators). Live guest mount and “saved as of HH:MM” still need a guest image
+in-repo (not in this tree). See `docs/phase-logs/phase-15-renterd.md` and
+`docs/runbooks/renterd.md`.
 
 ### Phase 16 — Pro/Gamer automation (cahier 3)
 
@@ -379,6 +384,25 @@ not invoke a hypervisor or a live stream, and none is in the repo. Latency-aware
 ranking still belongs in `RankedHostSelector` when a measured value exists; do
 not fake `latency_ms`. See
 `docs/phase-logs/phase-16-pro-gamer.md`.
+
+### Phase 17 — remaining mesh/storage guest path (software)
+
+Done as a **software contract** without a second host PC and without new
+paid accounts. Session book mints ephemeral Headscale `tag:guest` +
+`tag:user` keys (0.26 `aclTags`); guest `tailscaleUp` includes
+`--exit-node=$HEADSCALE_EXIT_NODE` (default overlay hostname
+`dcl-platform-exit`). Host Agent join still never advertises or uses an
+exit node. Guest rclone argv/plan is locators-only (`--s3-env-auth`);
+provision may return `guestRclone` from bucket/endpoint locators and still
+does not mount on the volunteer OS.
+
+**Leftover (not numbered phases):** Headscale 0.26 file policy cannot mint
+pairwise `tag:session-<uuid>` ACL owners — role tags remain. No guest image
+in-repo, so Tailscale/rclone plans are not executed inside a VM. FR13 still
+waits on a measured latency — do not fake `latency_ms`. No Stripe/payouts,
+Storj, or Tailscale SaaS.
+
+See `docs/phase-logs/phase-17-complete-software.md`.
 
 ## Handoff template
 

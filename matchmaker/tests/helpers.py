@@ -6,9 +6,16 @@ from uuid import UUID
 from fastapi.testclient import TestClient
 
 from matchmaker.config import get_settings
+from matchmaker.headscale import (
+    HOST_ACL_TAGS,
+    HeadscaleError,
+    PreauthGrant,
+)
+from matchmaker.mesh import GuestMeshHint
 from matchmaker.models import Host
 from matchmaker.provision import STREAMER_KASM, STREAMER_SUNSHINE, ProvisionResult
 from matchmaker.renterd import RenterdError
+from matchmaker.storage import GuestStorageLocators
 
 KASM_URL = "https://kasm.test.example/session"
 KASM_TOKEN = "test-kasm-token"
@@ -86,6 +93,54 @@ class FakeRenterd:
 
 
 @dataclass
+class FakeHeadscale:
+    """In-memory Headscale double. Swap via FastAPI Depends. No live Headscale."""
+
+    grant: PreauthGrant | None = None
+    calls: list[str] = field(default_factory=list)
+    error: HeadscaleError | None = None
+    expired: list[str] = field(default_factory=list)
+    tagged: list[tuple[tuple[str, ...], bool]] = field(default_factory=list)
+    _serial: int = 0
+
+    def mint_host_preauth(self) -> PreauthGrant:
+        self.calls.append("mint")
+        if self.error is not None:
+            raise self.error
+        if self.grant is not None:
+            return self.grant
+        return self.mint_tagged_preauth(acl_tags=HOST_ACL_TAGS, ephemeral=False)
+
+    def mint_tagged_preauth(
+        self, *, acl_tags: tuple[str, ...], ephemeral: bool
+    ) -> PreauthGrant:
+        self.calls.append("mint_tagged")
+        self.tagged.append((acl_tags, ephemeral))
+        if self.error is not None:
+            raise self.error
+        if self.grant is not None and acl_tags == HOST_ACL_TAGS and not ephemeral:
+            return self.grant
+        self._serial += 1
+        tag = acl_tags[0].replace(":", "") if acl_tags else "none"
+        return PreauthGrant(
+            login_server="http://headscale.test.invalid",
+            key=f"tskey-auth-test-{tag}-{self._serial}",
+            user="1",
+            reusable=False,
+            ephemeral=ephemeral,
+            expires_at="2026-09-05T12:00:00Z",
+            acl_tags=acl_tags,
+        )
+
+    def expire_nodes_named(self, hostnames: tuple[str, ...]) -> int:
+        self.calls.append("expire")
+        if self.error is not None:
+            raise self.error
+        self.expired.extend(hostnames)
+        return len(hostnames)
+
+
+@dataclass
 class FakeHostProvisioner:
     """Test double for the Host Agent provision port. Swap via FastAPI Depends."""
 
@@ -94,9 +149,20 @@ class FakeHostProvisioner:
     sunshine_url: str = SUNSHINE_URL
     moonlight_host: str = MOONLIGHT_HOST
     calls: list[tuple[UUID, str]] = field(default_factory=list)
+    storage_calls: list[GuestStorageLocators | None] = field(default_factory=list)
+    mesh_calls: list[GuestMeshHint | None] = field(default_factory=list)
 
-    def provision(self, host: Host, *, lab_tier: str) -> ProvisionResult | None:
+    def provision(
+        self,
+        host: Host,
+        *,
+        lab_tier: str,
+        storage: GuestStorageLocators | None = None,
+        guest_mesh: GuestMeshHint | None = None,
+    ) -> ProvisionResult | None:
         self.calls.append((host.id, lab_tier))
+        self.storage_calls.append(storage)
+        self.mesh_calls.append(guest_mesh)
         if lab_tier == "pro":
             return ProvisionResult(
                 connection_url=self.sunshine_url,

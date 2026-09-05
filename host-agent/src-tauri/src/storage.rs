@@ -51,29 +51,71 @@ impl GuestRcloneMount {
         let Some(endpoint) = nonempty(lookup("S3_ENDPOINT")) else {
             return Ok(None);
         };
-        if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
-            return Err(StorageError::InvalidEndpoint);
-        }
         let bucket = nonempty(lookup("S3_BUCKET")).ok_or(StorageError::MissingEnv("S3_BUCKET"))?;
         let prefix = nonempty(lookup("S3_PREFIX")).unwrap_or_default();
         let region = nonempty(lookup("S3_REGION")).unwrap_or_else(|| DEFAULT_REGION.to_string());
         let mount_point =
             nonempty(lookup("S3_GUEST_MOUNT")).unwrap_or_else(|| DEFAULT_MOUNT_POINT.to_string());
-        Ok(Some(Self {
-            endpoint: endpoint.trim_end_matches('/').to_string(),
+        Ok(Some(Self::from_locators(
+            endpoint,
+            bucket,
+            prefix,
+            region,
+            Some(mount_point),
+        )?))
+    }
+
+    pub fn from_locators(
+        endpoint: impl Into<String>,
+        bucket: impl Into<String>,
+        prefix: impl Into<String>,
+        region: impl Into<String>,
+        mount_point: Option<String>,
+    ) -> Result<Self, StorageError> {
+        let endpoint = endpoint.into().trim().trim_end_matches('/').to_string();
+        if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+            return Err(StorageError::InvalidEndpoint);
+        }
+        let bucket = bucket.into().trim().to_string();
+        if bucket.is_empty() {
+            return Err(StorageError::MissingEnv("S3_BUCKET"));
+        }
+        let prefix = prefix.into().trim().trim_matches('/').to_string();
+        let region = {
+            let value = region.into().trim().to_string();
+            if value.is_empty() {
+                DEFAULT_REGION.to_string()
+            } else {
+                value
+            }
+        };
+        let mount_point = mount_point
+            .map(|raw| raw.trim().to_string())
+            .filter(|raw| !raw.is_empty())
+            .unwrap_or_else(|| DEFAULT_MOUNT_POINT.to_string());
+        Ok(Self {
+            endpoint,
             bucket,
             prefix,
             region,
             mount_point,
-        }))
+        })
     }
 
-    pub fn rclone_args(&self) -> Vec<String> {
-        let remote = if self.prefix.is_empty() {
+    pub fn remote(&self) -> String {
+        if self.prefix.is_empty() {
             format!(":s3:{}", self.bucket)
         } else {
             format!(":s3:{}/{}", self.bucket, self.prefix.trim_matches('/'))
-        };
+        }
+    }
+
+    pub fn env_auth_var_names() -> &'static [&'static str] {
+        &["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+    }
+
+    pub fn rclone_args(&self) -> Vec<String> {
+        let remote = self.remote();
         vec![
             "mount".to_string(),
             remote,
@@ -146,6 +188,25 @@ mod tests {
         let debug = format!("{plan:?}");
         assert!(!debug.to_lowercase().contains("secret"));
         assert!(!args.iter().any(|a| a.contains("SECRET") || a.contains("secret")));
+    }
+
+    #[test]
+    fn from_locators_matches_from_env_and_documents_env_auth() {
+        let from_env = GuestRcloneMount::from_env(lookup).unwrap().unwrap();
+        let from_locators = GuestRcloneMount::from_locators(
+            "http://renterd.test.invalid:8081",
+            "lab-files",
+            "users/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/",
+            "us-east-1",
+            None,
+        )
+        .unwrap();
+        assert_eq!(from_env.rclone_args(), from_locators.rclone_args());
+        assert_eq!(
+            GuestRcloneMount::env_auth_var_names(),
+            ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+        );
+        assert!(!from_locators.rclone_args().iter().any(|a| a.contains("secret")));
     }
 
     #[test]

@@ -13,6 +13,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use crate::agent_status::Occupancy;
 use crate::image::{trust_from_env, verify_image, ImageError, ImageManifest, ImageTrust};
 use crate::provision::{plan, HostOs, LabTier, ProvisionError, ProvisionPlan, ProvisionRequest};
+use crate::storage::GuestRcloneMount;
 
 const PROVISION_PATH: &str = "/v1/provision";
 const BODY_MAX: usize = 16 * 1024;
@@ -76,9 +77,28 @@ pub struct ProvisionHttpRequest {
     pub shared_gpu_id: Option<String>,
     pub image_digest: String,
     pub image_signature: String,
-    /// renterd S3 endpoint the **guest** should rclone. Never mount on this host OS.
+    /// renterd S3 locators the **guest** should rclone. Never mount on this host OS.
     #[serde(default)]
     pub storage_endpoint: Option<String>,
+    #[serde(default)]
+    pub storage_bucket: Option<String>,
+    #[serde(default)]
+    pub storage_prefix: Option<String>,
+    #[serde(default)]
+    pub storage_region: Option<String>,
+    /// Guest mesh join hint (no preauth). Host Agent must not `tailscale up` these.
+    #[serde(default)]
+    pub guest_mesh: Option<GuestMeshHint>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuestMeshHint {
+    pub login_server: Option<String>,
+    pub hostname: Option<String>,
+    pub exit_node: Option<String>,
+    #[serde(default)]
+    pub acl_tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -99,6 +119,17 @@ pub struct ProvisionHttpResponse {
     pub sunshine_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub moonlight: Option<MoonlightHint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guest_rclone: Option<GuestRclonePlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuestRclonePlan {
+    pub args: Vec<String>,
+    pub mount_point: String,
+    pub remote: String,
+    pub env_auth: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,9 +172,10 @@ pub fn plan_http(
     let advertised = ImageManifest::parse(&request.image_digest, &request.image_signature)?;
     verify_image(trust, &advertised, None)?;
     let lab_tier = LabTier::parse(&request.lab_tier)?;
-    // storage_endpoint is documented for the guest only. This stub never rclone-mounts
-    // user data on the volunteer host OS (architecture §8).
-    let _guest_storage = request.storage_endpoint.as_deref();
+    // Locators are for a guest image. This stub never rclone-mounts on the
+    // volunteer host OS and never `tailscale up`s guestMesh (architecture §8/§9).
+    let guest_rclone = guest_rclone_from_request(request);
+    ignore_guest_mesh_on_host(request.guest_mesh.as_ref());
     let planned = plan(
         os,
         &ProvisionRequest {
@@ -151,10 +183,44 @@ pub fn plan_http(
             shared_gpu_id: request.shared_gpu_id.clone(),
         },
     )?;
-    Ok(http_response_from_plan(&planned))
+    Ok(http_response_from_plan(&planned, guest_rclone))
 }
 
-fn http_response_from_plan(planned: &ProvisionPlan) -> ProvisionHttpResponse {
+fn ignore_guest_mesh_on_host(hint: Option<&GuestMeshHint>) {
+    // Accepted on the wire for a future guest image. Never `tailscale up` here.
+    if let Some(mesh) = hint {
+        let _ = (
+            mesh.login_server.as_deref(),
+            mesh.hostname.as_deref(),
+            mesh.exit_node.as_deref(),
+            mesh.acl_tags.len(),
+        );
+    }
+}
+
+fn guest_rclone_from_request(request: &ProvisionHttpRequest) -> Option<GuestRclonePlan> {
+    let endpoint = nonempty(request.storage_endpoint.clone())?;
+    let bucket = nonempty(request.storage_bucket.clone())?;
+    let prefix = request
+        .storage_prefix
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let region = nonempty(request.storage_region.clone()).unwrap_or_else(|| "us-east-1".to_string());
+    let mount = GuestRcloneMount::from_locators(endpoint, bucket, prefix, region, None).ok()?;
+    Some(GuestRclonePlan {
+        args: mount.rclone_args(),
+        mount_point: mount.mount_point.clone(),
+        remote: mount.remote(),
+        env_auth: true,
+    })
+}
+
+fn http_response_from_plan(
+    planned: &ProvisionPlan,
+    guest_rclone: Option<GuestRclonePlan>,
+) -> ProvisionHttpResponse {
     if planned.lab_tier == LabTier::Pro {
         ProvisionHttpResponse {
             connection_url: planned.connection_url.clone(),
@@ -166,6 +232,7 @@ fn http_response_from_plan(planned: &ProvisionPlan) -> ProvisionHttpResponse {
                 host: STUB_MOONLIGHT_HOST.to_string(),
                 app: STUB_MOONLIGHT_APP.to_string(),
             }),
+            guest_rclone,
         }
     } else {
         ProvisionHttpResponse {
@@ -175,6 +242,7 @@ fn http_response_from_plan(planned: &ProvisionPlan) -> ProvisionHttpResponse {
             streamer: STREAMER_KASM.to_string(),
             sunshine_url: None,
             moonlight: None,
+            guest_rclone,
         }
     }
 }
@@ -807,6 +875,69 @@ mod tests {
             format!("{STUB_CONNECTION_ORIGIN}/firecracker")
         );
         assert!(body.get("rclone").is_none());
+        assert!(body.get("guestRclone").is_none());
         assert!(body.get("secretAccessKey").is_none());
+    }
+
+    #[test]
+    fn storage_locators_plan_guest_rclone_without_mounting_or_secrets() {
+        let (trust, manifest) = signed_fixture(FIXTURE_STANDARD_BYTES);
+        let body = serde_json::json!({
+            "labTier": "standard",
+            "sharedGpuId": null,
+            "imageDigest": manifest.digest_hex(),
+            "imageSignature": manifest.signature_base64(),
+            "storageEndpoint": "http://renterd.test.invalid",
+            "storageBucket": "dcl-example",
+            "storagePrefix": "files/",
+            "storageRegion": "us-east-1",
+            "guestMesh": {
+                "loginServer": "http://headscale.test.invalid",
+                "hostname": "dcl-guest-example",
+                "exitNode": "dcl-platform-exit",
+                "aclTags": ["tag:guest"]
+            }
+        })
+        .to_string()
+        .into_bytes();
+        let output = respond(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &trust,
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(body["hypervisorInvoked"], false);
+        let plan = body["guestRclone"].as_object().expect("guest rclone plan");
+        let args = plan["args"].as_array().expect("rclone args");
+        let args: Vec<&str> = args.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(args[0], "mount");
+        assert_eq!(args[1], ":s3:dcl-example/files");
+        assert!(args.contains(&"--s3-env-auth"));
+        assert!(args.contains(&"--s3-force-path-style"));
+        assert_eq!(plan["envAuth"], true);
+        assert_eq!(plan["mountPoint"], "/home/user/Persistent");
+        assert!(body.get("secretAccessKey").is_none());
+        assert!(body.get("accessKeyId").is_none());
+        assert!(!output.body.contains("AWS_SECRET_ACCESS_KEY"));
+        assert!(!output.body.contains("preauthKey"));
+    }
+
+    #[test]
+    fn provision_http_never_spawns_rclone_or_guest_tailscale() {
+        let source = include_str!("provision_http.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("provision_http.rs should have a test module");
+        assert!(!production.contains("Command::new(\"rclone\")"));
+        assert!(!production.contains("Command::new(\"tailscale\")"));
+        assert!(!production.contains("S3_SECRET_KEY"));
+        assert!(!production.contains("S3_ACCESS_KEY"));
+        assert!(!production.contains("preauthKey"));
     }
 }

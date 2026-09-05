@@ -87,6 +87,7 @@ def heartbeat_host(
     selector: Annotated[HostSelector, Depends(get_host_selector)],
     provisioner: Annotated[HostProvisioner, Depends(get_host_provisioner)],
     _: Annotated[None, Depends(require_host_bootstrap)],
+    headscale: Annotated[HeadscaleClient, Depends(get_headscale_client)],
 ) -> HostResponse:
     host = record_heartbeat(db, host_id)
     if host is None:
@@ -97,6 +98,7 @@ def heartbeat_host(
         selector,
         provisioner,
         credits_per_minute=get_settings().credits_per_minute,
+        headscale=headscale,
     )
     db.refresh(host)
     return host_response(host)
@@ -138,8 +140,9 @@ def mint_host_mesh_preauth(
 ) -> MeshPreauthResponse:
     """Mint a Host Agent preauth key via Headscale, tagged `tag:host`.
 
-    Default-deny policy lives in `headscale/acl.hujson`. This is host-tagged,
-    not a per-session identity. Platform exit-node use is not applied here.
+    Default-deny policy lives in `headscale/acl.hujson`. Guest/user identities
+    are minted on `POST /v1/sessions`, not here. This join never sets
+    `--exit-node` or `--advertise-exit-node`.
     """
     host = db.get(Host, host_id)
     if host is None:

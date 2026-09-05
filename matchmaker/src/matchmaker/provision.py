@@ -14,8 +14,10 @@ import httpx
 from sqlalchemy.orm import Session
 
 from matchmaker.images import ImageManifest
+from matchmaker.mesh import GuestMeshHint
 from matchmaker.models import Host, LabTier
 from matchmaker.schemas import ConnectionInfo, MoonlightInfo
+from matchmaker.storage import GuestStorageLocators
 
 _PROVISION_PATH = "/v1/provision"
 _REQUEST_TIMEOUT_SECONDS = 10.0
@@ -50,7 +52,14 @@ class ProvisionResult:
 
 
 class HostProvisioner(Protocol):
-    def provision(self, host: Host, *, lab_tier: str) -> ProvisionResult | None:
+    def provision(
+        self,
+        host: Host,
+        *,
+        lab_tier: str,
+        storage: GuestStorageLocators | None = None,
+        guest_mesh: GuestMeshHint | None = None,
+    ) -> ProvisionResult | None:
         """Ask the selected host's agent to become ready, or None to use the host row."""
 
 
@@ -105,8 +114,15 @@ def provision_booked_host(
     provisioner: HostProvisioner,
     *,
     lab_tier: str,
+    storage: GuestStorageLocators | None = None,
+    guest_mesh: GuestMeshHint | None = None,
 ) -> None:
-    result = provisioner.provision(host, lab_tier=lab_tier)
+    result = provisioner.provision(
+        host,
+        lab_tier=lab_tier,
+        storage=storage,
+        guest_mesh=guest_mesh,
+    )
     if result is None or not result.connection_url.strip():
         return
     apply_provision_result(db, host, result)
@@ -149,13 +165,20 @@ class HttpHostProvisioner:
         self._images = images or {}
         self._storage_endpoint = storage_endpoint
 
-    def provision(self, host: Host, *, lab_tier: str) -> ProvisionResult | None:
+    def provision(
+        self,
+        host: Host,
+        *,
+        lab_tier: str,
+        storage: GuestStorageLocators | None = None,
+        guest_mesh: GuestMeshHint | None = None,
+    ) -> ProvisionResult | None:
         origin = agent_origin(host.agent_url) or agent_origin(self._fallback_base_url)
         if origin is None:
             return None
 
         url = f"{origin}{_PROVISION_PATH}"
-        payload = {
+        payload: dict[str, object] = {
             "labTier": lab_tier,
             "sharedGpuId": host.shared_gpu_id,
         }
@@ -163,10 +186,22 @@ class HttpHostProvisioner:
         if manifest is not None:
             payload["imageDigest"] = manifest.digest_sha256
             payload["imageSignature"] = manifest.signature
-        # Endpoint only — never S3 secrets. Host Agent must not mount this on
+        # Locators only — never S3 secrets. Host Agent must not mount this on
         # the volunteer OS; rclone belongs inside the guest.
-        if self._storage_endpoint:
+        if storage is not None:
+            payload["storageEndpoint"] = storage.endpoint
+            payload["storageBucket"] = storage.bucket
+            payload["storagePrefix"] = storage.prefix
+            payload["storageRegion"] = storage.region
+        elif self._storage_endpoint:
             payload["storageEndpoint"] = self._storage_endpoint
+        if guest_mesh is not None:
+            payload["guestMesh"] = {
+                "loginServer": guest_mesh.login_server,
+                "hostname": guest_mesh.hostname,
+                "exitNode": guest_mesh.exit_node,
+                "aclTags": list(guest_mesh.acl_tags),
+            }
         headers = {
             "Authorization": f"Bearer {self._bearer_token}",
             "Accept": "application/json",

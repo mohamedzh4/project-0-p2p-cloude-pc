@@ -11,6 +11,8 @@ import re
 
 from dotenv import load_dotenv
 
+from matchmaker.headscale import DEFAULT_EXIT_NODE
+
 
 def load_env_files() -> None:
     """Load `.env` from the process cwd and from the matchmaker/ directory."""
@@ -84,6 +86,22 @@ def _s3_region() -> str:
     return os.environ[chosen].strip()
 
 
+def _headscale_exit_node() -> str | None:
+    """Platform exit-node hostname/IP for guest `--exit-node`.
+
+    Defaults to the compose overlay hostname `dcl-platform-exit`. Set
+    `HEADSCALE_EXIT_NODE=off` to omit `--exit-node` from guest join plans
+    (then architecture §9 item 5 is not auto-applied).
+    """
+    raw = os.environ.get("HEADSCALE_EXIT_NODE")
+    if raw is None or raw.strip() == "":
+        return DEFAULT_EXIT_NODE
+    value = raw.strip()
+    if value.lower() in {"off", "none", "false"}:
+        return None
+    return value
+
+
 def _guest_s3_endpoint() -> str:
     """URL guests rclone against. Defaults to the Matchmaker→renterd endpoint."""
     guest_name = _first_nonempty_env("S3_GUEST_ENDPOINT", "RENTERD_S3_GUEST_ENDPOINT")
@@ -134,6 +152,7 @@ class Settings:
     headscale_api_key: str = field(repr=False)
     headscale_user: str
     headscale_login_server: str
+    headscale_exit_node: str | None
     renterd_s3_endpoint: str
     renterd_s3_guest_endpoint: str
     renterd_s3_region: str
@@ -192,6 +211,7 @@ class Settings:
             headscale_api_key=_require_env("HEADSCALE_API_KEY"),
             headscale_user=_require_env("HEADSCALE_USER"),
             headscale_login_server=_require_http_url("HEADSCALE_LOGIN_SERVER"),
+            headscale_exit_node=_headscale_exit_node(),
             renterd_s3_endpoint=_require_first_http_url(
                 "S3_ENDPOINT", "RENTERD_S3_ENDPOINT"
             ),

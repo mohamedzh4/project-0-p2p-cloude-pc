@@ -58,6 +58,7 @@ os.environ["HEADSCALE_URL"] = "http://headscale.test.invalid"
 os.environ["HEADSCALE_LOGIN_SERVER"] = "http://headscale.test.invalid"
 os.environ["HEADSCALE_API_KEY"] = "test-headscale-api-key"
 os.environ["HEADSCALE_USER"] = "1"
+os.environ["HEADSCALE_EXIT_NODE"] = "dcl-platform-exit"
 # Never call a live renterd / Sia network from unit tests.
 os.environ["RENTERD_S3_ENDPOINT"] = "http://renterd.test.invalid"
 os.environ["RENTERD_S3_ACCESS_KEY"] = "test-renterd-access"
@@ -70,12 +71,13 @@ os.environ.pop("S3_SECRET_KEY", None)
 os.environ.pop("S3_BUCKET", None)
 
 from matchmaker.db import get_engine, get_session_factory  # noqa: E402
-from matchmaker.deps import get_host_provisioner, get_renterd_client  # noqa: E402
+from matchmaker.deps import get_headscale_client, get_host_provisioner, get_renterd_client  # noqa: E402
 from matchmaker.main import app  # noqa: E402
 from matchmaker.models import Host, HostStatus, LabTier  # noqa: E402
 from tests.helpers import (  # noqa: E402
     KASM_TOKEN,
     KASM_URL,
+    FakeHeadscale,
     FakeHostProvisioner,
     FakeRenterd,
     PROVISION_URL,
@@ -136,6 +138,16 @@ def fake_renterd() -> Generator[FakeRenterd, None, None]:
         yield fake
     finally:
         app.dependency_overrides.pop(get_renterd_client, None)
+
+
+@pytest.fixture(autouse=True)
+def fake_headscale() -> Generator[FakeHeadscale, None, None]:
+    fake = FakeHeadscale()
+    app.dependency_overrides[get_headscale_client] = lambda: fake
+    try:
+        yield fake
+    finally:
+        app.dependency_overrides.pop(get_headscale_client, None)
 
 
 @pytest.fixture

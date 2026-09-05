@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-05, after operator-declared gate pass
+# Project Status — last updated: 2026-09-05, after phase 17 software
 
 ## Done
 
@@ -8,12 +8,12 @@
   tests and not by an in-repo lab: `docs/runbooks/gate-fc.md`,
   `docs/runbooks/gate-whpx.md`, `docs/runbooks/gate-pro.md`. No attached
   `gate-*-result.md` or live session URL. This Mac cannot host.
-- Headscale operator runbook: `docs/runbooks/headscale.md` (ACL grants +
-  platform exit-node steps).
+- Headscale operator runbook: `docs/runbooks/headscale.md` (ACL grants,
+  session guest/user mint, platform exit-node guest path).
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
-  keypairs, guest rclone). **Implemented storage is renterd, not Storj
+  keypairs, guest rclone argv). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–16 **software** on local `main` (not pushed):
+- Execution phases 1–17 **software** on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -28,11 +28,12 @@
     set, `mesh.rs` POSTs `/v1/hosts/{id}/mesh/preauth` from Rust and runs
     `tailscale up` with that env URL + the minted key (never
     `--advertise-exit-node`, `--exit-node`, or `--advertise-tags`). Provision
-    may include `storageEndpoint` (URL only); the stub never rclone-mounts
-    on the host OS. `storage.rs` can plan guest rclone argv from public
-    locators and does not read S3 secrets. Pro HTTP 200 adds `streamer:
+    may include storage locators (endpoint/bucket/prefix/region, no keys) and
+    a guest-mesh hint (no preauth). The stub never rclone-mounts on the host
+    OS and never `tailscale up`s as the guest. When locators are complete it
+    returns `guestRclone` argv (`--s3-env-auth`). Pro HTTP 200 adds `streamer:
     sunshine`, stub `sunshineUrl`, and a Moonlight host hint (`gpuExclusive`
-    true). Standard stays `streamer: kasm`. **123/123** `cargo test`
+    true). Standard stays `streamer: kasm`. **126/126** `cargo test --lib`
     (2026-09-05).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
@@ -40,51 +41,61 @@
     `HostSelector.select(db, *, lab_tier) -> Host | None` via
     `get_host_selector()` → `RankedHostSelector`. `HostProvisioner` after
     occupancy commit, now advertising `imageDigest` + `imageSignature` for the
-    booked lab tier plus optional `storageEndpoint`. `GET /v1/images/{labTier}`
-    is checksum metadata only. `POST /v1/hosts/{id}/mesh/preauth` mints a
-    Headscale preauth key tagged **`tag:host`**. `POST`/`GET /v1/storage` and
-    session JSON `storage` issue a per-user renterd S3 bucket (`dcl-<uuid>`)
-    and guest rclone locators (**no access keys** on the wire). `GET` is 404
-    until issued. Bucket provision on book runs **before** occupy; renterd
-    failure is 502 without taking the host. Session `connection` is Kasm for
-    Standard and Sunshine/Moonlight for Pro (`gpuExclusive: true`) — not Kasm
-    renamed. Locator still lives in `hosts.kasm_url`. Session end meters
-    `startedAt` → `endedAt` into `ledger_entries`.
-    Silence (~45s) on an occupied host marks the session `interrupted`,
-    settles the ledger once, and rematches via one `select` (same renterd
-    bucket follows the user; rematch does not call renterd). Required env
-    includes `CREDITS_PER_MINUTE`, the four `IMAGE_*` pairs, `HEADSCALE_*`,
-    and `S3_ENDPOINT` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` (or `RENTERD_S3_*`
-    aliases). **150/150** pytest (2026-09-05). Session JSON
-    still has no `intent` field. No latency/reliability columns. No
-    Matchmaker pause field. No payment processor. No image CDN / multi-GB
-    download. No live Sia network in unit tests.
+    booked lab tier plus optional storage locators and a guest-mesh hint (no
+    preauth, no S3 keys). `GET /v1/images/{labTier}` is checksum metadata
+    only. `POST /v1/hosts/{id}/mesh/preauth` mints a Headscale preauth key
+    tagged **`tag:host`**. `POST /v1/sessions` mints ephemeral **`tag:guest`**
+    and **`tag:user`** keys (Headscale 0.26 `aclTags`) with unique hostnames
+    and puts `--exit-node=$HEADSCALE_EXIT_NODE` on the guest join plan
+    (default `dcl-platform-exit`). Session end / silence interrupt best-effort
+    expires those hostnames. `POST`/`GET /v1/storage` and session JSON
+    `storage` issue a per-user renterd S3 bucket (`dcl-<uuid>`) and guest
+    rclone locators + `rcloneArgs` (**no access keys** on the wire;
+    `--s3-env-auth`). `GET` is 404 until issued. Bucket provision on book runs
+    **before** occupy; renterd or Headscale mint failure is 502 without taking
+    the host. Session `connection` is Kasm for Standard and Sunshine/Moonlight
+    for Pro (`gpuExclusive: true`) — not Kasm renamed. Locator still lives in
+    `hosts.kasm_url`. Session end meters `startedAt` → `endedAt` into
+    `ledger_entries`. Silence (~45s) on an occupied host marks the session
+    `interrupted`, settles the ledger once, expires session mesh nodes, and
+    rematches via one `select` (same renterd bucket follows the user; rematch
+    does not call renterd). Required env includes `CREDITS_PER_MINUTE`, the
+    four `IMAGE_*` pairs, `HEADSCALE_*` (optional `HEADSCALE_EXIT_NODE`,
+    default `dcl-platform-exit`), and `S3_ENDPOINT` / `S3_ACCESS_KEY` /
+    `S3_SECRET_KEY` (or `RENTERD_S3_*` aliases). **161/161** pytest
+    (2026-09-05). Session JSON still has no `intent` field. No
+    latency/reliability columns. No Matchmaker pause field. No payment
+    processor. No image CDN / multi-GB download. No live Sia network in unit
+    tests. No live Headscale in unit tests.
   - Web harness: signup/login, FR2 intent prompt → `labTier`, request/end
     session, session history + credits debited, optional storage locator
-    (endpoint/bucket only — not secrets). Pro copy points at Sunshine /
-    Moonlight; Standard still opens Kasm in a new tab. **31/31** vitest;
-    `npm run typecheck` passed.
+    (endpoint/bucket only — not secrets), mesh hostname/tags/exit-node (not
+    the preauth secret). Pro copy points at Sunshine / Moonlight; Standard
+    still opens Kasm in a new tab. **31/31** vitest; `npm run typecheck`
+    passed.
   - Headscale compose in `headscale/` (image `0.26.1`) with checked-in
-    default-deny `acl.hujson`. renterd compose in `renterd/` (image
-    `ghcr.io/siafoundation/renterd:2.9.3`, zen testnet, S3 on loopback
-    **8081**). No Tailscale cloud account. No Storj.
+    default-deny `acl.hujson`. Guest-path exit-node overlay
+    `docker-compose.exit-node.yml` (`TS_HOSTNAME: dcl-platform-exit`). renterd
+    compose in `renterd/` (image `ghcr.io/siafoundation/renterd:2.9.3`, zen
+    testnet, S3 on loopback **8081**). No Tailscale cloud account. No Storj.
 
 ## In Progress
 
-- None. Numbered software phases 1–16 are on local `main`. Hardware gates are
-  operator-declared closed. Remaining work is paper items under Up Next, plus
-  push when asked. No numbered software phase after 16.
+- None. Numbered software phases 1–17 are on local `main`. Hardware gates are
+  operator-declared closed. Remaining work is leftover paper under Up Next,
+  plus push when asked. No numbered software phase after 17.
 
 ## Up Next
 
 **Software MVP complete pending push** (`main` is ahead of `origin/main`).
-Remaining paper (not numbered phases, not a second host PC):
+Leftover paper (not numbered phases, not a second host PC):
 
-1. Per-session mesh tags (mint is still `tag:host` only).
-2. Auto `--exit-node` on guests (runbook exists, not auto-applied).
-3. Live guest rclone mount / “saved as of HH:MM” (control-plane grant exists;
-   no guest image in-repo).
-4. FR13 latency ranking waits on a measured value — do not fake `latency_ms`.
+1. Pairwise mesh ACLs — Headscale 0.26 file policy cannot mint
+   `tag:session-<uuid>` owners; every `tag:user` may still reach every
+   `tag:guest`.
+2. Live guest Tailscale/rclone — join/mount plans exist; no guest image
+   in-repo to execute them. “Saved as of HH:MM” still needs that image.
+3. FR13 latency ranking waits on a measured value — do not fake `latency_ms`.
 
 ## Known Risks / Open Items
 
@@ -93,29 +104,30 @@ Remaining paper (not numbered phases, not a second host PC):
   template or live session URL in this repo. This Mac still cannot host.
   `SEED_HOST_KASM_URL` remains `https://example.invalid/kasm`.
 - **Phase 15 race (2026-09-05):** `0a59f68` issued renterd S3 keys on session
-  JSON; `9f69179` (HEAD) kept keys in env and locators-only on
-  `POST`/`GET /v1/storage`. Phase 16 kept the locators-only contract. `9f69179`
-  also leaked incomplete Phase 16 schema without `session_connection` in
-  `provision.py`; this session finished that. An unused `0007_host_latency_ms`
-  draft from a parallel agent was **not** applied.
-- Local `main` is ahead of `origin/main` (planning + phases 1–16). Nothing was
+  JSON; `9f69179` kept keys in env and locators-only on
+  `POST`/`GET /v1/storage`. Phase 16–17 kept the locators-only contract.
+  An unused `0007_host_latency_ms` draft from a parallel agent was **not**
+  applied.
+- Local `main` is ahead of `origin/main` (planning + phases 1–17). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
 - Existing local `matchmaker/.env` must have `HOST_BOOTSTRAP_TOKEN` and
   `HOST_APPROVE_TOKEN` (different values), `CREDITS_PER_MINUTE`, the four
   `IMAGE_*` digest/signature pairs, `HEADSCALE_*`, and `S3_*` (or
-  `RENTERD_S3_*` aliases) or uvicorn fails at startup. Pytest overwrites Headscale and renterd env to
-  `.invalid` so a local `.env` cannot point tests at a live instance. Do not
-  commit `.env`, renterd seeds, or `renterd/data/`. Copy fixture `IMAGE_*`
-  values from `.env.example` for local stub verify; they are not a production
-  key. Optional `STALE_SESSION_SWEEP_INTERVAL_SECONDS` defaults to 15.
+  `RENTERD_S3_*` aliases) or uvicorn fails at startup. `HEADSCALE_EXIT_NODE`
+  defaults to `dcl-platform-exit` if unset (`off` disables guest `--exit-node`).
+  Pytest overwrites Headscale and renterd env to `.invalid` so a local `.env`
+  cannot point tests at a live instance. Do not commit `.env`, renterd seeds,
+  or `renterd/data/`. Copy fixture `IMAGE_*` values from `.env.example` for
+  local stub verify; they are not a production key. Optional
+  `STALE_SESSION_SWEEP_INTERVAL_SECONDS` defaults to 15.
 - Enabling `HOST_AGENT_LISTEN_ADDR` now also requires `IMAGE_SIGNING_PUBLIC_KEY`
   and `IMAGE_LOCAL_DIGEST` (fail fast). Public key only — never a signing
   secret in the agent or Matchmaker runtime.
 - A long-running Matchmaker on `:8000` from before this phase will not return
-  `streamer` / `sunshineUrl` on sessions. Restart uvicorn after pulling this
-  commit, with `HEADSCALE_*` and `S3_*` (or `RENTERD_S3_*`) set.
+  `mesh` / `rcloneArgs` / `streamer` on sessions. Restart uvicorn after
+  pulling this commit, with `HEADSCALE_*` and `S3_*` (or `RENTERD_S3_*`) set.
 - Pause is still local `sharingEnabled=false` (no Matchmaker field). Skipping
   heartbeats looks like disconnect: after 45s the occupied session is
   interrupted and may rematch.
@@ -137,27 +149,30 @@ Remaining paper (not numbered phases, not a second host PC):
   active session; the next book is 409 until a fresh approved host exists.
   Reclaim runs before a new book, so a displaced user can take the last
   remaining live host. The renterd bucket is per-user and is not re-created
-  on rematch.
+  on rematch. Rematch mints a new guest/user mesh for the new session id.
 - **Real host payouts and user card charges are deferred.** The ledger records
   credits only. Do not add Stripe/PayPal.
 - **Tailscale SaaS is not used.** Self-hosted Headscale mint+join is in.
-  Default-deny ACLs are `headscale/acl.hujson`. Mint tags **`tag:host` only**
-  — not per-session / ephemeral guest or user identities.
-- **Architecture §9 item 5 — runbook exists, not auto-applied.** Opt-in
-  `headscale/docker-compose.exit-node.yml` plus numbered steps in
-  `docs/runbooks/headscale.md`. Host Agent join never advertises
-  `--advertise-exit-node` and never sets `--exit-node`.
-- **FR4/FR6 live mount is still paper.** Control-plane grant + compose exist.
-  rclone inside a booted guest still needs a guest image in-repo. Session keys
-  must not land on the volunteer host disk.
+  Default-deny ACLs are `headscale/acl.hujson`. Host mint is `tag:host`.
+  Session mint is ephemeral `tag:guest` + `tag:user` with unique hostnames.
+  ACL grants stay role-based (not pairwise).
+- **Architecture §9 item 5 — software-applied on the guest join plan, not
+  live-verified.** Guest `tailscaleUp` includes `--exit-node` from
+  `HEADSCALE_EXIT_NODE` (default overlay hostname `dcl-platform-exit`). Host
+  Agent join never advertises `--advertise-exit-node` and never sets
+  `--exit-node`. Until a guest image actually runs those args against a
+  running exit node, guest internet can still egress via the host path.
+- **FR4/FR6 live mount is still paper.** Control-plane grant + argv/plan +
+  provision `guestRclone` exist. rclone inside a booted guest still needs a
+  guest image in-repo. Session keys must not land on the volunteer host disk.
 - Consumer GPU EULAs and ToS/liability still need legal review (architecture
   §9 items 10–11).
-- Aikido MCP `namespaceStatus: error` this session; not a scan pass. Run
-  `/aikido:setup`.
+- Aikido scan: MCP `namespaceStatus: error` this session (tool discovery
+  failed). Not a scan pass. Run `/aikido:setup`.
 
 ## Notes for next agent/session
 
-- Execution **phase 16 is done** (software). Hardware gates are
+- Execution **phase 17 is done** (software). Hardware gates are
   **operator-declared closed** — see `docs/phase-logs/phase-gates-operator-pass.md`.
   Read `PHASE_PLAN.md` and this file. Do not start Storj. Do not invent lab
   output, a live Kasm URL, or `latency_ms`. Do not treat renterd compose-up as
@@ -173,10 +188,11 @@ Remaining paper (not numbered phases, not a second host PC):
 - Image verify: signed message is the raw 32-byte SHA-256 digest; signature is
   standard base64 Ed25519; public key is 64 hex chars. Matchmaker does not
   hold the private key. Tests use a documented fixture seed in Rust only.
-- Mesh: Matchmaker holds `HEADSCALE_API_KEY`; the agent never does. Join uses
-  `HEADSCALE_LOGIN_SERVER` from agent env plus a minted preauth key tagged
-  `tag:host`. Unit tests mock Headscale HTTP. Headscale 0.26.1 wants a numeric
-  `HEADSCALE_USER`. Policy expects the Headscale user named `dcl` (`dcl@`).
+- Mesh: Matchmaker holds `HEADSCALE_API_KEY`; the agent never does. Host join
+  uses `HEADSCALE_LOGIN_SERVER` from agent env plus a minted preauth key tagged
+  `tag:host`. Session JSON `mesh` holds guest/user keys. Unit tests mock
+  Headscale HTTP. Headscale 0.26.1 wants a numeric `HEADSCALE_USER`. Policy
+  expects the Headscale user named `dcl` (`dcl@`).
 - Metering is `ledger.settle_ended_session` at user end and on silence
   interrupt. Unique `(session_id, party)` prevents double-credit. Rate is
   `CREDITS_PER_MINUTE`.

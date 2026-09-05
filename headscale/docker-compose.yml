@@ -13,9 +13,12 @@
 # Default-deny ACLs: ./acl.hujson mounted read-only. Recreate/restart this
 # container after pulling so policy.path is not empty.
 #
-# Platform exit node is NOT this service. Opt-in overlay:
+# Platform exit node is NOT this service. Guest-path overlay (required for
+# guest `--exit-node=dcl-platform-exit` to resolve):
 #   docker compose -f docker-compose.yml -f docker-compose.exit-node.yml up -d
-# See docs/runbooks/headscale.md. Guests are not auto-configured to --exit-node.
+# Plain `docker compose up` still starts Headscale only (macOS Docker Desktop
+# cannot run the overlay). Host Agent join never advertises an exit node.
+# See docs/runbooks/headscale.md.
 
 services:
   headscale:
