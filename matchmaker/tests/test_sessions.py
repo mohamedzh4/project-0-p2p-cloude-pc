@@ -11,7 +11,16 @@ from sqlalchemy.orm import Session
 
 from matchmaker.auth import hash_password
 from matchmaker.models import Host, HostStatus, LabSession, LabTier, SessionStatus, User
-from tests.helpers import KASM_TOKEN, KASM_URL, PROVISION_URL, auth_header, heartbeat, signup
+from tests.helpers import (
+    KASM_TOKEN,
+    KASM_URL,
+    PROVISION_URL,
+    SUNSHINE_URL,
+    FakeHostProvisioner,
+    auth_header,
+    heartbeat,
+    signup,
+)
 
 
 def test_request_session_requires_auth(client: TestClient, seeded_host: Host) -> None:
@@ -35,8 +44,12 @@ def test_request_session_creates_and_returns_kasm_connection(
     assert data["labTier"] == "standard"
     assert data["sessionId"]
     assert data["startedAt"]
+    assert data["connection"]["streamer"] == "kasm"
     assert data["connection"]["kasmUrl"] == KASM_URL
     assert data["connection"]["kasmToken"] == KASM_TOKEN
+    assert data["connection"]["sunshineUrl"] is None
+    assert data["connection"]["moonlight"] is None
+    assert data["connection"]["gpuExclusive"] is False
     assert data["storage"]["provider"] == "renterd"
     assert data["storage"]["mountInsideGuest"] is True
     assert "intent" not in data
@@ -378,8 +391,43 @@ def test_pro_session_requires_dedicated_gpu_host(
         lab_tier=LabTier.PRO,
         share_gpu=True,
         shared_gpu_id="GPU-BOOK",
+        kasm_url=SUNSHINE_URL,
     )
     booked = client.post("/v1/sessions", headers=auth_header(token), json={"labTier": "pro"})
     assert booked.status_code == 201
     assert booked.json()["hostId"] == str(gpu_host.id)
     assert booked.json()["labTier"] == "pro"
+    connection = booked.json()["connection"]
+    assert connection["streamer"] == "sunshine"
+    assert connection["kasmUrl"] is None
+    assert connection["kasmToken"] is None
+    assert connection["sunshineUrl"] == SUNSHINE_URL
+    assert connection["moonlight"]["host"] == "provision.invalid"
+    assert connection["gpuExclusive"] is True
+    storage = booked.json()["storage"]
+    assert "accessKeyId" not in storage
+    assert "secretAccessKey" not in storage
+    assert "accessKey" not in storage
+
+
+def test_pro_provisioner_locator_is_sunshine_not_kasm(
+    client: TestClient,
+    fake_provisioner: FakeHostProvisioner,
+    make_approved_host: Callable[..., Host],
+) -> None:
+    host = make_approved_host(
+        display_name="pro-provisioned",
+        lab_tier=LabTier.PRO,
+        share_gpu=True,
+        shared_gpu_id="GPU-PROV",
+        kasm_url=KASM_URL,
+    )
+    token = signup(client)["accessToken"]
+    booked = client.post("/v1/sessions", headers=auth_header(token), json={"labTier": "pro"})
+    assert booked.status_code == 201
+    connection = booked.json()["connection"]
+    assert connection["streamer"] == "sunshine"
+    assert connection["kasmUrl"] is None
+    assert connection["sunshineUrl"] == SUNSHINE_URL
+    assert connection["gpuExclusive"] is True
+    assert fake_provisioner.calls == [(host.id, "pro")]

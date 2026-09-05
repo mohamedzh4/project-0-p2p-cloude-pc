@@ -1,7 +1,7 @@
 # Matchmaker
 
 Control-plane service for the Distributed Compute Lab (software MVP after
-execution phase 15): auth, host inventory, heartbeats, session occupancy,
+execution phase 16): auth, host inventory, heartbeats, session occupancy,
 an internal credits ledger, signed base-image **metadata**, Headscale
 **preauth mint** for Host Agent mesh join (self-hosted; no Tailscale SaaS),
 and **renterd** S3 bucket provision for guest mounts (not Storj).
@@ -41,12 +41,15 @@ Rust (`plan_provision`); this service does not name Firecracker/QEMU/WHPX.
 - `POST /v1/hosts/{id}/approve` (or `python -m matchmaker.seed --approve-host-id`)
   is the manual approval path. The Host Agent bootstrap token cannot approve.
 - `POST /v1/sessions` assigns the logged-in user to an approved host if it is
-  free, then calls the Host Agent provision port. `connection.kasmUrl` comes
-  from that stub result when the agent is reachable; otherwise the URL already
-  stored on the host row. Before booking, the router reclaims sessions on
-  silent hosts (same as history and heartbeat) and provisions a **renterd**
-  per-user bucket. Session JSON includes `storage` (S3 endpoint, bucket,
-  keys, rclone command for the **guest**). Mount is not on the volunteer host.
+  free, then calls the Host Agent provision port. Standard `connection` is
+  Kasm (`streamer: kasm`); Pro is Sunshine/Moonlight (`streamer: sunshine`,
+  `gpuExclusive: true`) — not a renamed Kasm URL. The locator comes from that
+  stub result when the agent is reachable; otherwise the URL already stored
+  on the host row (`hosts.kasm_url`). Before booking, the router reclaims
+  sessions on silent hosts (same as history and heartbeat) and provisions a
+  **renterd** per-user bucket. Session JSON `storage` is locators only (S3
+  endpoint, bucket, prefix, rclone argv for the **guest** — no access keys).
+  Mount is not on the volunteer host.
 - `POST /v1/sessions/{id}/end` frees the host so another user can take it and
   writes ledger rows (user debit, host credit) from session duration. Ending an
   already-`interrupted` session is idempotent and does not rename the status.
@@ -56,10 +59,9 @@ Rust (`plan_provision`); this service does not name Firecracker/QEMU/WHPX.
   `creditsAccrued` (not paid out)
 - `GET /v1/images/{labTier}` returns the signed SHA-256 digest for `standard`
   or `pro`. Provision POSTs those fields to the Host Agent. Not a disk CDN.
-- `GET /v1/storage` (user JWT) creates or reuses this user's renterd bucket
-  and returns the same guest mount grant as session JSON (`storage`). rclone
-  belongs inside the guest. Host Agent provision may include `storageEndpoint`
-  (URL only — no S3 secrets).
+- `POST /v1/storage` issues a per-user renterd bucket; `GET /v1/storage` returns
+  the same locators (or 404 if never issued). rclone belongs inside the guest.
+  Host Agent provision may include `storageEndpoint` (URL only — no S3 secrets).
 
 Matching is isolated in `RankedHostSelector` (`status == approved`, matching
 tier, fresh `last_seen_at`, no active session, then declared CPU/RAM). Pro
@@ -202,7 +204,8 @@ and Headscale HTTP; they do not start Docker or talk to a live Sia network.
 | GET | `/v1/sessions` | User Bearer | session history + lifetime `creditsDebited`; reclaims silent occupied hosts (may rematch) |
 | GET | `/v1/hosts/{id}/earnings` | Host bootstrap Bearer | `{ hostId, creditsAccrued }` — accrued, not paid out |
 | POST | `/v1/hosts/{id}/mesh/preauth` | Host bootstrap Bearer | `{ loginServer, preauthKey, user, reusable, ephemeral, expiresAt }`. Mints via Headscale HTTP with `tag:host`. 404 unknown host; 502 if Headscale mint fails. Not a per-session identity. |
-| GET | `/v1/storage` | User Bearer | renterd S3 grant for this user (`endpoint`, `bucket`, keys, rclone). Mount **inside the guest**. 502 if renterd S3 fails. |
+| POST | `/v1/storage` | User Bearer | issue per-user renterd bucket. 201 new, 200 existing. Locators only (no access keys). |
+| GET | `/v1/storage` | User Bearer | same locators, or 404 if never issued. rclone **inside the guest**. |
 | GET | `/v1/images/{labTier}` | no | `{ labTier, digestSha256, signature, algorithm: ed25519, digestAlgorithm: sha256 }` for `standard` or `pro`. Checksums only; not a disk download. |
 
 JSON is camelCase. Passwords and host tokens are never returned. Host inventory

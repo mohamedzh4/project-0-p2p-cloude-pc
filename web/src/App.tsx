@@ -120,9 +120,9 @@ export default function App() {
         <h1>Lab session</h1>
         <p className="lede">
           Sign in, say what you want to do, and book a session. Intent maps to
-          Standard (CPU/RAM slice) or Pro (exclusive GPU). Open desktop appears
-          only for a live Kasm URL — seed and mock-provision use <code>.invalid</code>{" "}
-          placeholders. This is not the product UI.
+          Standard (CPU/RAM slice, Kasm) or Pro (exclusive GPU, Sunshine /
+          Moonlight). A live locator is not the <code>.invalid</code> stub TLD.
+          This is not the product UI.
         </p>
       </header>
 

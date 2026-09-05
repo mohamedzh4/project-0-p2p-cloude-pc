@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isLiveKasmUrl } from "./SessionPanel";
+import { isLiveKasmUrl } from "../connection";
 
 describe("isLiveKasmUrl", () => {
   it("rejects RFC 2606 .invalid placeholders (seed and provision stubs)", () => {
@@ -8,6 +8,9 @@ describe("isLiveKasmUrl", () => {
     expect(isLiveKasmUrl("http://example.invalid/desktop")).toBe(false);
     expect(isLiveKasmUrl("https://provision.invalid/firecracker")).toBe(false);
     expect(isLiveKasmUrl("https://provision.invalid/qemu-whpx")).toBe(false);
+    expect(isLiveKasmUrl("https://provision.invalid/sunshine")).toBe(false);
+    expect(isLiveKasmUrl("https://provision.invalid/qemu-vfio")).toBe(false);
+    expect(isLiveKasmUrl("https://provision.invalid/hyperv-gpu")).toBe(false);
   });
 
   it("accepts http(s) URLs that are not the placeholder", () => {

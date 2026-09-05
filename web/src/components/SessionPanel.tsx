@@ -6,6 +6,7 @@ import {
   gpuExclusivityVisible,
   mapIntentToLabTier,
 } from "../intent";
+import { isLiveConnectionUrl, sessionLocator, sessionStreamer } from "../connection";
 import type { Notice, SessionResponse, UserPublic } from "../types";
 
 interface SessionPanelProps {
@@ -35,21 +36,6 @@ function noticeText(notice: Notice): string {
   }
 }
 
-/** Live desktop vs RFC 2606 `.invalid` placeholders (seed + provision stubs). */
-export function isLiveKasmUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return false;
-    }
-    const labels = parsed.hostname.split(".");
-    const tld = labels[labels.length - 1];
-    return tld !== "invalid";
-  } catch {
-    return false;
-  }
-}
-
 export function SessionPanel({
   user,
   session,
@@ -61,10 +47,13 @@ export function SessionPanel({
   onSignOut,
   onEnd,
 }: SessionPanelProps) {
-  const live = session ? isLiveKasmUrl(session.connection.kasmUrl) : false;
+  const streamer = session ? sessionStreamer(session) : null;
+  const locator = session ? sessionLocator(session) : null;
+  const live = isLiveConnectionUrl(locator);
   const mappedTier = mapIntentToLabTier(intent);
   const showExclusivity = gpuExclusivityVisible(mappedTier);
   const canRequest = canRequestSession(intent);
+  const isPro = streamer === "sunshine";
 
   return (
     <div className="panel">
@@ -87,7 +76,9 @@ export function SessionPanel({
         <>
           <span className="placeholder-flag">
             {live
-              ? "Live session URL — opens on the host PC"
+              ? isPro
+                ? "Live Sunshine locator — open with Moonlight, not Kasm"
+                : "Live session URL — opens on the host PC"
               : "Connection URL is a placeholder, not a live desktop"}
           </span>
           <dl>
@@ -99,10 +90,27 @@ export function SessionPanel({
             <dd>{session.labTier}</dd>
             <dt>Started at</dt>
             <dd>{session.startedAt}</dd>
-            <dt>kasmUrl</dt>
-            <dd>{session.connection.kasmUrl}</dd>
-            <dt>kasmToken</dt>
-            <dd>{session.connection.kasmToken ?? "(none)"}</dd>
+            <dt>streamer</dt>
+            <dd>{streamer}</dd>
+            {isPro ? (
+              <>
+                <dt>sunshineUrl</dt>
+                <dd>{session.connection.sunshineUrl ?? "(none)"}</dd>
+                <dt>moonlight</dt>
+                <dd>
+                  {session.connection.moonlight
+                    ? `${session.connection.moonlight.host} · ${session.connection.moonlight.app}`
+                    : "(none)"}
+                </dd>
+              </>
+            ) : (
+              <>
+                <dt>kasmUrl</dt>
+                <dd>{session.connection.kasmUrl ?? "(none)"}</dd>
+                <dt>kasmToken</dt>
+                <dd>{session.connection.kasmToken ?? "(none)"}</dd>
+              </>
+            )}
             {session.storage ? (
               <>
                 <dt>storage (guest rclone)</dt>
@@ -113,33 +121,44 @@ export function SessionPanel({
               </>
             ) : null}
           </dl>
-          {session.labTier === "pro" ? (
+          {session.labTier === "pro" || isPro ? (
             <p className="exclusivity" role="status">
               {PRO_GPU_EXCLUSIVITY}
             </p>
           ) : null}
           {live ? (
             <p className="hint">
-              Kasm is not embedded here (iframes are usually blocked). Open desktop
-              uses a new tab. Paste any token into Kasm if it asks.
+              {isPro
+                ? "Pro streams Sunshine from inside the guest. Use a Moonlight client with the host below. Selkies-GStreamer is a documented browser alternative, not this API. Do not iframe the stream here."
+                : "Kasm is not embedded here (iframes are usually blocked). Open desktop uses a new tab. Paste any token into Kasm if it asks."}
             </p>
           ) : (
             <p className="hint">
-              Seed and mock-provision URLs use the <code>.invalid</code> TLD. A real
-              Kasm URL from <code>docs/runbooks/gate-fc.md</code> or{" "}
-              <code>docs/runbooks/gate-whpx.md</code> is required before Open
-              desktop appears.
+              {isPro ? (
+                <>
+                  Stub Sunshine/Moonlight locators use the <code>.invalid</code> TLD. A real
+                  stream from <code>docs/runbooks/gate-pro.md</code> is required before a
+                  live Moonlight connect appears. GATE-PRO stays a human/hardware gate.
+                </>
+              ) : (
+                <>
+                  Seed and mock-provision URLs use the <code>.invalid</code> TLD. A real
+                  Kasm URL from <code>docs/runbooks/gate-fc.md</code> or{" "}
+                  <code>docs/runbooks/gate-whpx.md</code> is required before Open
+                  desktop appears.
+                </>
+              )}
             </p>
           )}
           <div className="row end-row">
-            {live ? (
-              <a
-                className="open-link"
-                href={session.connection.kasmUrl}
-                target="_blank"
-                rel="noreferrer"
-              >
+            {live && locator && !isPro ? (
+              <a className="open-link" href={locator} target="_blank" rel="noreferrer">
                 Open desktop
+              </a>
+            ) : null}
+            {live && locator && isPro ? (
+              <a className="open-link" href={locator} target="_blank" rel="noreferrer">
+                Open Sunshine URL
               </a>
             ) : null}
             <button type="button" className="danger" disabled={busy} onClick={onEnd}>
@@ -193,7 +212,8 @@ export function SessionPanel({
           )}
           {showExclusivity ? (
             <p className="exclusivity" role="status">
-              {PRO_GPU_EXCLUSIVITY}
+              {PRO_GPU_EXCLUSIVITY} Streaming is Sunshine in the guest (Moonlight
+              client), not Kasm.
             </p>
           ) : canRequest ? (
             <p className="hint">{STANDARD_SLICE_HINT}</p>

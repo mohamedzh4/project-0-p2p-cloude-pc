@@ -78,8 +78,8 @@ npm test
 npm run typecheck
 ```
 
-Vitest covers intent → `labTier` mapping, `isLiveKasmUrl` (including
-`.invalid` stubs), occupied 409 vs existing-session 200 vs Pro 409, and
+Vitest covers intent → `labTier` mapping, live vs `.invalid` locators
+(Kasm and Sunshine stubs), occupied 409 vs existing-session 200 vs Pro 409, and
 Matchmaker error mapping (`detail` string, validation array, network
 failure). These are unit tests with a mocked `fetch`; they do not start
 Postgres.

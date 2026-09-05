@@ -9,9 +9,18 @@ export interface TokenResponse {
   user: UserPublic;
 }
 
+export interface MoonlightInfo {
+  host: string;
+  app: string;
+}
+
 export interface ConnectionInfo {
-  kasmUrl: string;
-  kasmToken: string | null;
+  streamer?: string;
+  kasmUrl?: string | null;
+  kasmToken?: string | null;
+  sunshineUrl?: string | null;
+  moonlight?: MoonlightInfo | null;
+  gpuExclusive?: boolean;
 }
 
 export interface StorageMountInfo {

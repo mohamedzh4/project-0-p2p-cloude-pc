@@ -38,7 +38,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 15: pytest 145, cargo test 121, vitest 27.
+  Counts after phase 16: pytest 150, cargo test 123, vitest 31.
 
 ## Contracts to keep stable
 
@@ -62,7 +62,7 @@ Matchmaker JSON is camelCase.
 | POST | `/v1/storage` | User Bearer; issue per-user renterd bucket `dcl-<uuid>` + prefix `files/`. 201 new, 200 existing. `{ provider, bucket, prefix, endpoint, region, objects, pathStyle, mountInsideGuest, rclone }`. No access keys. |
 | GET | `/v1/storage` | User Bearer; 200 same shape or 404 if never issued. |
 
-Session response: `{ sessionId, hostId, labTier, startedAt, connection: { kasmUrl, kasmToken }, storage }` where `storage` is the same locator object as `/v1/storage` (no access keys).
+Session response: `{ sessionId, hostId, labTier, startedAt, connection, storage }` where `storage` is the same locator object as `/v1/storage` (no access keys). Standard `connection` is `{ streamer: "kasm", kasmUrl, kasmToken, sunshineUrl: null, moonlight: null, gpuExclusive: false }`. Pro `connection` is `{ streamer: "sunshine", kasmUrl: null, kasmToken: null, sunshineUrl, moonlight: { host, app }, gpuExclusive: true }` — not Kasm renamed. Locators still live in `hosts.kasm_url`. GATE-PRO stays open.
 End response: `{ sessionId, status, endedAt, creditsDebited }`.
 History `status` is `active` | `ended` (user end) | `interrupted` (heartbeat
 silence). End response is `ended` or already-`interrupted`. Occupied silent
@@ -94,15 +94,18 @@ is unsupported (not a Firecracker fallback). Pro requires `sharedGpuId` and
 sets `gpuExclusive` plus an exclusivity warning. Never invokes a hypervisor.
 The Host Agent HTTP port is `POST /v1/provision` (`provision_http.rs`); it
 verifies Ed25519 over the SHA-256 digest (`image.rs`) **before** `plan` and
-returns `{ connectionUrl, hypervisorInvoked, gpuExclusive }`. Body includes
-`labTier`, optional `sharedGpuId`, `imageDigest`, `imageSignature`. Missing
-or mismatched image metadata is 400 (no stub boot). Listen requires
+returns `{ connectionUrl, hypervisorInvoked, gpuExclusive, streamer }` plus
+Pro-only `sunshineUrl` and `moonlight: { host, app }`. Standard `streamer` is
+`kasm`. Pro `streamer` is `sunshine` (stub origin `https://provision.invalid`).
+Body includes `labTier`, optional `sharedGpuId`, `imageDigest`, `imageSignature`.
+Missing or mismatched image metadata is 400 (no stub boot). Listen requires
 `IMAGE_SIGNING_PUBLIC_KEY` and `IMAGE_LOCAL_DIGEST` (fail fast). Matchmaker
 session booking, after `HostSelector.select` and occupancy commit,
 calls a `HostProvisioner` port (`get_host_provisioner()`), not a hypervisor and
 not a concrete selector. Origin: `host.agentUrl`, else optional
 `HOST_AGENT_PROVISION_URL`. If that call is unavailable, the seeded/placeholder
-`kasmUrl` on the host row is kept. Do not put Firecracker/QEMU/WHPX names in
+locator on the host row is kept (`kasmUrl` column; session JSON still splits
+Kasm vs Sunshine by `labTier`). Do not put Firecracker/QEMU/WHPX names in
 `sessions.py`. Provision POSTs the registry digest+signature for the booked
 `labTier`.
 
@@ -116,7 +119,7 @@ iframe it in early phases.
 | 0 Manual compute pipeline | Hardware gates below — open, not evidenced in-repo |
 | 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs). Live desktop still GATE-FC / GATE-WHPX |
 | 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
-| 3 Pro/Gamer + latency | Execution phase 16 + GATE-PRO |
+| 3 Pro/Gamer + latency | Execution phase 16 software (Sunshine locators) + GATE-PRO |
 | 4 Hardening | Execution phase 13 (images, done); phase 14 mesh mint+join; 14c default-deny ACLs + host tags + exit-node runbook (not auto-applied). Phase 15 renterd (not Storj) |
 
 ## Execution phases
@@ -362,9 +365,14 @@ need GATE-FC / GATE-WHPX.
 
 ### Phase 16 — Pro/Gamer automation (cahier 3)
 
-Wire Pro backends beyond stubs (VFIO / Hyper-V GPU + Sunshine/Moonlight). Blocked
-on **GATE-PRO** for a real session. Latency-aware ranking belongs in
-`RankedHostSelector`, not a second matcher.
+Done as a **software contract**. Session JSON and the Host Agent provision
+port distinguish Standard Kasm from Pro Sunshine/Moonlight. GPU exclusivity
+stays a Pro matching filter (`shareGpu` + non-empty `sharedGpuId`) plus
+`gpuExclusive` on the connection. VFIO / Hyper-V paths remain stubs.
+**GATE-PRO stays OPEN** — this phase does not invoke a hypervisor or a live
+stream. Latency-aware ranking still belongs in `RankedHostSelector` when a
+measured value exists; do not fake `latency_ms`. See
+`docs/phase-logs/phase-16-pro-gamer.md`.
 
 ## Handoff template
 

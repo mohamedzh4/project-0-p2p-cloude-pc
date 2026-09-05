@@ -12,10 +12,15 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::agent_status::Occupancy;
 use crate::image::{trust_from_env, verify_image, ImageError, ImageManifest, ImageTrust};
-use crate::provision::{plan, HostOs, LabTier, ProvisionError, ProvisionRequest};
+use crate::provision::{plan, HostOs, LabTier, ProvisionError, ProvisionPlan, ProvisionRequest};
 
 const PROVISION_PATH: &str = "/v1/provision";
 const BODY_MAX: usize = 16 * 1024;
+const STREAMER_KASM: &str = "kasm";
+const STREAMER_SUNSHINE: &str = "sunshine";
+const STUB_SUNSHINE_URL: &str = "https://provision.invalid/sunshine";
+const STUB_MOONLIGHT_HOST: &str = "provision.invalid";
+const STUB_MOONLIGHT_APP: &str = "Desktop";
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ProvisionListenError {
@@ -78,10 +83,22 @@ pub struct ProvisionHttpRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MoonlightHint {
+    pub host: String,
+    pub app: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProvisionHttpResponse {
     pub connection_url: String,
     pub hypervisor_invoked: bool,
     pub gpu_exclusive: bool,
+    pub streamer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sunshine_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub moonlight: Option<MoonlightHint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,11 +151,32 @@ pub fn plan_http(
             shared_gpu_id: request.shared_gpu_id.clone(),
         },
     )?;
-    Ok(ProvisionHttpResponse {
-        connection_url: planned.connection_url,
-        hypervisor_invoked: planned.hypervisor_invoked,
-        gpu_exclusive: planned.gpu_exclusive,
-    })
+    Ok(http_response_from_plan(&planned))
+}
+
+fn http_response_from_plan(planned: &ProvisionPlan) -> ProvisionHttpResponse {
+    if planned.lab_tier == LabTier::Pro {
+        ProvisionHttpResponse {
+            connection_url: planned.connection_url.clone(),
+            hypervisor_invoked: planned.hypervisor_invoked,
+            gpu_exclusive: planned.gpu_exclusive,
+            streamer: STREAMER_SUNSHINE.to_string(),
+            sunshine_url: Some(STUB_SUNSHINE_URL.to_string()),
+            moonlight: Some(MoonlightHint {
+                host: STUB_MOONLIGHT_HOST.to_string(),
+                app: STUB_MOONLIGHT_APP.to_string(),
+            }),
+        }
+    } else {
+        ProvisionHttpResponse {
+            connection_url: planned.connection_url.clone(),
+            hypervisor_invoked: planned.hypervisor_invoked,
+            gpu_exclusive: planned.gpu_exclusive,
+            streamer: STREAMER_KASM.to_string(),
+            sunshine_url: None,
+            moonlight: None,
+        }
+    }
 }
 
 pub fn respond(
@@ -172,7 +210,7 @@ pub fn respond(
     match plan_http(os, &parsed, image_trust) {
         Ok(planned) => {
             let json = serde_json::to_string(&planned).unwrap_or_else(|_| {
-                "{\"connectionUrl\":\"\",\"hypervisorInvoked\":false,\"gpuExclusive\":false}"
+                "{\"connectionUrl\":\"\",\"hypervisorInvoked\":false,\"gpuExclusive\":false,\"streamer\":\"kasm\"}"
                     .to_string()
             });
             HttpProvisionOutput {
@@ -367,6 +405,9 @@ mod tests {
         );
         assert_eq!(body["hypervisorInvoked"], false);
         assert_eq!(body["gpuExclusive"], false);
+        assert_eq!(body["streamer"], "kasm");
+        assert!(body.get("sunshineUrl").is_none());
+        assert!(body.get("moonlight").is_none());
     }
 
     #[test]
@@ -388,6 +429,69 @@ mod tests {
             format!("{STUB_CONNECTION_ORIGIN}/qemu-whpx")
         );
         assert_eq!(body["hypervisorInvoked"], false);
+        assert_eq!(body["streamer"], "kasm");
+    }
+
+    fn signed_pro() -> (ImageTrust, Vec<u8>) {
+        let (trust, manifest) = signed_fixture(FIXTURE_PRO_BYTES);
+        let body = serde_json::json!({
+            "labTier": "pro",
+            "sharedGpuId": "GPU-TEST-4070",
+            "imageDigest": manifest.digest_hex(),
+            "imageSignature": manifest.signature_base64(),
+        })
+        .to_string()
+        .into_bytes();
+        (trust, body)
+    }
+
+    #[test]
+    fn linux_pro_returns_sunshine_not_kasm() {
+        let (trust, body) = signed_pro();
+        let output = respond(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &trust,
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-vfio")
+        );
+        assert_eq!(body["hypervisorInvoked"], false);
+        assert_eq!(body["gpuExclusive"], true);
+        assert_eq!(body["streamer"], "sunshine");
+        assert_eq!(body["sunshineUrl"], STUB_SUNSHINE_URL);
+        assert_eq!(body["moonlight"]["host"], STUB_MOONLIGHT_HOST);
+        assert_eq!(body["moonlight"]["app"], STUB_MOONLIGHT_APP);
+    }
+
+    #[test]
+    fn windows_pro_returns_hyperv_gpu_with_sunshine() {
+        let (trust, body) = signed_pro();
+        let output = respond(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &trust,
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/hyperv-gpu")
+        );
+        assert_eq!(body["streamer"], "sunshine");
+        assert_eq!(body["gpuExclusive"], true);
+        assert_eq!(body["sunshineUrl"], STUB_SUNSHINE_URL);
     }
 
     #[test]

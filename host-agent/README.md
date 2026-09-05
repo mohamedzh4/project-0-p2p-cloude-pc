@@ -247,18 +247,20 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Next software is **phase 16** (Pro/Gamer automation) plus open hardware
-  gates. Storage is renterd S3, not Storj. This agent never mounts user data
-  on the host OS. `GuestRcloneMount::from_env` is a guest-side rclone argv
-  stub (no `S3_SECRET_KEY`, no process spawn). Mesh join is host-tagged
-  (`tag:host`); default-deny ACLs are the Headscale policy file. Platform
-  exit-node guest egress is a runbook, **not auto-applied** (see
-  `docs/runbooks/headscale.md`). Still do not invoke a real hypervisor from
-  this agent. On macOS, `POST /v1/provision` returns 400 (`UnsupportedHostOs`);
-  Matchmaker then keeps the seeded `kasmUrl`. Local in-session occupancy is
-  still not cleared when Matchmaker interrupts a session (no teardown port).
-  Real host payouts are not in this agent; the ledger only accrues credits.
-  This agent never reads `HEADSCALE_API_KEY` or renterd S3 secrets.
+- Phase 16 software is in: Pro `POST /v1/provision` returns `streamer:
+  sunshine`, stub `sunshineUrl`, and a Moonlight host hint. Standard stays
+  `streamer: kasm`. Still stubs — **GATE-PRO stays OPEN**. Storage is renterd
+  S3, not Storj. This agent never mounts user data on the host OS.
+  `GuestRcloneMount::from_env` is a guest-side rclone argv stub (no
+  `S3_SECRET_KEY`, no process spawn). Mesh join is host-tagged (`tag:host`);
+  default-deny ACLs are the Headscale policy file. Platform exit-node guest
+  egress is a runbook, **not auto-applied** (see `docs/runbooks/headscale.md`).
+  Still do not invoke a real hypervisor from this agent. On macOS,
+  `POST /v1/provision` returns 400 (`UnsupportedHostOs`); Matchmaker then
+  keeps the seeded locator. Local in-session occupancy is still not cleared
+  when Matchmaker interrupts a session (no teardown port). Real host payouts
+  are not in this agent; the ledger only accrues credits. This agent never
+  reads `HEADSCALE_API_KEY` or renterd S3 secrets. Do not fake latency.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

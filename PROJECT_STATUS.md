@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-05, after phase 15 (renterd, not Storj)
+# Project Status — last updated: 2026-09-05, after phase 16 (Pro locators)
 
 ## Done
 
@@ -11,7 +11,7 @@
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
   keypairs, guest rclone). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–15 **software** on local `main` (not pushed):
+- Execution phases 1–16 **software** on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -28,7 +28,10 @@
     `--advertise-exit-node`, `--exit-node`, or `--advertise-tags`). Provision
     may include `storageEndpoint` (URL only); the stub never rclone-mounts
     on the host OS. `storage.rs` can plan guest rclone argv from public
-    locators and does not read S3 secrets. **121/121** `cargo test` (2026-09-05).
+    locators and does not read S3 secrets. Pro HTTP 200 adds `streamer:
+    sunshine`, stub `sunshineUrl`, and a Moonlight host hint (`gpuExclusive`
+    true). Standard stays `streamer: kasm`. **123/123** `cargo test`
+    (2026-09-05).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
     `sessions_one_active_per_host` / `sessions_one_active_per_user`;
@@ -41,20 +44,23 @@
     session JSON `storage` issue a per-user renterd S3 bucket (`dcl-<uuid>`)
     and guest rclone locators (**no access keys** on the wire). `GET` is 404
     until issued. Bucket provision on book runs **before** occupy; renterd
-    failure is 502 without taking the host. Session end meters `startedAt` →
-    `endedAt` into `ledger_entries`.
+    failure is 502 without taking the host. Session `connection` is Kasm for
+    Standard and Sunshine/Moonlight for Pro (`gpuExclusive: true`) — not Kasm
+    renamed. Locator still lives in `hosts.kasm_url`. Session end meters
+    `startedAt` → `endedAt` into `ledger_entries`.
     Silence (~45s) on an occupied host marks the session `interrupted`,
     settles the ledger once, and rematches via one `select` (same renterd
     bucket follows the user; rematch does not call renterd). Required env
     includes `CREDITS_PER_MINUTE`, the four `IMAGE_*` pairs, `HEADSCALE_*`,
     and `S3_ENDPOINT` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` (or `RENTERD_S3_*`
-    aliases). **145/145** pytest (2026-09-05). Session JSON
+    aliases). **150/150** pytest (2026-09-05). Session JSON
     still has no `intent` field. No latency/reliability columns. No
     Matchmaker pause field. No payment processor. No image CDN / multi-GB
     download. No live Sia network in unit tests.
   - Web harness: signup/login, FR2 intent prompt → `labTier`, request/end
     session, session history + credits debited, optional storage locator
-    (endpoint/bucket only — not secrets). **27/27** vitest;
+    (endpoint/bucket only — not secrets). Pro copy points at Sunshine /
+    Moonlight; Standard still opens Kasm in a new tab. **31/31** vitest;
     `npm run typecheck` passed.
   - Headscale compose in `headscale/` (image `0.26.1`) with checked-in
     default-deny `acl.hujson`. renterd compose in `renterd/` (image
@@ -63,18 +69,18 @@
 
 ## In Progress
 
-- Cahier Phase 1 overall (MVP Standard Lab). Control-plane software loop is in
-  place; a usable desktop still needs hardware gates. Next **software** session
-  is execution **phase 16** (Pro/Gamer automation) — blocked on **GATE-PRO**
-  for a real session.
+- Cahier Phase 1 overall (MVP Standard Lab) and cahier Phase 3 live Pro.
+  Control-plane software through execution phase 16 is in; a usable desktop
+  still needs hardware gates. No numbered software phase after 16.
 
 ## Up Next
 
-1. Phase 16 — Pro/Gamer automation (cahier 3). Do not close GATE-* from that
-   work. Live guest rclone / “saved as of HH:MM” still need GATE-FC /
-   GATE-WHPX plus a guest image.
-2. Human: GATE-FC / GATE-WHPX / GATE-PRO runbooks when a Linux/Windows host PC
-   is available. Agents must not close these.
+1. Human: GATE-FC / GATE-WHPX / GATE-PRO runbooks when a Linux/Windows host PC
+   is available. Agents must not close these. Live Sunshine/Moonlight is
+   GATE-PRO, not another software phase.
+2. Live guest rclone / “saved as of HH:MM” still need GATE-FC / GATE-WHPX plus
+   a guest image. FR13 latency ranking waits on a measured value — do not fake
+   `latency_ms`.
 
 ## Known Risks / Open Items
 
@@ -83,7 +89,13 @@
   `SEED_HOST_KASM_URL` (seed example is still `https://example.invalid/kasm`).
   This Mac cannot host. Closing a gate requires the runbook result file **and**
   an explicit human confirmation.
-- Local `main` is ahead of `origin/main` (planning + phases 1–15). Nothing was
+- **Phase 15 race (2026-09-05):** `0a59f68` issued renterd S3 keys on session
+  JSON; `9f69179` (HEAD) kept keys in env and locators-only on
+  `POST`/`GET /v1/storage`. Phase 16 kept the locators-only contract. `9f69179`
+  also leaked incomplete Phase 16 schema without `session_connection` in
+  `provision.py`; this session finished that. An unused `0007_host_latency_ms`
+  draft from a parallel agent was **not** applied.
+- Local `main` is ahead of `origin/main` (planning + phases 1–16). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
@@ -98,11 +110,9 @@
 - Enabling `HOST_AGENT_LISTEN_ADDR` now also requires `IMAGE_SIGNING_PUBLIC_KEY`
   and `IMAGE_LOCAL_DIGEST` (fail fast). Public key only — never a signing
   secret in the agent or Matchmaker runtime.
-- A long-running Matchmaker on `:8000` from before this phase will not mint
-  `tag:host` keys or return `storage` on sessions. Restart uvicorn after
-  pulling this commit, with `HEADSCALE_*` and `S3_*` (or `RENTERD_S3_*`) set. Recreate
-  Headscale so `acl.hujson` is mounted. Apply `alembic upgrade head`
-  (`0006_user_storage_bucket`).
+- A long-running Matchmaker on `:8000` from before this phase will not return
+  `streamer` / `sunshineUrl` on sessions. Restart uvicorn after pulling this
+  commit, with `HEADSCALE_*` and `S3_*` (or `RENTERD_S3_*`) set.
 - Pause is still local `sharingEnabled=false` (no Matchmaker field). Skipping
   heartbeats looks like disconnect: after 45s the occupied session is
   interrupted and may rematch.
@@ -113,7 +123,7 @@
 - Provisioner is stubs only. Image verify is the software contract (small
   fixture bytes in tests). On macOS, a real Host Agent `POST /v1/provision`
   is 400 (`UnsupportedHostOs`) even with a valid signature; Matchmaker then
-  keeps the seeded `kasmUrl`.
+  keeps the seeded locator.
 - Intent text stays in the harness. It is not persisted and is not on the
   session JSON. Keyword mapping is a smallest-slice heuristic (office/code →
   Standard; GPU/game/3D/training → Pro).
@@ -144,15 +154,17 @@
 
 ## Notes for next agent/session
 
-- You are starting **phase 16** (Pro/Gamer). Read `PHASE_PLAN.md`, this file,
-  and `docs/phase-logs/phase-15-renterd.md`. Do not start Storj. Do not close
-  GATE-*. Do not treat renterd compose-up as a hardware-gate pass.
+- Execution **phase 16 is done** (software). Read `PHASE_PLAN.md`, this file,
+  and `docs/phase-logs/phase-16-pro-gamer.md`. Do not start Storj. Do not close
+  GATE-*. Do not fake latency. Do not treat renterd compose-up as a
+  hardware-gate pass.
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.
 - Storage: Matchmaker talks path-style S3 to renterd (`HttpRenterdClient`).
   Tests swap `get_renterd_client()`. Never point pytest at a live Sia
   network. Guest rclone uses `--s3-env-auth` so secrets stay out of argv.
+  No access keys on `/v1/storage` or session JSON.
 - Image verify: signed message is the raw 32-byte SHA-256 digest; signature is
   standard base64 Ed25519; public key is 64 hex chars. Matchmaker does not
   hold the private key. Tests use a documented fixture seed in Rust only.

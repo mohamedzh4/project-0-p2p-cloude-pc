@@ -9,9 +9,17 @@ from fastapi.testclient import TestClient
 
 from matchmaker.images import ImageManifest
 from matchmaker.models import Host, HostStatus, LabTier
-from matchmaker.provision import HttpHostProvisioner, agent_origin
+from matchmaker.provision import (
+    STREAMER_SUNSHINE,
+    HttpHostProvisioner,
+    agent_origin,
+    session_connection,
+)
 from tests.helpers import (
+    KASM_TOKEN,
+    KASM_URL,
     PROVISION_URL,
+    SUNSHINE_URL,
     inventory_payload,
     host_auth_header,
 )
@@ -264,6 +272,85 @@ def test_http_provisioner_refuses_a_response_that_claims_a_hypervisor() -> None:
         thread.join(timeout=2)
 
     assert result is None
+
+
+def test_http_provisioner_reads_pro_sunshine_fields() -> None:
+    captured: dict[str, object] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            captured["body"] = json.loads(self.rfile.read(length))
+            payload = json.dumps(
+                {
+                    "connectionUrl": "https://provision.invalid/qemu-vfio",
+                    "hypervisorInvoked": False,
+                    "gpuExclusive": True,
+                    "streamer": "sunshine",
+                    "sunshineUrl": SUNSHINE_URL,
+                    "moonlight": {"host": "sunshine.provision.invalid", "app": "Desktop"},
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        provisioner = HttpHostProvisioner(bearer_token="test-host-bootstrap-token")
+        result = provisioner.provision(
+            _host(agent_url=origin, shared_gpu_id="GPU-TEST-4070"),
+            lab_tier="pro",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert result is not None
+    assert result.streamer == STREAMER_SUNSHINE
+    assert result.sunshine_url == SUNSHINE_URL
+    assert result.locator() == SUNSHINE_URL
+    assert result.gpu_exclusive is True
+    assert result.moonlight_host == "sunshine.provision.invalid"
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["labTier"] == "pro"
+    assert body["sharedGpuId"] == "GPU-TEST-4070"
+
+
+def test_session_connection_is_kasm_for_standard() -> None:
+    host = _host(agent_url=None)
+    info = session_connection(host)
+    dumped = info.model_dump(by_alias=True)
+    assert dumped["streamer"] == "kasm"
+    assert dumped["kasmUrl"] == KASM_URL
+    assert dumped["kasmToken"] == "test-kasm-token"
+    assert dumped["sunshineUrl"] is None
+    assert dumped["moonlight"] is None
+    assert dumped["gpuExclusive"] is False
+
+
+def test_session_connection_is_sunshine_for_pro() -> None:
+    host = _host(agent_url=None, shared_gpu_id="GPU-0")
+    host.lab_tier = LabTier.PRO
+    host.kasm_url = SUNSHINE_URL
+    host.kasm_token = KASM_TOKEN
+    info = session_connection(host)
+    dumped = info.model_dump(by_alias=True)
+    assert dumped["streamer"] == "sunshine"
+    assert dumped["kasmUrl"] is None
+    assert dumped["kasmToken"] is None
+    assert dumped["sunshineUrl"] == SUNSHINE_URL
+    assert dumped["moonlight"]["host"] == "provision.invalid"
+    assert dumped["gpuExclusive"] is True
 
 
 def test_agent_url_round_trips_on_register(client: TestClient) -> None:

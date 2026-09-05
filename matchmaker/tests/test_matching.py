@@ -271,3 +271,13 @@ def test_pro_does_not_treat_gpu_as_a_concurrent_slice(
     db.commit()
 
     assert RankedHostSelector().select(db, lab_tier=LabTier.PRO) is None
+
+
+def test_pro_blank_gpu_id_is_not_selected(db: Session, make_approved_host: Callable[..., Host]) -> None:
+    make_approved_host(
+        display_name="pro-blank",
+        lab_tier=LabTier.PRO,
+        share_gpu=True,
+        shared_gpu_id="",
+    )
+    assert RankedHostSelector().select(db, lab_tier=LabTier.PRO) is None

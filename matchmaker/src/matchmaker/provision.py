@@ -14,18 +14,39 @@ import httpx
 from sqlalchemy.orm import Session
 
 from matchmaker.images import ImageManifest
-from matchmaker.models import Host
+from matchmaker.models import Host, LabTier
+from matchmaker.schemas import ConnectionInfo, MoonlightInfo
 
 _PROVISION_PATH = "/v1/provision"
 _REQUEST_TIMEOUT_SECONDS = 10.0
 
+STREAMER_KASM = "kasm"
+STREAMER_SUNSHINE = "sunshine"
+_MOONLIGHT_APP = "Desktop"
+
 
 @dataclass(frozen=True)
 class ProvisionResult:
-    """Connection returned by a ready (or stub) agent. Session JSON stays kasmUrl."""
+    """Connection returned by a ready (or stub) agent.
+
+    Standard session JSON uses kasmUrl. Pro uses sunshineUrl / Moonlight —
+    not a renamed Kasm field. The host row still stores the locator in
+    `kasm_url` so existing-session 200 needs no extra column.
+    """
 
     connection_url: str
     connection_token: str | None = None
+    streamer: str = STREAMER_KASM
+    sunshine_url: str | None = None
+    moonlight_host: str | None = None
+    moonlight_app: str | None = None
+    gpu_exclusive: bool = False
+
+    def locator(self) -> str:
+        if self.streamer == STREAMER_SUNSHINE:
+            url = self.sunshine_url or self.connection_url
+            return url.strip()
+        return self.connection_url
 
 
 class HostProvisioner(Protocol):
@@ -34,12 +55,48 @@ class HostProvisioner(Protocol):
 
 
 def apply_provision_result(db: Session, host: Host, result: ProvisionResult) -> None:
-    """Keep existing-session 200 on the same connection URL without a new field."""
-    host.kasm_url = result.connection_url
+    """Keep existing-session 200 on the same locator without a new column."""
+    host.kasm_url = result.locator()
     if result.connection_token is not None:
         host.kasm_token = result.connection_token
     db.commit()
     db.refresh(host)
+
+
+def session_connection(host: Host) -> ConnectionInfo:
+    """Map the host row to Standard Kasm vs Pro Sunshine. GATE-PRO stays open."""
+    if host.lab_tier == LabTier.PRO:
+        sunshine_url = host.kasm_url
+        return ConnectionInfo(
+            streamer=STREAMER_SUNSHINE,
+            kasm_url=None,
+            kasm_token=None,
+            sunshine_url=sunshine_url,
+            moonlight=MoonlightInfo(
+                host=_hostname(sunshine_url),
+                app=_MOONLIGHT_APP,
+            ),
+            gpu_exclusive=True,
+        )
+    return ConnectionInfo(
+        streamer=STREAMER_KASM,
+        kasm_url=host.kasm_url,
+        kasm_token=host.kasm_token,
+        sunshine_url=None,
+        moonlight=None,
+        gpu_exclusive=False,
+    )
+
+
+def _hostname(url: str) -> str:
+    host = urlparse(url).hostname
+    return host if host else url
+
+
+def _optional_str(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def provision_booked_host(
@@ -140,7 +197,26 @@ class HttpHostProvisioner:
 
         token = body.get("connectionToken")
         connection_token = token.strip() if isinstance(token, str) and token.strip() else None
+        streamer = STREAMER_SUNSHINE if lab_tier == LabTier.PRO else STREAMER_KASM
+        raw_streamer = _optional_str(body.get("streamer"))
+        if raw_streamer in {STREAMER_KASM, STREAMER_SUNSHINE}:
+            streamer = raw_streamer
+        sunshine_url = _optional_str(body.get("sunshineUrl"))
+        moonlight_host: str | None = None
+        moonlight_app: str | None = None
+        moonlight = body.get("moonlight")
+        if isinstance(moonlight, dict):
+            moonlight_host = _optional_str(moonlight.get("host"))
+            moonlight_app = _optional_str(moonlight.get("app")) or _MOONLIGHT_APP
+        if streamer == STREAMER_SUNSHINE and sunshine_url is None:
+            sunshine_url = connection_url.strip()
+        gpu_exclusive = body.get("gpuExclusive") is True or lab_tier == LabTier.PRO
         return ProvisionResult(
             connection_url=connection_url.strip(),
             connection_token=connection_token,
+            streamer=streamer,
+            sunshine_url=sunshine_url,
+            moonlight_host=moonlight_host,
+            moonlight_app=moonlight_app,
+            gpu_exclusive=gpu_exclusive,
         )

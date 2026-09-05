@@ -25,16 +25,17 @@ Everything in this document fits into one of these four planes.
 ## Implemented vs this paper (2026-09-05)
 
 This file is the **target** architecture. Software on local `main` after
-execution phase 15 is the **control-plane MVP with stubs**, plus a Headscale
+execution phase 16 is the **control-plane MVP with stubs**, plus a Headscale
 mint+join contract, a default-deny ACL file, a platform exit-node **runbook**
-(not auto-applied to guests), and a **renterd** S3 storage contract (not Storj;
-human decision 2026-09-05). It is not a live lab.
+(not auto-applied to guests), a **renterd** S3 storage contract (not Storj;
+human decision 2026-09-05), and Pro Sunshine/Moonlight **locators** on session
+JSON (not a live stream). It is not a live lab.
 
 | Paper | In-repo now |
 | --- | --- |
 | Four planes | Control plane (Matchmaker). Compute is OS-conditional **stubs**. Network plane: Headscale mint+join, default-deny ACL file, host `tag:host`. Exit-node runbook not auto-applied. Storage: renterd S3 prefix API (not Storj); rclone in-guest is runbook/stub |
 | Standard: Firecracker (Linux) / QEMU+WHPX (Windows) + Kasm in the guest | `plan_provision` + `POST /v1/provision` return `https://provision.invalid/{backend}`. No hypervisor, no guest image. GATE-FC / GATE-WHPX open |
-| Pro: VFIO / Hyper-V GPU + Sunshine | Stubs require `sharedGpuId` and set `gpuExclusive`. GATE-PRO open |
+| Pro: VFIO / Hyper-V GPU + Sunshine | Stubs require `sharedGpuId` and set `gpuExclusive`. Session JSON `streamer: sunshine` + Moonlight hint. GATE-PRO open |
 | Intent capture, ranking, billing | FR2 harness maps intent → `labTier`; ranking is `RankedHostSelector` (declared CPU/RAM, Pro GPU id); internal `ledger_entries` meter at session end (no payment processor) |
 | Tailscale/Headscale + exit-node egress | Phase 14: self-hosted Headscale compose + Matchmaker preauth mint + Host Agent Rust join. **No Tailscale SaaS.** Phase 14c: default-deny `acl.hujson` + host `tag:host`. Platform exit-node **runbook exists, not auto-applied** (§9 items 4–5) |
 | Storj + rclone | **Not used.** Implemented storage is **renterd S3** (human decision 2026-09-05): compose + per-user bucket + guest rclone grant. Live guest mount still needs GATE-* |
