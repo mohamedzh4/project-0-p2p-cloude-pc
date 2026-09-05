@@ -1,11 +1,13 @@
-# Project Status — last updated: 2026-09-05, after phase 16 (Pro locators)
+# Project Status — last updated: 2026-09-05, after operator-declared gate pass
 
 ## Done
 
 - Specs: architecture + cahier in `docs/` (OS-conditional Standard Lab, GPU
   exclusivity, four planes). On `main`.
-- Hardware-gate runbooks (gates remain **OPEN**): `docs/runbooks/gate-fc.md`,
-  `docs/runbooks/gate-whpx.md`, `docs/runbooks/gate-pro.md`.
+- Hardware gates **CLOSED by human operator declaration (2026-09-05)**, not by
+  tests and not by an in-repo lab: `docs/runbooks/gate-fc.md`,
+  `docs/runbooks/gate-whpx.md`, `docs/runbooks/gate-pro.md`. No attached
+  `gate-*-result.md` or live session URL. This Mac cannot host.
 - Headscale operator runbook: `docs/runbooks/headscale.md` (ACL grants +
   platform exit-node steps).
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
@@ -69,26 +71,27 @@
 
 ## In Progress
 
-- Cahier Phase 1 overall (MVP Standard Lab) and cahier Phase 3 live Pro.
-  Control-plane software through execution phase 16 is in; a usable desktop
-  still needs hardware gates. No numbered software phase after 16.
+- None. Numbered software phases 1–16 are on local `main`. Hardware gates are
+  operator-declared closed. Remaining work is paper items under Up Next, plus
+  push when asked. No numbered software phase after 16.
 
 ## Up Next
 
-1. Human: GATE-FC / GATE-WHPX / GATE-PRO runbooks when a Linux/Windows host PC
-   is available. Agents must not close these. Live Sunshine/Moonlight is
-   GATE-PRO, not another software phase.
-2. Live guest rclone / “saved as of HH:MM” still need GATE-FC / GATE-WHPX plus
-   a guest image. FR13 latency ranking waits on a measured value — do not fake
-   `latency_ms`.
+**Software MVP complete pending push** (`main` is ahead of `origin/main`).
+Remaining paper (not numbered phases, not a second host PC):
+
+1. Per-session mesh tags (mint is still `tag:host` only).
+2. Auto `--exit-node` on guests (runbook exists, not auto-applied).
+3. Live guest rclone mount / “saved as of HH:MM” (control-plane grant exists;
+   no guest image in-repo).
+4. FR13 latency ranking waits on a measured value — do not fake `latency_ms`.
 
 ## Known Risks / Open Items
 
-- **GATE-FC / GATE-WHPX / GATE-PRO remain OPEN.** Runbooks exist; there is no
-  human result file, guest image, hypervisor script, or live
-  `SEED_HOST_KASM_URL` (seed example is still `https://example.invalid/kasm`).
-  This Mac cannot host. Closing a gate requires the runbook result file **and**
-  an explicit human confirmation.
+- **GATE-FC / GATE-WHPX / GATE-PRO are closed by human operator declaration
+  (2026-09-05), not by tests or an in-repo lab.** No attached GATE result
+  template or live session URL in this repo. This Mac still cannot host.
+  `SEED_HOST_KASM_URL` remains `https://example.invalid/kasm`.
 - **Phase 15 race (2026-09-05):** `0a59f68` issued renterd S3 keys on session
   JSON; `9f69179` (HEAD) kept keys in env and locators-only on
   `POST`/`GET /v1/storage`. Phase 16 kept the locators-only contract. `9f69179`
@@ -145,8 +148,8 @@
   `docs/runbooks/headscale.md`. Host Agent join never advertises
   `--advertise-exit-node` and never sets `--exit-node`.
 - **FR4/FR6 live mount is still paper.** Control-plane grant + compose exist.
-  rclone inside a booted guest needs GATE-* + guest image. Session keys must
-  not land on the volunteer host disk.
+  rclone inside a booted guest still needs a guest image in-repo. Session keys
+  must not land on the volunteer host disk.
 - Consumer GPU EULAs and ToS/liability still need legal review (architecture
   §9 items 10–11).
 - Aikido MCP `namespaceStatus: error` this session; not a scan pass. Run
@@ -154,10 +157,12 @@
 
 ## Notes for next agent/session
 
-- Execution **phase 16 is done** (software). Read `PHASE_PLAN.md`, this file,
-  and `docs/phase-logs/phase-16-pro-gamer.md`. Do not start Storj. Do not close
-  GATE-*. Do not fake latency. Do not treat renterd compose-up as a
-  hardware-gate pass.
+- Execution **phase 16 is done** (software). Hardware gates are
+  **operator-declared closed** — see `docs/phase-logs/phase-gates-operator-pass.md`.
+  Read `PHASE_PLAN.md` and this file. Do not start Storj. Do not invent lab
+  output, a live Kasm URL, or `latency_ms`. Do not treat renterd compose-up as
+  a live desktop. Do not weaken HostSelector, occupancy indexes, GPU
+  exclusivity copy, OS-conditional stubs, or CSP.
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.

@@ -2,7 +2,10 @@
 
 Numbered phases below are **agent sessions**, not the cahier §11 product phases.
 Cahier Phase 0 (manual Firecracker / QEMU+WHPX / Pro GPU) is a **hardware gate**,
-not an agent task. Do not mark it done and do not fake a pass.
+not an agent task. On 2026-09-05 a human operator declared GATE-FC / GATE-WHPX /
+GATE-PRO PASS and skipped a second host PC. Closure is **operator-declared** —
+no measurement appendix, guest image, or live session URL is in this repo. This
+Mac cannot host. Do not invent lab output.
 
 Glance file for the human: `PROJECT_STATUS.md`.
 Handoffs for the next agent: `docs/phase-logs/`.
@@ -62,7 +65,7 @@ Matchmaker JSON is camelCase.
 | POST | `/v1/storage` | User Bearer; issue per-user renterd bucket `dcl-<uuid>` + prefix `files/`. 201 new, 200 existing. `{ provider, bucket, prefix, endpoint, region, objects, pathStyle, mountInsideGuest, rclone }`. No access keys. |
 | GET | `/v1/storage` | User Bearer; 200 same shape or 404 if never issued. |
 
-Session response: `{ sessionId, hostId, labTier, startedAt, connection, storage }` where `storage` is the same locator object as `/v1/storage` (no access keys). Standard `connection` is `{ streamer: "kasm", kasmUrl, kasmToken, sunshineUrl: null, moonlight: null, gpuExclusive: false }`. Pro `connection` is `{ streamer: "sunshine", kasmUrl: null, kasmToken: null, sunshineUrl, moonlight: { host, app }, gpuExclusive: true }` — not Kasm renamed. Locators still live in `hosts.kasm_url`. GATE-PRO stays open.
+Session response: `{ sessionId, hostId, labTier, startedAt, connection, storage }` where `storage` is the same locator object as `/v1/storage` (no access keys). Standard `connection` is `{ streamer: "kasm", kasmUrl, kasmToken, sunshineUrl: null, moonlight: null, gpuExclusive: false }`. Pro `connection` is `{ streamer: "sunshine", kasmUrl: null, kasmToken: null, sunshineUrl, moonlight: { host, app }, gpuExclusive: true }` — not Kasm renamed. Locators still live in `hosts.kasm_url`. GATE-PRO is **operator-declared closed** (2026-09-05); Pro backends remain stubs and there is no live Sunshine/Moonlight session in this repo.
 End response: `{ sessionId, status, endedAt, creditsDebited }`.
 History `status` is `active` | `ended` (user end) | `interrupted` (heartbeat
 silence). End response is `ended` or already-`interrupted`. Occupied silent
@@ -116,10 +119,10 @@ iframe it in early phases.
 
 | Cahier | This plan |
 | --- | --- |
-| 0 Manual compute pipeline | Hardware gates below — open, not evidenced in-repo |
-| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs). Live desktop still GATE-FC / GATE-WHPX |
+| 0 Manual compute pipeline | Hardware gates below — **CLOSED by human operator declaration (2026-09-05)**; not evidenced by in-repo measurements |
+| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs). Live desktop is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid`) |
 | 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
-| 3 Pro/Gamer + latency | Execution phase 16 software (Sunshine locators) + GATE-PRO |
+| 3 Pro/Gamer + latency | Execution phase 16 software (Sunshine locators). GATE-PRO operator-declared closed; no live stream in-repo |
 | 4 Hardening | Execution phase 13 (images, done); phase 14 mesh mint+join; 14c default-deny ACLs + host tags + exit-node runbook (not auto-applied). Phase 15 renterd (not Storj) |
 
 ## Execution phases
@@ -226,7 +229,8 @@ what is still manual (hardware gates). Extend this plan with numbered phases
 for remaining cahier FRs; do not implement those FRs here.
 
 **Exit:** Suites green; handoff `docs/phase-logs/phase-7-orchestrator-mvp.md`;
-living status rewritten; GATE-* still open.
+living status rewritten; hardware gates were still open at that time (later
+operator-declared PASS 2026-09-05).
 
 ## Cahier FR gap (after phase 7)
 
@@ -237,17 +241,17 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR1 signup/login | Implemented (Matchmaker + `web/`) | — |
 | FR2 intent prompt → lab tier | Implemented (`web/` harness) | — |
 | FR3 match to most suitable host | Partial: `RankedHostSelector` (declared CPU then RAM; Pro GPU id) | Phase 16 when latency can be measured |
-| FR4 encrypted persistent files | Partial: renterd S3 prefix metadata + guest rclone runbook/stub (not Storj) | Live mount needs GATE-* + guest image |
-| FR5 live streamed desktop | Partial: harness opens a URL; no live Kasm | GATE-FC / GATE-WHPX |
-| FR6 logout final save + “saved as of” | Missing in the guest UI | Guest image / GATE-*; rclone runbook exists |
+| FR4 encrypted persistent files | Partial: renterd S3 prefix metadata + guest rclone runbook/stub (not Storj) | Live mount needs a guest image in-repo |
+| FR5 live streamed desktop | Partial: harness opens a URL; seed is still `example.invalid` | Operator declared GATE-FC / GATE-WHPX; no live Kasm in this repo |
+| FR6 logout final save + “saved as of” | Missing in the guest UI | Guest image still paper; rclone runbook exists |
 | FR7 session history + billing/credits | Internal ledger + `GET /v1/sessions` | Phase 11 done; no payouts |
 | FR8 declare CPU/RAM slice + exclusive GPU | Implemented except availability schedule | Schedule can wait; do not break `sharedGpuId` |
-| FR9 auto mesh join + signed image pull | Partial: signed digest+sig verify; host preauth mint + Rust join (no Tailscale SaaS). Default-deny ACL file + host `tag:host`. Not per-session identities. Exit-node runbook not auto-applied. Storage is renterd S3, not Storj | Live guest rclone needs GATE-* |
+| FR9 auto mesh join + signed image pull | Partial: signed digest+sig verify; host preauth mint + Rust join (no Tailscale SaaS). Default-deny ACL file + host `tag:host`. Not per-session identities. Exit-node runbook not auto-applied. Storage is renterd S3, not Storj | Live guest rclone needs a guest image |
 | FR10 tray status (idle / in-session / earnings) | Window + Rust tray; earnings from ledger | Accrued, not paid out |
 | FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | After 45s Matchmaker treats skip as silence (interrupts). No pause field |
 | FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Later telemetry |
 | FR13 match on tier, latency, reliability | Partial: tier fit + declared caps; latency/reliability not measured | Phase 16 |
-| FR14 provision, heartbeat, auto teardown | Partial: mock provision + 45s stale for new books and occupied teardown; no live hypervisor | GATE-* for real VMs |
+| FR14 provision, heartbeat, auto teardown | Partial: mock provision + 45s stale for new books and occupied teardown; no live hypervisor | Real VMs are still not in this repo |
 | FR15 re-match on host disconnect | Implemented: `interrupted` + one `HostSelector.select`; 409 if none | Same renterd bucket follows the user; no Storj |
 | FR16 meter usage / payouts | Metering + ledger; payouts deferred | Phase 11 metering done; no Stripe |
 
@@ -255,19 +259,20 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 
 | Id | What | Status to record |
 | --- | --- | --- |
-| GATE-FC | One Standard session: Firecracker microVM + Kasm **inside the guest**, Linux host | Open — runbook `docs/runbooks/gate-fc.md`. No human result file, guest image, or live URL |
-| GATE-WHPX | One Standard session: QEMU+WHPX + Kasm inside the guest, Windows host | Open — runbook `docs/runbooks/gate-whpx.md` |
-| GATE-PRO | One Pro session: GPU assignment (VFIO or Hyper-V) + Sunshine/Moonlight; host loses that GPU for the session | Open — runbook `docs/runbooks/gate-pro.md` |
+| GATE-FC | One Standard session: Firecracker microVM + Kasm **inside the guest**, Linux host | **CLOSED** — human declared PASS 2026-09-05. Runbook `docs/runbooks/gate-fc.md`. Operator-declared; no measurement appendix, guest image, or live URL in-repo |
+| GATE-WHPX | One Standard session: QEMU+WHPX + Kasm inside the guest, Windows host | **CLOSED** — human declared PASS 2026-09-05. Runbook `docs/runbooks/gate-whpx.md`. Same: not agent-verified metal |
+| GATE-PRO | One Pro session: GPU assignment (VFIO or Hyper-V) + Sunshine/Moonlight; host loses that GPU for the session | **CLOSED** — human declared PASS 2026-09-05. Runbook `docs/runbooks/gate-pro.md`. Same: no PCI/`nvidia-smi`/Moonlight RTT attached |
 
 An uncommitted `PROJECT_CONTEXT.md` draft once claimed Phase 0 was “done
-off-Mac”. That claim is **not** treated as done: runbooks now exist, but there
-is no captured Kasm URL (`SEED_HOST_KASM_URL` is still
-`https://example.invalid/kasm`), no guest image, and no hypervisor scripts. A
-later agent must not silently skip these gates or close them without a human.
+off-Mac”. That claim is **not** treated as lab evidence. Runbooks exist;
+`SEED_HOST_KASM_URL` is still `https://example.invalid/kasm`; there is no guest
+image and no hypervisor scripts. The human later **declared** the three gates
+PASS (2026-09-05) and skipped a second host PC. Do not invent a measurement
+appendix or a live session URL. Do not reopen these as blocking agent work.
 
-When a gate is actually run, the operator fills the result template in the
-runbook (`docs/phase-logs/gate-*-result.md`) and a human closes the gate in
-`PROJECT_STATUS.md`. Do not invent a pass.
+The in-runbook result templates are filled with “operator declared PASS;
+measurements not attached”. There are **no** `docs/phase-logs/gate-*-result.md`
+files.
 
 ## Execution phases after 7
 
@@ -361,7 +366,7 @@ host disk.
 Done as a software contract (mocked renterd S3 HTTP in tests — no live
 renterd / Sia network). See `docs/phase-logs/phase-15-renterd.md` and
 `docs/runbooks/renterd.md`. Live guest mount and “saved as of HH:MM” still
-need GATE-FC / GATE-WHPX.
+need a guest image in-repo (not in this tree).
 
 ### Phase 16 — Pro/Gamer automation (cahier 3)
 
@@ -369,9 +374,10 @@ Done as a **software contract**. Session JSON and the Host Agent provision
 port distinguish Standard Kasm from Pro Sunshine/Moonlight. GPU exclusivity
 stays a Pro matching filter (`shareGpu` + non-empty `sharedGpuId`) plus
 `gpuExclusive` on the connection. VFIO / Hyper-V paths remain stubs.
-**GATE-PRO stays OPEN** — this phase does not invoke a hypervisor or a live
-stream. Latency-aware ranking still belongs in `RankedHostSelector` when a
-measured value exists; do not fake `latency_ms`. See
+**GATE-PRO is operator-declared closed (2026-09-05)** — this phase still did
+not invoke a hypervisor or a live stream, and none is in the repo. Latency-aware
+ranking still belongs in `RankedHostSelector` when a measured value exists; do
+not fake `latency_ms`. See
 `docs/phase-logs/phase-16-pro-gamer.md`.
 
 ## Handoff template
