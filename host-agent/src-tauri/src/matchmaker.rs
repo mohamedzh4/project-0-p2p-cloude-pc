@@ -94,7 +94,7 @@ impl MatchmakerCredentials {
         })
     }
 
-    fn authorization_header(&self) -> String {
+    pub(crate) fn authorization_header(&self) -> String {
         format!("Bearer {}", self.bootstrap_token)
     }
 }
@@ -152,7 +152,7 @@ impl HostInventoryBody {
 pub struct HttpRequest {
     pub method: &'static str,
     pub url: String,
-    authorization: String,
+    pub(crate) authorization: String,
     pub body: serde_json::Value,
 }
 

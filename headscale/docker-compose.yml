@@ -1,0 +1,32 @@
+# Self-hosted Headscale (phase 14). No Tailscale SaaS account.
+# Copy .env.example to .env in this directory, then:
+#   docker compose up -d
+# Compose interpolates required env and fails if HEADSCALE_SERVER_URL is missing,
+# same pattern as matchmaker/postgres. Headscale itself reads config.yaml;
+# keep server_url there equal to HEADSCALE_SERVER_URL.
+#
+# Create an API key after first boot (put it in matchmaker/.env, never in git):
+#   docker compose exec headscale headscale users create dcl
+#   docker compose exec headscale headscale users list
+#   docker compose exec headscale headscale apikeys create
+#
+# Guest egress via platform exit nodes (architecture §9 item 5) is NOT wired.
+# See docs/runbooks/headscale.md. Default-deny per-session ACLs are NOT loaded.
+
+services:
+  headscale:
+    image: docker.io/headscale/headscale:0.26.1
+    restart: unless-stopped
+    command: serve
+    environment:
+      HEADSCALE_SERVER_URL: ${HEADSCALE_SERVER_URL:?HEADSCALE_SERVER_URL is required}
+    ports:
+      - "${HEADSCALE_PORT:-8080}:8080"
+    volumes:
+      - ./config.yaml:/etc/headscale/config.yaml:ro
+      - headscale_data:/var/lib/headscale
+      - headscale_run:/var/run/headscale
+
+volumes:
+  headscale_data:
+  headscale_run:

@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-05, after phase 13 (signed base-image pipeline)
+# Project Status — last updated: 2026-09-05, after phase 14 (self-hosted Headscale mesh)
 
 ## Done
 
@@ -6,7 +6,8 @@
   exclusivity, four planes). On `main`.
 - Hardware-gate runbooks (gates remain **OPEN**): `docs/runbooks/gate-fc.md`,
   `docs/runbooks/gate-whpx.md`, `docs/runbooks/gate-pro.md`.
-- Execution phases 1–13 **software** on local `main` (not pushed):
+- Headscale operator runbook: `docs/runbooks/headscale.md`.
+- Execution phases 1–14 **software** on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -17,7 +18,10 @@
     pause/resume; no JS tray APIs). No hypervisor invoked. **Before** a stub
     boot, `image.rs` verifies Ed25519 over the SHA-256 digest against
     `IMAGE_SIGNING_PUBLIC_KEY` and `IMAGE_LOCAL_DIGEST` (required when the
-    provision listener is on). **109/109** `cargo test` (2026-09-05).
+    provision listener is on). After register, if `HEADSCALE_LOGIN_SERVER` is
+    set, `mesh.rs` POSTs `/v1/hosts/{id}/mesh/preauth` from Rust and runs
+    `tailscale up` with that env URL + the minted key (never `--advertise-exit-node`).
+    **116/116** `cargo test` (2026-09-05).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
     `sessions_one_active_per_host` / `sessions_one_active_per_user`;
@@ -25,33 +29,41 @@
     `get_host_selector()` → `RankedHostSelector`. `HostProvisioner` after
     occupancy commit, now advertising `imageDigest` + `imageSignature` for the
     booked lab tier. `GET /v1/images/{labTier}` is checksum metadata only.
-    Session end meters `startedAt` → `endedAt` into `ledger_entries`. Silence
-    (~45s) on an occupied host marks the session `interrupted`, settles the
-    ledger once, and rematches via one `select`. `GET /v1/sessions` history;
-    `GET /v1/hosts/{id}/earnings` accrued credits. Required env includes
-    `CREDITS_PER_MINUTE` and the four `IMAGE_*` digest/signature pairs.
-    **113/113** pytest (2026-09-05). Session JSON still has no `intent` field.
-    No latency/reliability columns. No Matchmaker pause field. No payment
-    processor. No image CDN / multi-GB download.
+    `POST /v1/hosts/{id}/mesh/preauth` mints a Headscale preauth key (self-hosted;
+    no Tailscale SaaS). Session end meters `startedAt` → `endedAt` into
+    `ledger_entries`. Silence (~45s) on an occupied host marks the session
+    `interrupted`, settles the ledger once, and rematches via one `select`.
+    `GET /v1/sessions` history; `GET /v1/hosts/{id}/earnings` accrued credits.
+    Required env includes `CREDITS_PER_MINUTE`, the four `IMAGE_*` pairs, and
+    `HEADSCALE_URL` / `HEADSCALE_LOGIN_SERVER` / `HEADSCALE_API_KEY` /
+    `HEADSCALE_USER`. **123/123** pytest (2026-09-05). Session JSON still has
+    no `intent` field. No latency/reliability columns. No Matchmaker pause
+    field. No payment processor. No image CDN / multi-GB download.
   - Web harness: signup/login, FR2 intent prompt → `labTier`, request/end
     session, session history + credits debited, camelCase types aligned with
     Matchmaker; `isLiveKasmUrl` rejects RFC 2606 `.invalid`. History already
     renders `status` (`interrupted` included). **27/27** vitest;
     `npm run typecheck` clean.
+  - Headscale compose in `headscale/` (image `0.26.1`). Required
+    `HEADSCALE_SERVER_URL` interpolation. No Tailscale cloud account.
 
 ## In Progress
 
 - Cahier Phase 1 overall (MVP Standard Lab). Control-plane software loop is in
   place; a usable desktop still needs hardware gates. Next **software** session
-  is execution **phase 14** (Tailscale/Headscale mesh) — **ask the human
-  first** (needs an account / Headscale host). Do not implement it unattended.
+  is execution **phase 15** (Storj + rclone) — **ask the human first** (needs
+  a Storj account). Do not implement it unattended.
 
 ## Up Next
 
-1. Phase 14 — Tailscale/Headscale mesh + exit-node egress (FR9 network).
-   **Needs a human account.** Do not start it in an agent session without
-   asking. Do not close GATE-* from that work.
-2. Human: GATE-FC / GATE-WHPX / GATE-PRO runbooks when a Linux/Windows host PC
+1. Phase 15 — Storj + rclone in the guest (FR4, FR6). **Needs a human Storj
+   account.** Do not start it in an agent session without asking. Do not close
+   GATE-* from that work.
+2. **14c** (not a new cahier phase): default-deny per-session Headscale ACLs
+   and platform-operated **exit-node** guest egress (architecture §9 items
+   4–5). Mesh mint+join does **not** close those. See
+   `docs/runbooks/headscale.md`.
+3. Human: GATE-FC / GATE-WHPX / GATE-PRO runbooks when a Linux/Windows host PC
    is available. Agents must not close these.
 
 ## Known Risks / Open Items
@@ -61,21 +73,22 @@
   `SEED_HOST_KASM_URL` (seed example is still `https://example.invalid/kasm`).
   This Mac cannot host. Closing a gate requires the runbook result file **and**
   an explicit human confirmation.
-- Local `main` is ahead of `origin/main` (planning + phases 1–13). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–14). Nothing was
   pushed this session.
-- Host register/heartbeat/provision/earnings auth uses a shared
+- Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
 - Existing local `matchmaker/.env` must have `HOST_BOOTSTRAP_TOKEN` and
-  `HOST_APPROVE_TOKEN` (different values), `CREDITS_PER_MINUTE`, and the four
-  `IMAGE_*` digest/signature pairs or uvicorn fails at startup. Pytest
-  setdefaults only when they are missing. Do not commit `.env`. Copy the
-  fixture values from `.env.example` for local stub verify; they are not a
+  `HOST_APPROVE_TOKEN` (different values), `CREDITS_PER_MINUTE`, the four
+  `IMAGE_*` digest/signature pairs, and `HEADSCALE_*` or uvicorn fails at
+  startup. Pytest overwrites Headscale env to `.invalid` so a local `.env`
+  cannot point tests at a live instance. Do not commit `.env`. Copy fixture
+  `IMAGE_*` values from `.env.example` for local stub verify; they are not a
   production key. Optional `STALE_SESSION_SWEEP_INTERVAL_SECONDS` defaults to 15.
 - Enabling `HOST_AGENT_LISTEN_ADDR` now also requires `IMAGE_SIGNING_PUBLIC_KEY`
   and `IMAGE_LOCAL_DIGEST` (fail fast). Public key only — never a signing
   secret in the agent or Matchmaker runtime.
-- A long-running Matchmaker on `:8000` from before this phase will not advertise
-  image metadata. Restart uvicorn after pulling this commit, with `IMAGE_*` set.
+- A long-running Matchmaker on `:8000` from before this phase will not mint
+  mesh keys. Restart uvicorn after pulling this commit, with `HEADSCALE_*` set.
 - Pause is still local `sharingEnabled=false` (no Matchmaker field). Skipping
   heartbeats looks like disconnect: after 45s the occupied session is
   interrupted and may rematch.
@@ -99,8 +112,12 @@
   remaining live host.
 - **Real host payouts and user card charges are deferred.** The ledger records
   credits only. Do not add Stripe/PayPal.
-- No Tailscale/Headscale or Storj. Guest egress via platform exit nodes is
-  still on paper (legal exposure at public launch — architecture §9 item 5).
+- **Tailscale SaaS is not used.** Self-hosted Headscale mint+join is in.
+  `headscale/config.yaml` has an empty policy path: that is **not**
+  default-deny. Per-session tagged identities are not minted on book.
+- **14c / architecture §9 item 5 still open:** guest egress via platform exit
+  nodes is on paper. Host Agent join never advertises `--advertise-exit-node`.
+  Do not treat mesh join as routing guest traffic off the volunteer's ISP.
   Rematch does not move guest files (Storj is phase 15).
 - Aikido MCP `namespaceStatus: error` this session; not a scan pass. Run
   `/aikido:setup` if a scan is required.
@@ -109,16 +126,18 @@
 
 ## Notes for next agent/session
 
-- You are starting **phase 14** only after a human agrees (Tailscale/Headscale
-  account). If they have not, stop. Read `PHASE_PLAN.md`, this file, and
-  `docs/phase-logs/` (including `phase-13-signed-images.md`). Phase 15 also
-  needs a Storj account.
+- You are starting **phase 15** only after a human agrees (Storj account). If
+  they have not, stop. Read `PHASE_PLAN.md`, this file, and `docs/phase-logs/`
+  (including `phase-14-headscale-mesh.md`). Do not start Tailscale SaaS.
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.
 - Image verify: signed message is the raw 32-byte SHA-256 digest; signature is
   standard base64 Ed25519; public key is 64 hex chars. Matchmaker does not
   hold the private key. Tests use a documented fixture seed in Rust only.
+- Mesh: Matchmaker holds `HEADSCALE_API_KEY`; the agent never does. Join uses
+  `HEADSCALE_LOGIN_SERVER` from agent env plus a minted preauth key. Unit tests
+  mock Headscale HTTP. Hostscale 0.26.1 wants a numeric `HEADSCALE_USER`.
 - Metering is `ledger.settle_ended_session` at user end and on silence
   interrupt. Unique `(session_id, party)` prevents double-credit. Rate is
   `CREDITS_PER_MINUTE`.

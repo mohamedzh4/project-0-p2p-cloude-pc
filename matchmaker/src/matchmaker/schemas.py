@@ -153,3 +153,14 @@ class HostResponse(CamelModel):
     kasm_url: str | None = None
     agent_url: str | None = None
     last_seen_at: datetime | None = None
+
+
+class MeshPreauthResponse(CamelModel):
+    """One-shot Headscale join grant for this Host Agent. `preauthKey` is a secret."""
+
+    login_server: str
+    preauth_key: str
+    user: str
+    reusable: bool
+    ephemeral: bool
+    expires_at: str

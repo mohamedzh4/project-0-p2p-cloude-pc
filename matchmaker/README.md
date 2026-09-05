@@ -1,10 +1,10 @@
 # Matchmaker
 
 Control-plane service for the Distributed Compute Lab (software MVP after
-execution phase 13): auth, host inventory, heartbeats, session occupancy,
-an internal credits ledger, and signed base-image **metadata** (digest +
-Ed25519 signature per lab tier). Hosts register declared caps and start
-**pending**;
+execution phase 14): auth, host inventory, heartbeats, session occupancy,
+an internal credits ledger, signed base-image **metadata**, and Headscale
+**preauth mint** for Host Agent mesh join (self-hosted; no Tailscale SaaS).
+Hosts register declared caps and start **pending**;
 sessions book a manually approved host whose last heartbeat is fresh (within
 45s). Among eligible hosts, `RankedHostSelector` prefers more declared CPU,
 then more RAM, then host id. Pro bookings also require a dedicated GPU id.
@@ -15,8 +15,8 @@ indexes, not a host flag. Ending a session meters `startedAt` → `endedAt` into
 active session is marked `interrupted`, billed once, and rematched via
 `HostSelector.select` when another eligible host is free. FR2 intent mapping
 lives in `web/`; this API still takes `labTier`. No measured
-latency/reliability scores, no payment processor, no real hypervisor, no
-Tailscale.
+latency/reliability scores, no payment processor, no real hypervisor.
+Default-deny ACLs and platform exit-node egress are **not** implemented.
 
 How Matchmaker finds the agent: `hosts.agent_url` from inventory, else optional
 `HOST_AGENT_PROVISION_URL`. If neither is usable, the seeded/placeholder
@@ -61,8 +61,10 @@ rematch live in `silence.py` and call `HostSelector.select` only. Latency/reliab
 scores wait until they can be measured — extend this class, do not inline
 ranking in the session router. Provisioning is a `HostProvisioner`
 injected via `get_host_provisioner()` — tests swap a fake; production POSTs
-`/v1/provision` on the agent. Comments in the session router mark where
-Headscale and Storj will plug in. Metering is in `ledger.py`, called at user
+`/v1/provision` on the agent. `POST /v1/hosts/{id}/mesh/preauth` mints a
+Host Agent Headscale key via `get_headscale_client()` (tests swap a fake;
+no live Headscale in pytest). Per-session ACLs and exit-node routing are
+not in this call. Metering is in `ledger.py`, called at user
 end and on silence interrupt.
 
 ## Manual steps
@@ -77,8 +79,10 @@ cp .env.example .env
 
 Edit `.env` and set `POSTGRES_PASSWORD`, `JWT_SECRET`, `HOST_BOOTSTRAP_TOKEN`,
 `HOST_APPROVE_TOKEN`, `CREDITS_PER_MINUTE` (integer credits per billed
-minute; `0` is allowed), and the `IMAGE_*` digest/signature pairs. Keep
-`DATABASE_URL` / `TEST_DATABASE_URL` in sync with the password.
+minute; `0` is allowed), the `IMAGE_*` digest/signature pairs, and the
+Headscale vars (`HEADSCALE_URL`, `HEADSCALE_LOGIN_SERVER`, `HEADSCALE_API_KEY`,
+`HEADSCALE_USER`). Keep `DATABASE_URL` / `TEST_DATABASE_URL` in sync with the
+password. See `docs/runbooks/headscale.md` for minting the API key.
 
 ```bash
 docker compose up -d
@@ -89,8 +93,8 @@ on first run if it does not already exist.
 
 You can point `DATABASE_URL` at any Postgres 16 instance instead of Docker; the
 app will not start if `DATABASE_URL`, `JWT_SECRET`, `HOST_BOOTSTRAP_TOKEN`,
-`HOST_APPROVE_TOKEN`, `CREDITS_PER_MINUTE`, or the four `IMAGE_*` registry
-variables are missing.
+`HOST_APPROVE_TOKEN`, `CREDITS_PER_MINUTE`, the four `IMAGE_*` registry
+variables, or the four `HEADSCALE_*` mesh variables are missing.
 
 ### 2. Python
 
@@ -166,8 +170,8 @@ Needs the test database in `TEST_DATABASE_URL` (created by compose).
 pytest
 ```
 
-Expect 113 passed on the phase-13 baseline (plus the existing Starlette/httpx
-deprecation warning).
+Expect 123 passed on the phase-14 baseline (plus the existing Starlette/httpx
+deprecation warning). Unit tests mock Headscale HTTP; they do not start Docker.
 
 ## API
 
@@ -184,6 +188,7 @@ deprecation warning).
 | POST | `/v1/sessions/{id}/end` | User Bearer | owner only; frees the host; meters duration into ledger rows. `status` is `ended` or already-`interrupted`. |
 | GET | `/v1/sessions` | User Bearer | session history + lifetime `creditsDebited`; reclaims silent occupied hosts (may rematch) |
 | GET | `/v1/hosts/{id}/earnings` | Host bootstrap Bearer | `{ hostId, creditsAccrued }` — accrued, not paid out |
+| POST | `/v1/hosts/{id}/mesh/preauth` | Host bootstrap Bearer | `{ loginServer, preauthKey, user, reusable, ephemeral, expiresAt }`. Mints via Headscale HTTP. 404 unknown host; 502 if Headscale mint fails. Not per-session ACLs. |
 | GET | `/v1/images/{labTier}` | no | `{ labTier, digestSha256, signature, algorithm: ed25519, digestAlgorithm: sha256 }` for `standard` or `pro`. Checksums only; not a disk download. |
 
 JSON is camelCase. Passwords and host tokens are never returned. Host inventory
@@ -206,6 +211,13 @@ Ed25519 signature over the **raw 32-byte digest**. `.env.example` holds
 local-dev fixture values (not a production key, not a private key). The Host
 Agent verifies with `IMAGE_SIGNING_PUBLIC_KEY` before a stub boot.
 
+Headscale (required at Matchmaker startup): `HEADSCALE_URL` (API origin),
+`HEADSCALE_LOGIN_SERVER` (returned to agents as `--login-server`),
+`HEADSCALE_API_KEY` (from `headscale apikeys create`), `HEADSCALE_USER`
+(numeric id on Headscale 0.26.1). Placeholders only in `.env.example`.
+Compose for Headscale lives in `headscale/` — see `docs/runbooks/headscale.md`.
+Pytest never calls a live Headscale.
+
 The Host Agent provision listener (not this process) is `POST /v1/provision`
 with the host bootstrap Bearer. The JSON body includes `imageDigest` and
 `imageSignature` from this registry. It is not fetched from the webview.
@@ -215,6 +227,7 @@ with the host bootstrap Bearer. The JSON body includes `imageDigest` and
 - Real measured latency / reliability scoring (declared-cap ranking is in)
 - Payment processors / host payouts (internal ledger only)
 - Invoking Firecracker, QEMU, Kasm, Sunshine, or VFIO
-- Tailscale / Headscale identities
+- Default-deny / per-session Headscale ACLs (host preauth mint is in)
+- Platform exit-node guest egress (architecture §9 item 5) — 14c
 - Storj mounts
 - The user-facing web app

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 import base64
@@ -22,6 +22,13 @@ def load_env_files() -> None:
 def _require_env(name: str) -> str:
     value = os.environ.get(name)
     if value is None or value.strip() == "":
+        raise RuntimeError(f"{name} is required")
+    return value
+
+
+def _require_http_url(name: str) -> str:
+    value = _optional_http_url(name)
+    if value is None:
         raise RuntimeError(f"{name} is required")
     return value
 
@@ -66,10 +73,10 @@ def _require_ed25519_signature(name: str) -> str:
 @dataclass(frozen=True)
 class Settings:
     database_url: str
-    jwt_secret: str
+    jwt_secret: str = field(repr=False)
     jwt_expire_minutes: int
-    host_bootstrap_token: str
-    host_approve_token: str
+    host_bootstrap_token: str = field(repr=False)
+    host_approve_token: str = field(repr=False)
     host_agent_provision_url: str | None
     credits_per_minute: int
     stale_session_sweep_interval_seconds: int
@@ -77,6 +84,10 @@ class Settings:
     image_standard_signature: str
     image_pro_digest: str
     image_pro_signature: str
+    headscale_url: str
+    headscale_api_key: str = field(repr=False)
+    headscale_user: str
+    headscale_login_server: str
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -126,6 +137,10 @@ class Settings:
             image_standard_signature=_require_ed25519_signature("IMAGE_STANDARD_SIGNATURE"),
             image_pro_digest=_require_sha256_hex("IMAGE_PRO_DIGEST"),
             image_pro_signature=_require_ed25519_signature("IMAGE_PRO_SIGNATURE"),
+            headscale_url=_require_http_url("HEADSCALE_URL"),
+            headscale_api_key=_require_env("HEADSCALE_API_KEY"),
+            headscale_user=_require_env("HEADSCALE_USER"),
+            headscale_login_server=_require_http_url("HEADSCALE_LOGIN_SERVER"),
         )
 
 

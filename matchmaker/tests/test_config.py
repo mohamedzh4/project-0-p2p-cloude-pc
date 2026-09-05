@@ -18,6 +18,10 @@ def _required_env(monkeypatch) -> None:
     monkeypatch.setenv("IMAGE_STANDARD_SIGNATURE", STANDARD_SIGNATURE)
     monkeypatch.setenv("IMAGE_PRO_DIGEST", PRO_DIGEST)
     monkeypatch.setenv("IMAGE_PRO_SIGNATURE", PRO_SIGNATURE)
+    monkeypatch.setenv("HEADSCALE_URL", "http://headscale.test.invalid")
+    monkeypatch.setenv("HEADSCALE_LOGIN_SERVER", "http://headscale.test.invalid")
+    monkeypatch.setenv("HEADSCALE_API_KEY", "test-headscale-api-key")
+    monkeypatch.setenv("HEADSCALE_USER", "1")
     monkeypatch.delenv("HOST_AGENT_PROVISION_URL", raising=False)
 
 
@@ -126,3 +130,38 @@ def test_image_env_accepts_sha256_prefix(monkeypatch) -> None:
     assert settings.image_standard_signature == STANDARD_SIGNATURE
     assert settings.image_pro_digest == PRO_DIGEST
     assert settings.image_pro_signature == PRO_SIGNATURE
+
+
+def test_headscale_env_is_required(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.delenv("HEADSCALE_API_KEY", raising=False)
+    try:
+        Settings.from_env()
+        raise AssertionError("expected HEADSCALE_API_KEY to fail fast")
+    except RuntimeError as exc:
+        assert "HEADSCALE_API_KEY is required" in str(exc)
+
+
+def test_headscale_url_must_be_http(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.setenv("HEADSCALE_URL", "not-a-url")
+    try:
+        Settings.from_env()
+        raise AssertionError("expected HEADSCALE_URL to fail fast")
+    except RuntimeError as exc:
+        assert "HEADSCALE_URL must be an http or https URL" in str(exc)
+
+
+def test_headscale_secrets_are_redacted_in_repr(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    settings = Settings.from_env()
+    dumped = repr(settings)
+    assert "test-headscale-api-key" not in dumped
+    assert "test-jwt-secret" not in dumped
+    assert "test-host-bootstrap-token" not in dumped
+    assert settings.headscale_url == "http://headscale.test.invalid"
+    assert settings.headscale_login_server == "http://headscale.test.invalid"
+    assert settings.headscale_user == "1"

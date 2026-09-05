@@ -22,6 +22,11 @@ src-tauri/gen/schemas/
 *.key
 service-account.json
 
+# Headscale local state if bind-mounted instead of the named volume
+headscale/data/
+headscale/lib/
+headscale/run/
+
 # OS and editor noise
 .DS_Store
 Thumbs.db

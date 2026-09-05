@@ -1,7 +1,8 @@
 //! Detect the machine, persist local sharing caps, register those caps with
-//! the Matchmaker from Rust, and ping while sharing is on. Provisioning is a
-//! stub HTTP port that calls `plan_provision`. Tray status and immediate pause
-//! live in Rust; the webview does not call the Matchmaker.
+//! the Matchmaker from Rust, ping while sharing is on, and optionally join
+//! self-hosted Headscale from Rust. Provisioning is a stub HTTP port that
+//! calls `plan_provision`. Tray status and immediate pause live in Rust; the
+//! webview does not call the Matchmaker.
 
 mod agent_status;
 mod commands;
@@ -11,6 +12,7 @@ mod hardware;
 mod identity;
 mod image;
 mod matchmaker;
+mod mesh;
 mod models;
 mod provision;
 mod provision_http;

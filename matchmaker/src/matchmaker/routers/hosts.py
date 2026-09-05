@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from matchmaker.config import get_settings
 from matchmaker.db import get_db
 from matchmaker.deps import (
+    get_headscale_client,
     get_host_provisioner,
     get_host_selector,
     require_host_approver,
@@ -22,10 +23,16 @@ from matchmaker.inventory import (
     record_heartbeat,
 )
 from matchmaker.ledger import host_credits_accrued
+from matchmaker.headscale import HeadscaleClient, HeadscaleError
 from matchmaker.matching import HostSelector
 from matchmaker.models import Host
 from matchmaker.provision import HostProvisioner
-from matchmaker.schemas import HostEarningsResponse, HostInventoryRequest, HostResponse
+from matchmaker.schemas import (
+    HostEarningsResponse,
+    HostInventoryRequest,
+    HostResponse,
+    MeshPreauthResponse,
+)
 from matchmaker.silence import reclaim_stale_sessions
 
 router = APIRouter()
@@ -119,4 +126,36 @@ def host_earnings(
     return HostEarningsResponse(
         host_id=host.id,
         credits_accrued=host_credits_accrued(db, host.id),
+    )
+
+
+@router.post("/hosts/{host_id}/mesh/preauth", response_model=MeshPreauthResponse)
+def mint_host_mesh_preauth(
+    host_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_host_bootstrap)],
+    headscale: Annotated[HeadscaleClient, Depends(get_headscale_client)],
+) -> MeshPreauthResponse:
+    """Mint a Host Agent preauth key via Headscale. Not a per-session ACL.
+
+    Architecture §9 items 4–5 (default-deny tags, platform exit-node egress)
+    are not implemented here. See docs/runbooks/headscale.md.
+    """
+    host = db.get(Host, host_id)
+    if host is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Host not found")
+    try:
+        grant = headscale.mint_host_preauth()
+    except HeadscaleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Headscale preauth mint failed",
+        ) from exc
+    return MeshPreauthResponse(
+        login_server=grant.login_server,
+        preauth_key=grant.key,
+        user=grant.user,
+        reusable=grant.reusable,
+        ephemeral=grant.ephemeral,
+        expires_at=grant.expires_at,
     )

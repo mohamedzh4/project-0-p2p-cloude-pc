@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from matchmaker.auth import decode_access_token
 from matchmaker.config import get_settings
 from matchmaker.db import get_db
+from matchmaker.headscale import HeadscaleClient, HttpHeadscaleClient
 from matchmaker.images import registry_from_settings
 from matchmaker.matching import HostSelector, RankedHostSelector
 from matchmaker.models import User
@@ -72,6 +73,16 @@ def get_host_provisioner() -> HostProvisioner:
         fallback_base_url=settings.host_agent_provision_url,
         bearer_token=settings.host_bootstrap_token,
         images=registry_from_settings(settings),
+    )
+
+
+def get_headscale_client() -> HeadscaleClient:
+    settings = get_settings()
+    return HttpHeadscaleClient(
+        base_url=settings.headscale_url,
+        api_key=settings.headscale_api_key,
+        user=settings.headscale_user,
+        login_server=settings.headscale_login_server,
     )
 
 

@@ -2,7 +2,7 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is the Host Agent after execution phase 13 (signed base-image verify). It
+This is the Host Agent after execution phase 14 (Headscale mesh join). It
 does these things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU.
@@ -27,9 +27,14 @@ does these things and nothing else:
 8. Shows local presence: paused / idle / in-session. Earnings are
    `{n} credits accrued (not paid out)` from `GET /v1/hosts/{id}/earnings`
    (Rust, not the webview). Zero if this machine has no host id yet.
-9. Sits in the system tray (Rust, not the webview): tooltip, pause/resume,
-   open window, quit. Closing the window hides to the tray when the icon
-   installed.
+9. If `HEADSCALE_LOGIN_SERVER` is set, after register it POSTs
+   `/v1/hosts/{id}/mesh/preauth` from Rust and runs `tailscale up` with that
+   login-server (env) and the minted key. Missing mesh/Matchmaker env fails
+   fast. It does **not** pass `--advertise-exit-node`. Omit the login-server
+   env to skip join (UI-only).
+10. Sits in the system tray (Rust, not the webview): tooltip, pause/resume,
+    open window, quit. Closing the window hides to the tray when the icon
+    installed.
 
 There is no real Firecracker or QEMU. See
 `../docs/distributed-compute-lab-architecture.md` for where those land.
@@ -68,10 +73,11 @@ host-agent/
     │   ├── config.rs         load/save the sharing config; immediate pause
     │   ├── identity.rs       persisted Matchmaker host id
     │   ├── matchmaker.rs     inventory + heartbeat + earnings GET (clamp, fail-fast env)
+    │   ├── mesh.rs           Matchmaker preauth mint + tailscale up from env (no secrets in source)
     │   ├── agent_status.rs   paused / idle / in-session (no Tauri types)
-│   ├── provision.rs      OS-conditional stub backends (peers; no hypervisor)
-│   ├── image.rs          SHA-256 + Ed25519 verify (public key from env)
-│   ├── provision_http.rs POST /v1/provision → verify image → plan (Bearer)
+    │   ├── provision.rs      OS-conditional stub backends (peers; no hypervisor)
+    │   ├── image.rs          SHA-256 + Ed25519 verify (public key from env)
+    │   ├── provision_http.rs POST /v1/provision → verify image → plan (Bearer)
     │   ├── tray.rs           system tray in Rust (no webview tray APIs)
     │   ├── commands.rs       the command surface exposed to the UI
     │   └── lib.rs            app setup and state
@@ -106,6 +112,8 @@ Copy `.env.example` to `.env` on the host machine (never commit `.env`):
 | `HOST_AGENT_URL` | no | Origin advertised as `agentUrl`. Defaults to `http://$HOST_AGENT_LISTEN_ADDR` when listening. |
 | `IMAGE_SIGNING_PUBLIC_KEY` | when listening | 32-byte Ed25519 public key (64 hex chars). No private key on the agent. |
 | `IMAGE_LOCAL_DIGEST` | when listening | SHA-256 hex of the standby image (or the Standard fixture for local stub). |
+| `HEADSCALE_LOGIN_SERVER` | to join mesh | Headscale origin for `tailscale up --login-server`. Fail fast if join is attempted without it. Omit to skip join after register. |
+| `TAILSCALE_BIN` | no | Defaults to `tailscale` on PATH. |
 
 The agent fails registration and heartbeats if the URL or bootstrap token is
 missing when it would send. It does not read `HOST_APPROVE_TOKEN`. Operators
@@ -239,13 +247,15 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 14 is Tailscale/Headscale mesh + exit-node egress. **Ask the human
-  first** — it needs an account / Headscale host. Hardware gates stay OPEN.
-  Still do not invoke a real hypervisor from this agent. On macOS,
-  `POST /v1/provision` returns 400 (`UnsupportedHostOs`); Matchmaker then keeps
-  the seeded `kasmUrl`. Local in-session occupancy is still not cleared when
-  Matchmaker interrupts a session (no teardown port). Real host payouts are not
-  in this agent; the ledger only accrues credits.
+- Phase 15 is Storj + rclone in the guest. **Ask the human first** — it needs
+  a Storj account. Hardware gates stay OPEN. Mesh join is the software
+  contract; default-deny ACLs and platform exit-node egress are **14c** (see
+  `docs/runbooks/headscale.md`). Still do not invoke a real hypervisor from
+  this agent. On macOS, `POST /v1/provision` returns 400 (`UnsupportedHostOs`);
+  Matchmaker then keeps the seeded `kasmUrl`. Local in-session occupancy is
+  still not cleared when Matchmaker interrupts a session (no teardown port).
+  Real host payouts are not in this agent; the ledger only accrues credits.
+  This agent never reads `HEADSCALE_API_KEY`.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

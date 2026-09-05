@@ -53,6 +53,11 @@ if not os.environ.get("IMAGE_PRO_SIGNATURE"):
     os.environ["IMAGE_PRO_SIGNATURE"] = PRO_SIGNATURE
 # A local .env must not point pytest at a live agent; tests inject a fake or bind one.
 os.environ.pop("HOST_AGENT_PROVISION_URL", None)
+# Never call a live Headscale from unit tests. Mint tests use a fake or MockTransport.
+os.environ["HEADSCALE_URL"] = "http://headscale.test.invalid"
+os.environ["HEADSCALE_LOGIN_SERVER"] = "http://headscale.test.invalid"
+os.environ["HEADSCALE_API_KEY"] = "test-headscale-api-key"
+os.environ["HEADSCALE_USER"] = "1"
 
 from matchmaker.db import get_engine, get_session_factory  # noqa: E402
 from matchmaker.deps import get_host_provisioner  # noqa: E402
