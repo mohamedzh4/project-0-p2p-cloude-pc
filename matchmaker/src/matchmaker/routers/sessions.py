@@ -11,7 +11,12 @@ from sqlalchemy.orm import Session
 
 from matchmaker.config import get_settings
 from matchmaker.db import get_db
-from matchmaker.deps import get_current_user, get_host_provisioner, get_host_selector
+from matchmaker.deps import (
+    get_current_user,
+    get_host_provisioner,
+    get_host_selector,
+    get_renterd_client,
+)
 from matchmaker.ledger import (
     debit_amounts_for_sessions,
     duration_seconds,
@@ -22,6 +27,7 @@ from matchmaker.ledger import (
 from matchmaker.matching import HostSelector
 from matchmaker.models import Host, LabSession, SessionStatus, User
 from matchmaker.provision import HostProvisioner, provision_booked_host
+from matchmaker.renterd import RenterdClient, RenterdError, StorageGrant
 from matchmaker.schemas import (
     ConnectionInfo,
     EndSessionResponse,
@@ -30,19 +36,42 @@ from matchmaker.schemas import (
     SessionRequest,
     SessionResponse,
 )
+from matchmaker.storage import ensure_user_storage, mount_info_from_grant
 from matchmaker.silence import reclaim_stale_sessions
 
 router = APIRouter()
 
 
-def _session_response(session: LabSession, host: Host) -> SessionResponse:
+def _session_response(
+    session: LabSession, host: Host, grant: StorageGrant
+) -> SessionResponse:
     return SessionResponse(
         session_id=session.id,
         host_id=host.id,
         lab_tier=host.lab_tier,
         started_at=session.started_at,
         connection=ConnectionInfo(kasm_url=host.kasm_url, kasm_token=host.kasm_token),
+        storage=mount_info_from_grant(grant),
     )
+
+
+def _ensure_storage(db: Session, user: User, renterd: RenterdClient) -> StorageGrant:
+    settings = get_settings()
+    try:
+        return ensure_user_storage(
+            db,
+            user,
+            renterd,
+            endpoint=settings.renterd_s3_guest_endpoint,
+            region=settings.renterd_s3_region,
+            access_key_id=settings.renterd_s3_access_key,
+            secret_access_key=settings.renterd_s3_secret_key,
+        )
+    except RenterdError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="renterd storage provision failed",
+        ) from exc
 
 
 def _reclaim_stale(db: Session, selector: HostSelector, provisioner: HostProvisioner) -> None:
@@ -80,6 +109,7 @@ def request_session(
     db: Annotated[Session, Depends(get_db)],
     selector: Annotated[HostSelector, Depends(get_host_selector)],
     provisioner: Annotated[HostProvisioner, Depends(get_host_provisioner)],
+    renterd: Annotated[RenterdClient, Depends(get_renterd_client)],
     payload: SessionRequest | None = None,
 ) -> SessionResponse:
     req = payload or SessionRequest()
@@ -88,7 +118,8 @@ def request_session(
     existing = _active_session_for_user(db, user.id)
     if existing is not None:
         response.status_code = status.HTTP_200_OK
-        return _session_response(existing, _host_or_error(db, existing.host_id))
+        grant = _ensure_storage(db, user, renterd)
+        return _session_response(existing, _host_or_error(db, existing.host_id), grant)
 
     # --- later plug-ins (do not implement here) ---
     # 1. Matching: ranking lives in the HostSelector implementation (declared
@@ -98,10 +129,14 @@ def request_session(
     #    Default-deny ACLs are the Headscale policy file, not this router.
     #    Do not mint a per-session guest identity here. Do not route guest
     #    traffic via the volunteer ISP; exit-node use is operator-manual.
-    # 3. Storj/rclone: mount the user's bucket inside the guest.
+    # 3. renterd/rclone: ensure a per-user bucket *before* occupy. Mount
+    #    inside the guest. Never plaintext on the volunteer host disk.
+    #    Silence rematch does not call renterd — the same bucket follows
+    #    the user.
     # 4. Billing: duration is metered at end or silence interrupt (startedAt →
     #    endedAt) into ledger_entries. Occupancy start is the clock; no
     #    payment processor. Stale occupied hosts are reclaimed in silence.py.
+    grant = _ensure_storage(db, user, renterd)
     host = selector.select(db, lab_tier=req.lab_tier)
     if host is None:
         raise HTTPException(
@@ -123,7 +158,7 @@ def request_session(
         raced = _active_session_for_user(db, user.id)
         if raced is not None:
             response.status_code = status.HTTP_200_OK
-            return _session_response(raced, _host_or_error(db, raced.host_id))
+            return _session_response(raced, _host_or_error(db, raced.host_id), grant)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Host unavailable",
@@ -135,7 +170,7 @@ def request_session(
     # unreachable, keep the seeded/placeholder URL on the host row.
     provision_booked_host(db, host, provisioner, lab_tier=req.lab_tier)
     response.status_code = status.HTTP_201_CREATED
-    return _session_response(session, host)
+    return _session_response(session, host, grant)
 
 
 @router.post("/sessions/{session_id}/end", response_model=EndSessionResponse)

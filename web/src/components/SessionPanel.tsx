@@ -103,6 +103,15 @@ export function SessionPanel({
             <dd>{session.connection.kasmUrl}</dd>
             <dt>kasmToken</dt>
             <dd>{session.connection.kasmToken ?? "(none)"}</dd>
+            {session.storage ? (
+              <>
+                <dt>storage (guest rclone)</dt>
+                <dd>
+                  {session.storage.endpoint} / {session.storage.bucket} — mount
+                  inside the guest only
+                </dd>
+              </>
+            ) : null}
           </dl>
           {session.labTier === "pro" ? (
             <p className="exclusivity" role="status">

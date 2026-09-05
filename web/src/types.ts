@@ -14,12 +14,26 @@ export interface ConnectionInfo {
   kasmToken: string | null;
 }
 
+export interface StorageMountInfo {
+  provider: string;
+  endpoint: string;
+  region: string;
+  bucket: string;
+  prefix: string;
+  pathStyle: boolean;
+  accessKeyId: string;
+  secretAccessKey: string;
+  mountInsideGuest: boolean;
+  rclone: string;
+}
+
 export interface SessionResponse {
   sessionId: string;
   hostId: string;
   labTier: string;
   startedAt: string;
   connection: ConnectionInfo;
+  storage?: StorageMountInfo;
 }
 
 export interface EndSessionResponse {

@@ -63,6 +63,7 @@ class User(Base):
 
     sessions: Mapped[list[LabSession]] = relationship(back_populates="user")
     ledger_entries: Mapped[list[LedgerEntry]] = relationship(back_populates="user")
+    storage: Mapped[UserStorage | None] = relationship(back_populates="user")
 
 
 class Host(Base):
@@ -149,3 +150,18 @@ class LedgerEntry(Base):
     session: Mapped[LabSession] = relationship(back_populates="ledger_entries")
     user: Mapped[User | None] = relationship(back_populates="ledger_entries")
     host: Mapped[Host | None] = relationship(back_populates="ledger_entries")
+
+
+class UserStorage(Base):
+    """Per-user renterd S3 bucket. Prefix is the object path inside that bucket."""
+
+    __tablename__ = "user_storage"
+
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    bucket: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    prefix: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    user: Mapped[User] = relationship(back_populates="storage")

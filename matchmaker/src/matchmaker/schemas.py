@@ -46,12 +46,28 @@ class ConnectionInfo(CamelModel):
     kasm_token: str | None = None
 
 
+class StorageMountInfo(CamelModel):
+    """S3 grant for rclone **inside the guest**. Not for the volunteer host OS."""
+
+    provider: str = "renterd"
+    endpoint: str
+    region: str
+    bucket: str
+    prefix: str
+    path_style: bool = True
+    access_key_id: str
+    secret_access_key: str
+    mount_inside_guest: bool = True
+    rclone: str
+
+
 class SessionResponse(CamelModel):
     session_id: UUID
     host_id: UUID
     lab_tier: str
     started_at: datetime
     connection: ConnectionInfo
+    storage: StorageMountInfo
 
 
 class EndSessionResponse(CamelModel):

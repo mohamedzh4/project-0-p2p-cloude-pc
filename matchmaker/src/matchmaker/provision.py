@@ -84,11 +84,13 @@ class HttpHostProvisioner:
         bearer_token: str,
         timeout_seconds: float = _REQUEST_TIMEOUT_SECONDS,
         images: dict[str, ImageManifest] | None = None,
+        storage_endpoint: str | None = None,
     ) -> None:
         self._fallback_base_url = fallback_base_url
         self._bearer_token = bearer_token
         self._timeout_seconds = timeout_seconds
         self._images = images or {}
+        self._storage_endpoint = storage_endpoint
 
     def provision(self, host: Host, *, lab_tier: str) -> ProvisionResult | None:
         origin = agent_origin(host.agent_url) or agent_origin(self._fallback_base_url)
@@ -104,6 +106,10 @@ class HttpHostProvisioner:
         if manifest is not None:
             payload["imageDigest"] = manifest.digest_sha256
             payload["imageSignature"] = manifest.signature
+        # Endpoint only — never S3 secrets. Host Agent must not mount this on
+        # the volunteer OS; rclone belongs inside the guest.
+        if self._storage_endpoint:
+            payload["storageEndpoint"] = self._storage_endpoint
         headers = {
             "Authorization": f"Bearer {self._bearer_token}",
             "Accept": "application/json",

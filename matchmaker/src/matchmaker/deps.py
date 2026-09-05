@@ -17,6 +17,7 @@ from matchmaker.images import registry_from_settings
 from matchmaker.matching import HostSelector, RankedHostSelector
 from matchmaker.models import User
 from matchmaker.provision import HostProvisioner, HttpHostProvisioner
+from matchmaker.renterd import HttpRenterdClient, RenterdClient
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -73,6 +74,7 @@ def get_host_provisioner() -> HostProvisioner:
         fallback_base_url=settings.host_agent_provision_url,
         bearer_token=settings.host_bootstrap_token,
         images=registry_from_settings(settings),
+        storage_endpoint=settings.renterd_s3_guest_endpoint,
     )
 
 
@@ -83,6 +85,16 @@ def get_headscale_client() -> HeadscaleClient:
         api_key=settings.headscale_api_key,
         user=settings.headscale_user,
         login_server=settings.headscale_login_server,
+    )
+
+
+def get_renterd_client() -> RenterdClient:
+    settings = get_settings()
+    return HttpRenterdClient(
+        endpoint=settings.renterd_s3_endpoint,
+        access_key=settings.renterd_s3_access_key,
+        secret_key=settings.renterd_s3_secret_key,
+        region=settings.renterd_s3_region,
     )
 
 

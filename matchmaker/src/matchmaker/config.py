@@ -55,6 +55,26 @@ def _require_sha256_hex(name: str) -> str:
     return raw.lower()
 
 
+def _renterd_s3_region() -> str:
+    raw = os.environ.get("RENTERD_S3_REGION", "us-east-1").strip()
+    return raw if raw else "us-east-1"
+
+
+def _guest_s3_endpoint() -> str:
+    """URL guests rclone against. Defaults to the Matchmaker→renterd endpoint."""
+    guest = _optional_http_url("RENTERD_S3_GUEST_ENDPOINT")
+    if guest is not None:
+        return guest
+    return _require_http_url("RENTERD_S3_ENDPOINT")
+
+
+def _require_s3_key(name: str) -> str:
+    value = _require_env(name)
+    if len(value) < 16:
+        raise RuntimeError(f"{name} must be at least 16 characters")
+    return value
+
+
 def _require_ed25519_signature(name: str) -> str:
     raw = _require_env(name).strip()
     try:
@@ -88,6 +108,11 @@ class Settings:
     headscale_api_key: str = field(repr=False)
     headscale_user: str
     headscale_login_server: str
+    renterd_s3_endpoint: str
+    renterd_s3_guest_endpoint: str
+    renterd_s3_region: str
+    renterd_s3_access_key: str = field(repr=False)
+    renterd_s3_secret_key: str = field(repr=False)
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -141,6 +166,11 @@ class Settings:
             headscale_api_key=_require_env("HEADSCALE_API_KEY"),
             headscale_user=_require_env("HEADSCALE_USER"),
             headscale_login_server=_require_http_url("HEADSCALE_LOGIN_SERVER"),
+            renterd_s3_endpoint=_require_http_url("RENTERD_S3_ENDPOINT"),
+            renterd_s3_guest_endpoint=_guest_s3_endpoint(),
+            renterd_s3_region=_renterd_s3_region(),
+            renterd_s3_access_key=_require_s3_key("RENTERD_S3_ACCESS_KEY"),
+            renterd_s3_secret_key=_require_s3_key("RENTERD_S3_SECRET_KEY"),
         )
 
 

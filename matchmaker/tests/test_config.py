@@ -22,6 +22,11 @@ def _required_env(monkeypatch) -> None:
     monkeypatch.setenv("HEADSCALE_LOGIN_SERVER", "http://headscale.test.invalid")
     monkeypatch.setenv("HEADSCALE_API_KEY", "test-headscale-api-key")
     monkeypatch.setenv("HEADSCALE_USER", "1")
+    monkeypatch.setenv("RENTERD_S3_ENDPOINT", "http://renterd.test.invalid")
+    monkeypatch.setenv("RENTERD_S3_ACCESS_KEY", "test-renterd-access")
+    monkeypatch.setenv("RENTERD_S3_SECRET_KEY", "test-renterd-secret-key")
+    monkeypatch.setenv("RENTERD_S3_REGION", "us-east-1")
+    monkeypatch.delenv("RENTERD_S3_GUEST_ENDPOINT", raising=False)
     monkeypatch.delenv("HOST_AGENT_PROVISION_URL", raising=False)
 
 
@@ -165,3 +170,57 @@ def test_headscale_secrets_are_redacted_in_repr(monkeypatch) -> None:
     assert settings.headscale_url == "http://headscale.test.invalid"
     assert settings.headscale_login_server == "http://headscale.test.invalid"
     assert settings.headscale_user == "1"
+    assert settings.renterd_s3_endpoint == "http://renterd.test.invalid"
+    assert settings.renterd_s3_guest_endpoint == "http://renterd.test.invalid"
+    assert settings.renterd_s3_region == "us-east-1"
+    assert "test-renterd-secret-key" not in dumped
+    assert "test-renterd-access" not in dumped
+
+
+def test_renterd_s3_env_is_required(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.delenv("RENTERD_S3_SECRET_KEY", raising=False)
+    try:
+        Settings.from_env()
+        raise AssertionError("expected RENTERD_S3_SECRET_KEY to fail fast")
+    except RuntimeError as exc:
+        assert "RENTERD_S3_SECRET_KEY is required" in str(exc)
+
+
+def test_renterd_s3_endpoint_must_be_http(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.setenv("RENTERD_S3_ENDPOINT", "not-a-url")
+    try:
+        Settings.from_env()
+        raise AssertionError("expected RENTERD_S3_ENDPOINT to fail fast")
+    except RuntimeError as exc:
+        assert "RENTERD_S3_ENDPOINT must be an http or https URL" in str(exc)
+
+
+def test_renterd_s3_keys_must_be_at_least_16_chars(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.setenv("RENTERD_S3_ACCESS_KEY", "short")
+    try:
+        Settings.from_env()
+        raise AssertionError("expected RENTERD_S3_ACCESS_KEY to fail fast")
+    except RuntimeError as exc:
+        assert "RENTERD_S3_ACCESS_KEY must be at least 16 characters" in str(exc)
+
+
+def test_renterd_s3_region_defaults_to_us_east_1(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.delenv("RENTERD_S3_REGION", raising=False)
+    settings = Settings.from_env()
+    assert settings.renterd_s3_region == "us-east-1"
+
+
+def test_renterd_guest_endpoint_defaults_to_s3_endpoint(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.setenv("RENTERD_S3_GUEST_ENDPOINT", "http://guest.renterd.test.invalid")
+    settings = Settings.from_env()
+    assert settings.renterd_s3_guest_endpoint == "http://guest.renterd.test.invalid"

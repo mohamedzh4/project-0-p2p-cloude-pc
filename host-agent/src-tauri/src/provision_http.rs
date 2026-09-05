@@ -71,6 +71,9 @@ pub struct ProvisionHttpRequest {
     pub shared_gpu_id: Option<String>,
     pub image_digest: String,
     pub image_signature: String,
+    /// renterd S3 endpoint the **guest** should rclone. Never mount on this host OS.
+    #[serde(default)]
+    pub storage_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -121,6 +124,9 @@ pub fn plan_http(
     let advertised = ImageManifest::parse(&request.image_digest, &request.image_signature)?;
     verify_image(trust, &advertised, None)?;
     let lab_tier = LabTier::parse(&request.lab_tier)?;
+    // storage_endpoint is documented for the guest only. This stub never rclone-mounts
+    // user data on the volunteer host OS (architecture §8).
+    let _guest_storage = request.storage_endpoint.as_deref();
     let planned = plan(
         os,
         &ProvisionRequest {
@@ -666,5 +672,37 @@ mod tests {
         );
         assert_eq!(output.status, 400);
         assert!(!occupancy.is_in_session());
+    }
+
+    #[test]
+    fn storage_endpoint_is_accepted_and_does_not_mount_on_the_host() {
+        let (trust, manifest) = signed_fixture(FIXTURE_STANDARD_BYTES);
+        let body = serde_json::json!({
+            "labTier": "standard",
+            "sharedGpuId": null,
+            "imageDigest": manifest.digest_hex(),
+            "imageSignature": manifest.signature_base64(),
+            "storageEndpoint": "http://renterd.test.invalid",
+        })
+        .to_string()
+        .into_bytes();
+        let output = respond(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &trust,
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(body["hypervisorInvoked"], false);
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/firecracker")
+        );
+        assert!(body.get("rclone").is_none());
+        assert!(body.get("secretAccessKey").is_none());
     }
 }

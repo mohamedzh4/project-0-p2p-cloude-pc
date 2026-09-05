@@ -58,12 +58,28 @@ os.environ["HEADSCALE_URL"] = "http://headscale.test.invalid"
 os.environ["HEADSCALE_LOGIN_SERVER"] = "http://headscale.test.invalid"
 os.environ["HEADSCALE_API_KEY"] = "test-headscale-api-key"
 os.environ["HEADSCALE_USER"] = "1"
+# Never call a live renterd / Sia network from unit tests.
+os.environ["RENTERD_S3_ENDPOINT"] = "http://renterd.test.invalid"
+os.environ["RENTERD_S3_ACCESS_KEY"] = "test-renterd-access"
+os.environ["RENTERD_S3_SECRET_KEY"] = "test-renterd-secret-key"
+os.environ["RENTERD_S3_REGION"] = "us-east-1"
+os.environ.pop("RENTERD_S3_GUEST_ENDPOINT", None)
+os.environ.pop("S3_ENDPOINT", None)
+os.environ.pop("S3_ACCESS_KEY", None)
+os.environ.pop("S3_SECRET_KEY", None)
+os.environ.pop("S3_BUCKET", None)
 
 from matchmaker.db import get_engine, get_session_factory  # noqa: E402
-from matchmaker.deps import get_host_provisioner  # noqa: E402
+from matchmaker.deps import get_host_provisioner, get_renterd_client  # noqa: E402
 from matchmaker.main import app  # noqa: E402
 from matchmaker.models import Host, HostStatus, LabTier  # noqa: E402
-from tests.helpers import KASM_TOKEN, KASM_URL, FakeHostProvisioner, PROVISION_URL  # noqa: E402
+from tests.helpers import (  # noqa: E402
+    KASM_TOKEN,
+    KASM_URL,
+    FakeHostProvisioner,
+    FakeRenterd,
+    PROVISION_URL,
+)
 
 
 def _ensure_database(url: str) -> None:
@@ -95,7 +111,10 @@ def clean_tables() -> Generator[None, None, None]:
     engine = get_engine()
     with engine.begin() as conn:
         conn.execute(
-            text("TRUNCATE TABLE ledger_entries, sessions, hosts, users RESTART IDENTITY CASCADE")
+            text(
+                "TRUNCATE TABLE user_storage, ledger_entries, sessions, hosts, users "
+                "RESTART IDENTITY CASCADE"
+            )
         )
     yield
 
@@ -107,6 +126,16 @@ def db() -> Generator[Session, None, None]:
         yield session
     finally:
         session.close()
+
+
+@pytest.fixture(autouse=True)
+def fake_renterd() -> Generator[FakeRenterd, None, None]:
+    fake = FakeRenterd()
+    app.dependency_overrides[get_renterd_client] = lambda: fake
+    try:
+        yield fake
+    finally:
+        app.dependency_overrides.pop(get_renterd_client, None)
 
 
 @pytest.fixture

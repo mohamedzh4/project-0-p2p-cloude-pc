@@ -16,6 +16,7 @@ mod mesh;
 mod models;
 mod provision;
 mod provision_http;
+mod storage;
 mod tray;
 
 #[cfg(test)]

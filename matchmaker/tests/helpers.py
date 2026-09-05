@@ -8,13 +8,11 @@ from fastapi.testclient import TestClient
 from matchmaker.config import get_settings
 from matchmaker.models import Host
 from matchmaker.provision import ProvisionResult
+from matchmaker.renterd import RenterdError
 
 KASM_URL = "https://kasm.test.example/session"
 KASM_TOKEN = "test-kasm-token"
 PROVISION_URL = "https://provision.invalid/mock"
-
-KASM_URL = "https://kasm.test.example/session"
-KASM_TOKEN = "test-kasm-token"
 
 
 def host_auth_header() -> dict[str, str]:
@@ -54,6 +52,30 @@ def auth_header(token: str) -> dict[str, str]:
 
 def heartbeat(client: TestClient, host_id: str):
     return client.post(f"/v1/hosts/{host_id}/heartbeat", headers=host_auth_header())
+
+
+@dataclass
+class FakeRenterd:
+    """In-memory renterd S3 double. Swap via FastAPI Depends. No live Sia."""
+
+    created: list[str] = field(default_factory=list)
+    objects: list[tuple[str, str]] = field(default_factory=list)
+    error: RenterdError | None = None
+    existing_buckets: set[str] = field(default_factory=set)
+
+    def create_bucket(self, name: str) -> bool:
+        if self.error is not None:
+            raise self.error
+        if name in self.existing_buckets:
+            return False
+        self.existing_buckets.add(name)
+        self.created.append(name)
+        return True
+
+    def put_object(self, bucket: str, key: str, body: bytes) -> None:
+        if self.error is not None:
+            raise self.error
+        self.objects.append((bucket, key))
 
 
 @dataclass

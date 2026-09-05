@@ -37,6 +37,8 @@ def test_request_session_creates_and_returns_kasm_connection(
     assert data["startedAt"]
     assert data["connection"]["kasmUrl"] == KASM_URL
     assert data["connection"]["kasmToken"] == KASM_TOKEN
+    assert data["storage"]["provider"] == "renterd"
+    assert data["storage"]["mountInsideGuest"] is True
     assert "intent" not in data
 
 

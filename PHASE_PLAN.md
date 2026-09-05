@@ -38,7 +38,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 14c: pytest 126, cargo test 116, vitest 27.
+  Counts after phase 15: pytest TBD, cargo test TBD, vitest 27.
 
 ## Contracts to keep stable
 
@@ -59,6 +59,8 @@ Matchmaker JSON is camelCase.
 | GET | `/v1/hosts/{id}/earnings` | Host bootstrap Bearer; `{ hostId, creditsAccrued }` |
 | GET | `/v1/images/{labTier}` | Public; `{ labTier, digestSha256, signature, algorithm, digestAlgorithm }`. `standard` / `pro` only. Not a blob download. |
 | POST | `/v1/hosts/{id}/mesh/preauth` | Host bootstrap Bearer; `{ loginServer, preauthKey, user, reusable, ephemeral, expiresAt }`. Headscale mint tagged `tag:host`. Not a per-session identity. |
+| POST | `/v1/storage` | User Bearer; issue per-user renterd prefix. 201 new, 200 existing. `{ provider, bucket, prefix, endpoint, region, objects }`. No access keys. |
+| GET | `/v1/storage` | User Bearer; 200 same shape or 404 if never issued. |
 
 Session response: `{ sessionId, hostId, labTier, startedAt, connection: { kasmUrl, kasmToken } }`.
 End response: `{ sessionId, status, endedAt, creditsDebited }`.
@@ -115,7 +117,7 @@ iframe it in early phases.
 | 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs). Live desktop still GATE-FC / GATE-WHPX |
 | 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
 | 3 Pro/Gamer + latency | Execution phase 16 + GATE-PRO |
-| 4 Hardening | Execution phase 13 (images, done); phase 14 mesh mint+join; 14c default-deny ACLs + host tags + exit-node runbook (not auto-applied). Storj ask human first |
+| 4 Hardening | Execution phase 13 (images, done); phase 14 mesh mint+join; 14c default-deny ACLs + host tags + exit-node runbook (not auto-applied). Phase 15 renterd (not Storj) |
 
 ## Execution phases
 
@@ -232,18 +234,18 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR1 signup/login | Implemented (Matchmaker + `web/`) | — |
 | FR2 intent prompt → lab tier | Implemented (`web/` harness) | — |
 | FR3 match to most suitable host | Partial: `RankedHostSelector` (declared CPU then RAM; Pro GPU id) | Phase 16 when latency can be measured |
-| FR4 encrypted persistent files | Missing | Phase 15 — **ask human first** (Storj account) |
+| FR4 encrypted persistent files | Partial: renterd S3 prefix metadata + guest rclone runbook/stub (not Storj) | Live mount needs GATE-* + guest image |
 | FR5 live streamed desktop | Partial: harness opens a URL; no live Kasm | GATE-FC / GATE-WHPX |
-| FR6 logout final save + “saved as of” | Missing | Phase 15 — **ask human first** |
+| FR6 logout final save + “saved as of” | Missing in the guest UI | Guest image / GATE-*; rclone runbook exists |
 | FR7 session history + billing/credits | Internal ledger + `GET /v1/sessions` | Phase 11 done; no payouts |
 | FR8 declare CPU/RAM slice + exclusive GPU | Implemented except availability schedule | Schedule can wait; do not break `sharedGpuId` |
-| FR9 auto mesh join + signed image pull | Partial: signed digest+sig verify; host preauth mint + Rust join (no Tailscale SaaS). Default-deny ACL file + host `tag:host`. Not per-session identities. Exit-node runbook not auto-applied | Phase 15 Storj — **ask human first** |
+| FR9 auto mesh join + signed image pull | Partial: signed digest+sig verify; host preauth mint + Rust join (no Tailscale SaaS). Default-deny ACL file + host `tag:host`. Not per-session identities. Exit-node runbook not auto-applied. Storage is renterd S3, not Storj | Live guest rclone needs GATE-* |
 | FR10 tray status (idle / in-session / earnings) | Window + Rust tray; earnings from ledger | Accrued, not paid out |
 | FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | After 45s Matchmaker treats skip as silence (interrupts). No pause field |
 | FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Later telemetry |
 | FR13 match on tier, latency, reliability | Partial: tier fit + declared caps; latency/reliability not measured | Phase 16 |
 | FR14 provision, heartbeat, auto teardown | Partial: mock provision + 45s stale for new books and occupied teardown; no live hypervisor | GATE-* for real VMs |
-| FR15 re-match on host disconnect | Implemented: `interrupted` + one `HostSelector.select`; 409 if none | No Storj follow-along |
+| FR15 re-match on host disconnect | Implemented: `interrupted` + one `HostSelector.select`; 409 if none | Same renterd bucket follows the user; no Storj |
 | FR16 meter usage / payouts | Metering + ledger; payouts deferred | Phase 11 metering done; no Stripe |
 
 ## Hardware gates (human — this Mac cannot host)
@@ -267,7 +269,8 @@ runbook (`docs/phase-logs/gate-*-result.md`) and a human closes the gate in
 ## Execution phases after 7
 
 Do not start these in the phase-7 session. **Ask the human first** before any
-phase that needs a new account (Tailscale/Headscale, Storj, paid GPU cloud).
+phase that needs a new account (Tailscale/Headscale, paid GPU cloud). Storage
+is self-hosted **renterd** (human decision 2026-09-05 — not Storj).
 
 ### Phase 8 — Intent capture (FR2)
 
@@ -343,10 +346,19 @@ Done. Checked-in `headscale/acl.hujson` (Headscale 0.26 `acls`). Mint tags
 opt-in compose overlay + numbered runbook; `--exit-node` is not auto-applied.
 See `docs/phase-logs/phase-14c-headscale-acls-exit-node.md`.
 
-### Phase 15 — Storj + rclone in the guest (FR4, FR6)
+### Phase 15 — renterd + rclone in the guest (FR4, FR6)
 
-**Ask human first — needs a Storj account.** Mount inside the guest; final save
-on logout; “saved as of HH:MM”.
+**Human decision 2026-09-05: Sia renterd S3, not Storj.** (Chat said “phase
+14 renterd”; Headscale already occupied 14 — this is execution **phase 15**.)
+Self-hosted compose; Matchmaker httpx SigV4 against the S3 API; per-user
+**bucket** (`dcl-<uuid>`) with prefix `files/`; rclone plan stub + numbered
+runbook. Mount inside the guest; do not write session keys to the volunteer
+host disk.
+
+Done as a software contract (mocked renterd S3 HTTP in tests — no live
+renterd / Sia network). See `docs/phase-logs/phase-15-renterd.md` and
+`docs/runbooks/renterd.md`. Live guest mount and “saved as of HH:MM” still
+need GATE-FC / GATE-WHPX.
 
 ### Phase 16 — Pro/Gamer automation (cahier 3)
 

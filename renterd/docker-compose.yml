@@ -1,0 +1,40 @@
+# Self-hosted renterd S3 gateway (phase 15). Not Storj / Tardigrade / uplink.
+# Copy .env.example to .env in this directory, then:
+#   docker compose up -d
+# Compose interpolates required env and fails if RENTERD_SEED or
+# RENTERD_API_PASSWORD is missing, same pattern as headscale/.
+#
+# S3 listens inside the container on 0.0.0.0:8080 (renterd default is
+# localhost:8080, which is unreachable from the host). Host bind is
+# 127.0.0.1:${RENTERD_S3_PORT:-8081} so it does not collide with Headscale's
+# 8080. UI/API is 127.0.0.1:9980.
+#
+# Do not run this in CI. First start syncs the chosen Sia network (default
+# zen testnet) — that is not a unit-test dependency and must not download
+# mainnet consensus in pytest/cargo.
+#
+# Never commit the wallet seed or API password. See docs/runbooks/renterd.md.
+
+services:
+  renterd:
+    image: ghcr.io/siafoundation/renterd:2.9.3
+    restart: unless-stopped
+    stop_grace_period: 5m
+    # HTTP.Address default is :9980; set it explicitly so Docker publish works.
+    command: ["--http", ":9980"]
+    environment:
+      RENTERD_SEED: ${RENTERD_SEED:?RENTERD_SEED is required}
+      RENTERD_API_PASSWORD: ${RENTERD_API_PASSWORD:?RENTERD_API_PASSWORD is required}
+      RENTERD_NETWORK: ${RENTERD_NETWORK:-zen}
+      RENTERD_S3_ENABLED: "true"
+      RENTERD_S3_DISABLE_AUTH: "false"
+      RENTERD_S3_ADDRESS: 0.0.0.0:8080
+    ports:
+      - "127.0.0.1:${RENTERD_API_PORT:-9980}:9980"
+      - "127.0.0.1:${RENTERD_S3_PORT:-8081}:8080"
+      - "127.0.0.1:${RENTERD_GATEWAY_PORT:-9981}:9981"
+    volumes:
+      - renterd_data:/data
+
+volumes:
+  renterd_data:

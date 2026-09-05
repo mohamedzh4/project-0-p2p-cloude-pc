@@ -247,8 +247,10 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 15 is Storj + rclone in the guest. **Ask the human first** — it needs
-  a Storj account. Hardware gates stay OPEN. Mesh join is host-tagged
+- Next software is **phase 16** (Pro/Gamer automation) plus open hardware
+  gates. Storage is renterd S3, not Storj. This agent never mounts user data
+  on the host OS. `GuestRcloneMount::from_env` is a guest-side rclone argv
+  stub (no `S3_SECRET_KEY`, no process spawn). Mesh join is host-tagged
   (`tag:host`); default-deny ACLs are the Headscale policy file. Platform
   exit-node guest egress is a runbook, **not auto-applied** (see
   `docs/runbooks/headscale.md`). Still do not invoke a real hypervisor from
@@ -256,7 +258,7 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   Matchmaker then keeps the seeded `kasmUrl`. Local in-session occupancy is
   still not cleared when Matchmaker interrupts a session (no teardown port).
   Real host payouts are not in this agent; the ledger only accrues credits.
-  This agent never reads `HEADSCALE_API_KEY`.
+  This agent never reads `HEADSCALE_API_KEY` or renterd S3 secrets.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.
