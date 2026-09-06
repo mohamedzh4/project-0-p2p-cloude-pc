@@ -3,8 +3,8 @@
 **This is not Tailscale SaaS.** There is no Tailscale cloud account. The
 control server is Headscale in `headscale/docker-compose.yml`.
 
-Hardware gates (GATE-FC / GATE-WHPX / GATE-PRO) are **CLOSED by human
-operator declaration (2026-09-05)** — not by tests and not by an in-repo lab.
+Hardware gates (GATE-FC / GATE-WHPX / GATE-PRO) are **OPEN — pending
+real-hardware verification** (2026-09-05 operator PASS later retracted).
 Joining the mesh does not boot a guest. `SEED_HOST_KASM_URL` stays
 `https://example.invalid/kasm`.
 

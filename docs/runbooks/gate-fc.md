@@ -1,23 +1,27 @@
 # GATE-FC — Firecracker + Kasm inside the guest (Linux host)
 
-**Status: CLOSED (human declared PASS 2026-09-05).**
-Closure is **operator-declared**, not agent-verified metal. This Mac cannot host.
+**Status: OPEN — pending real-hardware verification.**
+
+A human operator declared PASS on 2026-09-05 without attached measurements.
+That declaration was later **retracted as unverified**. This Mac cannot host.
 Agents must not invent Firecracker boot logs, KVM checks, or a live Kasm URL
-from this file.
+from this file. Do not mark this gate closed. Do not create
+`docs/phase-logs/gate-fc-result.md` from invented output.
+`SEED_HOST_KASM_URL` stays `https://example.invalid/kasm`.
 
 Gate id: `GATE-FC`
 Architecture: Standard Lab on Linux — Firecracker microVM is the isolation
 boundary; Kasm runs *inside the guest*, not as Docker on the host kernel
 (`docs/distributed-compute-lab-architecture.md` §3.1 and §9 item 1).
 
-## Operator declaration
+## Operator declaration (historical, retracted)
 
 On 2026-09-05 a human operator declared GATE-FC **PASS** and asked to skip a
 second Linux/Windows host PC so the software app could be finished. They did
 not paste runbook measurements. There is no `docs/phase-logs/gate-fc-result.md`
-and no live session URL in this repo. `SEED_HOST_KASM_URL` remains
-`https://example.invalid/kasm`. Do not treat this closure as agent-verified
-Firecracker/Kasm on metal.
+and no live session URL in this repo. On 2026-09-06 that PASS was **retracted
+as unverified**. Current status is **OPEN — pending real-hardware
+verification**. Do not treat the 2026-09-05 declaration as metal evidence.
 
 ## Pass / fail (read this first)
 
@@ -219,28 +223,28 @@ that later becomes `SEED_HOST_KASM_URL`. It must not be `example.invalid`.
 ## 7. Report results (required to close the gate later)
 
 Copy `docs/phase-logs/gate-fc-result.example.md` is not in the repo on purpose.
-Create **`docs/phase-logs/gate-fc-result.md`** with this exact shape. The
-operator closed GATE-FC **without** attaching that file; the filled template
-below is the in-runbook record only.
+Create **`docs/phase-logs/gate-fc-result.md`** with this exact shape **only
+after real hardware measurements**. Do not invent values. The 2026-09-05
+operator PASS did not attach this file and was later retracted.
 
 ```markdown
 # GATE-FC result
 
-- Date (ISO): 2026-09-05
-- Operator (human name): operator declared PASS; measurements not attached
-- Host OS / kernel / arch: operator declared PASS; measurements not attached
-- Firecracker version (`./firecracker --version`): operator declared PASS; measurements not attached
-- Guest vCPU / RAM / disk: operator declared PASS; measurements not attached
-- Kasm path used: Workspaces / KasmVNC (pick one): operator declared PASS; measurements not attached
-- Kasm version or git tag: operator declared PASS; measurements not attached
-- Live URL (the one a browser opened): operator declared PASS; measurements not attached
-- Screenshot or 10s note of what you did in the desktop: operator declared PASS; measurements not attached
-- KVM check output (step 1): operator declared PASS; measurements not attached
-- `curl -kI` status line (step 6): operator declared PASS; measurements not attached
-- Failures / workarounds: operator declared PASS; measurements not attached
-- Human confirms GATE-FC may be marked closed: yes (operator declaration 2026-09-05)
+- Date (ISO):
+- Operator (human name):
+- Host OS / kernel / arch:
+- Firecracker version (`./firecracker --version`):
+- Guest vCPU / RAM / disk:
+- Kasm path used: Workspaces / KasmVNC (pick one):
+- Kasm version or git tag:
+- Live URL (the one a browser opened):
+- Screenshot or 10s note of what you did in the desktop:
+- KVM check output (step 1):
+- `curl -kI` status line (step 6):
+- Failures / workarounds:
+- Human confirms GATE-FC may be marked closed:
 ```
 
-Do not commit passwords. Do not invent lab output to replace the lines above.
+Do not commit passwords. Do not invent lab output to fill the lines above.
 `SEED_HOST_KASM_URL` stays `https://example.invalid/kasm`. There is still no
-live Firecracker/Kasm session in this repo.
+live Firecracker/Kasm session in this repo. This gate stays **OPEN**.

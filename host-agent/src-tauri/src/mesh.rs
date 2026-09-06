@@ -101,12 +101,14 @@ pub struct ProcessJoinRunner;
 
 impl JoinRunner for ProcessJoinRunner {
     fn run(&self, program: &str, args: &[String]) -> Result<(), MeshError> {
-        let status = Command::new(program).args(args).status().map_err(|error| {
-            MeshError::JoinFailed {
-                program: program.to_string(),
-                detail: error.to_string(),
-            }
-        })?;
+        let status =
+            Command::new(program)
+                .args(args)
+                .status()
+                .map_err(|error| MeshError::JoinFailed {
+                    program: program.to_string(),
+                    detail: error.to_string(),
+                })?;
         if status.success() {
             Ok(())
         } else {
@@ -341,7 +343,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(error, MeshError::MissingEnv("HEADSCALE_LOGIN_SERVER")));
+        assert!(matches!(
+            error,
+            MeshError::MissingEnv("HEADSCALE_LOGIN_SERVER")
+        ));
         assert!(transport.calls.lock().unwrap().is_empty());
         assert!(!error.to_string().contains(TEST_BOOTSTRAP));
     }
@@ -394,10 +399,7 @@ mod tests {
             calls[0].url,
             format!("http://matchmaker.test/v1/hosts/{HOST_ID}/mesh/preauth")
         );
-        assert_eq!(
-            calls[0].authorization,
-            format!("Bearer {TEST_BOOTSTRAP}")
-        );
+        assert_eq!(calls[0].authorization, format!("Bearer {TEST_BOOTSTRAP}"));
         assert!(!format!("{:?}", calls[0]).contains(TEST_BOOTSTRAP));
 
         assert_eq!(plan.program, "/usr/local/bin/tailscale");
@@ -413,7 +415,9 @@ mod tests {
         assert!(args.contains(&"--accept-routes=false".to_string()));
         assert!(!args.iter().any(|a| a.contains("advertise-exit-node")));
         assert!(!args.iter().any(|a| a.contains("advertise-tags")));
-        assert!(!args.iter().any(|a| a == "--exit-node" || a.starts_with("--exit-node=")));
+        assert!(!args
+            .iter()
+            .any(|a| a == "--exit-node" || a.starts_with("--exit-node=")));
         assert!(!args.iter().any(|a| a.contains("headscale.from-matchmaker")));
         let debug = format!("{plan:?}");
         assert!(debug.contains("[redacted]"));

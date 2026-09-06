@@ -41,3 +41,12 @@
   - `origin/main` still behind. Nothing pushed.
 - Verified git state at end: this commit on local `main`; working tree
   should be clean; still ahead of `origin/main`; did not push.
+
+## Later retraction (2026-09-06)
+
+The human later retracted the 2026-09-05 PASS as **unverified**. Current
+truth is **OPEN — pending real-hardware verification**. This file remains
+the historical record of the operator declaration; it is not current status.
+See `PROJECT_STATUS.md` and the gate runbooks. Do not treat the declaration
+above as metal evidence. Do not invent `gate-*-result.md`.
+

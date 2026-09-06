@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::agent_status::AgentStatus;
 use crate::config;
+use crate::host_capabilities::HostCapabilities;
 use crate::identity::{self, HostRegistration};
 use crate::matchmaker::{self, UreqTransport};
 use crate::mesh::{self, ProcessJoinRunner};
@@ -17,6 +18,11 @@ use crate::AgentState;
 #[tauri::command]
 pub fn get_hardware_info(state: State<'_, AgentState>) -> HardwareSnapshot {
     state.hardware.clone()
+}
+
+#[tauri::command]
+pub fn get_host_capabilities(state: State<'_, AgentState>) -> HostCapabilities {
+    state.capabilities.clone()
 }
 
 #[tauri::command]

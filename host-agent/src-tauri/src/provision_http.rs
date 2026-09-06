@@ -207,7 +207,8 @@ fn guest_rclone_from_request(request: &ProvisionHttpRequest) -> Option<GuestRclo
         .unwrap_or_default()
         .trim()
         .to_string();
-    let region = nonempty(request.storage_region.clone()).unwrap_or_else(|| "us-east-1".to_string());
+    let region =
+        nonempty(request.storage_region.clone()).unwrap_or_else(|| "us-east-1".to_string());
     let mount = GuestRcloneMount::from_locators(endpoint, bucket, prefix, region, None).ok()?;
     Some(GuestRclonePlan {
         args: mount.rclone_args(),

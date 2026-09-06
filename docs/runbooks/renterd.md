@@ -5,8 +5,8 @@
 (`ghcr.io/siafoundation/renterd:2.9.3`). rclone belongs **inside the guest**,
 never on the volunteer host OS (architecture §8).
 
-Hardware gates (GATE-FC / GATE-WHPX / GATE-PRO) are **CLOSED by human
-operator declaration (2026-09-05)** — not by tests and not by an in-repo lab.
+Hardware gates (GATE-FC / GATE-WHPX / GATE-PRO) are **OPEN — pending
+real-hardware verification** (2026-09-05 operator PASS later retracted).
 Bringing up renterd does not boot a guest and does not close those gates.
 `SEED_HOST_KASM_URL` stays `https://example.invalid/kasm`.
 

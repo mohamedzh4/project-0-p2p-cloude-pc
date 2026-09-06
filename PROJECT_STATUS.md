@@ -1,19 +1,21 @@
-# Project Status — last updated: 2026-09-05, after phase 17 software
+# Project Status — last updated: 2026-09-06, after phase 18 capability probe
 
 ## Done
 
 - Specs: architecture + cahier in `docs/` (OS-conditional Standard Lab, GPU
   exclusivity, four planes). On `main`.
-- Hardware gates **CLOSED by human operator declaration (2026-09-05)**, not by
-  tests and not by an in-repo lab: `docs/runbooks/gate-fc.md`,
-  `docs/runbooks/gate-whpx.md`, `docs/runbooks/gate-pro.md`. No attached
-  `gate-*-result.md` or live session URL. This Mac cannot host.
+- Hardware gates **OPEN — pending real-hardware verification**:
+  `docs/runbooks/gate-fc.md`, `docs/runbooks/gate-whpx.md`,
+  `docs/runbooks/gate-pro.md`. A 2026-09-05 operator PASS was later
+  **retracted as unverified** (`docs/phase-logs/phase-gates-operator-pass.md`).
+  No attached `gate-*-result.md` or live session URL. This Mac cannot host.
+  `SEED_HOST_KASM_URL` remains `https://example.invalid/kasm`.
 - Headscale operator runbook: `docs/runbooks/headscale.md` (ACL grants,
   session guest/user mint, platform exit-node guest path).
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
   keypairs, guest rclone argv). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–17 **software** on local `main` (not pushed):
+- Execution phases 1–18 on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -33,8 +35,12 @@
     OS and never `tailscale up`s as the guest. When locators are complete it
     returns `guestRclone` argv (`--s3-env-auth`). Pro HTTP 200 adds `streamer:
     sunshine`, stub `sunshineUrl`, and a Moonlight host hint (`gpuExclusive`
-    true). Standard stays `streamer: kasm`. **126/126** `cargo test --lib`
-    (2026-09-05).
+    true). Standard stays `streamer: kasm`. **Phase 18:** `host_capabilities.rs`
+    probes OS, Linux `/dev/kvm` r/w (path-injectable), Windows WHPX/Hyper-V as
+    a stub enum on non-Windows, GPU list + second-display heuristic (iGPU or
+    2+ GPUs), and Linux IOMMU sysfs (unknown off Linux). The window shows
+    Standard/Pro **offered** in plain language and never asks which backend.
+    **143/143** `cargo test --lib` (2026-09-06).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
     `sessions_one_active_per_host` / `sessions_one_active_per_user`;
@@ -63,7 +69,7 @@
     four `IMAGE_*` pairs, `HEADSCALE_*` (optional `HEADSCALE_EXIT_NODE`,
     default `dcl-platform-exit`), and `S3_ENDPOINT` / `S3_ACCESS_KEY` /
     `S3_SECRET_KEY` (or `RENTERD_S3_*` aliases). **161/161** pytest
-    (2026-09-05). Session JSON still has no `intent` field. No
+    (2026-09-06). Session JSON still has no `intent` field. No
     latency/reliability columns. No Matchmaker pause field. No payment
     processor. No image CDN / multi-GB download. No live Sia network in unit
     tests. No live Headscale in unit tests.
@@ -81,14 +87,15 @@
 
 ## In Progress
 
-- None. Numbered software phases 1–17 are on local `main`. Hardware gates are
-  operator-declared closed. Remaining work is leftover paper under Up Next,
-  plus push when asked. No numbered software phase after 17.
+- None. Numbered software phases 1–18 are on local `main`. Hardware gates are
+  **OPEN — pending real-hardware verification**. Next numbered phase is 19
+  (hypervisor binary fetch + log). Do not mark gates closed.
 
 ## Up Next
 
-**Software MVP complete pending push** (`main` is ahead of `origin/main`).
-Leftover paper (not numbered phases, not a second host PC):
+**Phase 19 — Automated hypervisor binary fetch + log** (`PHASE_PLAN.md`).
+Do not invoke Firecracker/QEMU. Do not create `gate-*-result.md`. Do not
+invent live URLs. Leftover paper (not a substitute for 19):
 
 1. Pairwise mesh ACLs — Headscale 0.26 file policy cannot mint
    `tag:session-<uuid>` owners; every `tag:user` may still reach every
@@ -99,16 +106,17 @@ Leftover paper (not numbered phases, not a second host PC):
 
 ## Known Risks / Open Items
 
-- **GATE-FC / GATE-WHPX / GATE-PRO are closed by human operator declaration
-  (2026-09-05), not by tests or an in-repo lab.** No attached GATE result
-  template or live session URL in this repo. This Mac still cannot host.
-  `SEED_HOST_KASM_URL` remains `https://example.invalid/kasm`.
+- **GATE-FC / GATE-WHPX / GATE-PRO are OPEN — pending real-hardware
+  verification.** A 2026-09-05 operator PASS was later retracted as unverified.
+  No attached GATE result template or live session URL in this repo. This Mac
+  still cannot host. `SEED_HOST_KASM_URL` remains `https://example.invalid/kasm`.
+  Do not invent lab output. Do not mark gates closed.
 - **Phase 15 race (2026-09-05):** `0a59f68` issued renterd S3 keys on session
   JSON; `9f69179` kept keys in env and locators-only on
   `POST`/`GET /v1/storage`. Phase 16–17 kept the locators-only contract.
   An unused `0007_host_latency_ms` draft from a parallel agent was **not**
   applied.
-- Local `main` is ahead of `origin/main` (planning + phases 1–17). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–18). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
@@ -172,12 +180,14 @@ Leftover paper (not numbered phases, not a second host PC):
 
 ## Notes for next agent/session
 
-- Execution **phase 17 is done** (software). Hardware gates are
-  **operator-declared closed** — see `docs/phase-logs/phase-gates-operator-pass.md`.
+- Execution **phase 18 is done** (capability probe). Hardware gates stay
+  **OPEN — pending real-hardware verification** — see
+  `docs/phase-logs/phase-gates-operator-pass.md` (historical PASS + retraction)
+  and `docs/phase-logs/phase-18-capability-probe.md`. Next is **phase 19**.
   Read `PHASE_PLAN.md` and this file. Do not start Storj. Do not invent lab
   output, a live Kasm URL, or `latency_ms`. Do not treat renterd compose-up as
   a live desktop. Do not weaken HostSelector, occupancy indexes, GPU
-  exclusivity copy, OS-conditional stubs, or CSP.
+  exclusivity copy, OS-conditional stubs, or CSP. Do not mark gates closed.
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.

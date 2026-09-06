@@ -73,3 +73,12 @@
     approved.
 - Verified git state at end: this commit on local `main`; still ahead of
   `origin/main`; did not push.
+
+## Later note (2026-09-06)
+
+Hardware-gate **current** wording was corrected to **OPEN — pending
+real-hardware verification**. The 2026-09-05 operator PASS recorded in this
+handoff was later retracted as unverified. See
+`docs/phase-logs/phase-gates-operator-pass.md` (retraction note) and
+`PROJECT_STATUS.md`. This phase-17 software slice is unchanged.
+

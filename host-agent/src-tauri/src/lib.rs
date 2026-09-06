@@ -9,6 +9,7 @@ mod commands;
 mod config;
 mod gpu;
 mod hardware;
+mod host_capabilities;
 mod identity;
 mod image;
 mod matchmaker;
@@ -22,6 +23,7 @@ mod tray;
 #[cfg(test)]
 mod test_support;
 
+pub use host_capabilities::{evaluate as evaluate_host_capabilities, probe_live, HostCapabilities};
 pub use image::{verify_image, ImageError, ImageManifest, ImageTrust};
 pub use models::HardwareSnapshot;
 /// Phase 6: Matchmaker calls the HTTP port; that port verifies the signed
@@ -45,6 +47,8 @@ pub struct AgentState {
     /// agent runs, and re-probing per request would waste the resources the
     /// agent exists to lend out.
     pub hardware: HardwareSnapshot,
+    /// Hosting eligibility from OS + KVM/WHPX/IOMMU/GPU. Never a backend picker.
+    pub capabilities: HostCapabilities,
     /// Set when stub provision succeeds. Pause does not clear this; phase 12
     /// teardown will.
     pub occupancy: Arc<Occupancy>,
@@ -111,10 +115,13 @@ fn spawn_provision_listener(app: &tauri::App) {
 
 pub fn run() {
     load_local_env();
+    let hardware = hardware::detect();
+    let capabilities = host_capabilities::probe_live(HostOs::current(), &hardware.gpus);
 
     tauri::Builder::default()
         .manage(AgentState {
-            hardware: hardware::detect(),
+            hardware,
+            capabilities,
             occupancy: Arc::new(Occupancy::new()),
         })
         .setup(|app| {
@@ -133,6 +140,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_hardware_info,
+            commands::get_host_capabilities,
             commands::load_sharing_config,
             commands::save_sharing_config,
             commands::get_config_file_path,

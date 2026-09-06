@@ -187,7 +187,9 @@ mod tests {
         assert!(args.contains(&"http://renterd.test.invalid:8081".to_string()));
         let debug = format!("{plan:?}");
         assert!(!debug.to_lowercase().contains("secret"));
-        assert!(!args.iter().any(|a| a.contains("SECRET") || a.contains("secret")));
+        assert!(!args
+            .iter()
+            .any(|a| a.contains("SECRET") || a.contains("secret")));
     }
 
     #[test]
@@ -206,7 +208,10 @@ mod tests {
             GuestRcloneMount::env_auth_var_names(),
             ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
         );
-        assert!(!from_locators.rclone_args().iter().any(|a| a.contains("secret")));
+        assert!(!from_locators
+            .rclone_args()
+            .iter()
+            .any(|a| a.contains("secret")));
     }
 
     #[test]

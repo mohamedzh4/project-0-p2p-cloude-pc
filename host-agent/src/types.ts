@@ -28,6 +28,29 @@ export interface HardwareSnapshot {
   gpuNote: string | null;
 }
 
+export type CapabilityOs = "linux" | "windows" | "macos" | "other";
+export type KvmAccess = "presentReadWrite" | "presentNotWritable" | "missing" | "notApplicable";
+export type WhpxCapability = "available" | "unavailable" | "unknown" | "notApplicable";
+export type IommuStatus = "present" | "absent" | "unknown" | "notApplicable";
+
+export interface LabOffer {
+  offered: boolean;
+  reason: string;
+}
+
+/** Hosting eligibility. The agent chooses the backend; the UI never asks. */
+export interface HostCapabilities {
+  os: CapabilityOs;
+  kvm: KvmAccess;
+  whpx: WhpxCapability;
+  iommu: IommuStatus;
+  secondDisplayPath: boolean;
+  gpuCount: number;
+  standard: LabOffer;
+  pro: LabOffer;
+  summary: string;
+}
+
 export interface SharingConfig {
   version: number;
   sharingEnabled: boolean;

@@ -2,10 +2,11 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is the Host Agent after execution phase 17 (session mesh hint + guest
-rclone plan). It does these things and nothing else:
+This is the Host Agent after execution phase 18 (capability probe). It does these things and nothing else:
 
-1. Detects the machine's CPU, RAM and GPU.
+1. Detects the machine's CPU, RAM and GPU, and whether Standard/Pro sessions
+   can be offered (OS + KVM / Windows hypervisor / IOMMU / second display
+   path). The UI never asks which backend to use.
 2. Lets the host cap how much of each they are willing to share.
 3. Saves that choice to a local config file (v2).
 4. Registers those **clamped** caps with the Matchmaker from **Rust**
@@ -63,7 +64,7 @@ host-agent/
 ├── src/                      UI
 │   ├── App.tsx               window contents and state
 │   ├── api.ts                the only place that calls Tauri commands
-│   ├── components/           HardwareCard, ResourceSlider, GpuShareField
+│   ├── components/           HardwareCard, CapabilityPanel, ResourceSlider, GpuShareField
 │   ├── format.ts             byte and core formatting
 │   ├── preview.ts            sample data for browser-only development
 │   └── types.ts              mirrors the Rust models
@@ -72,6 +73,7 @@ host-agent/
     │   ├── models.rs         shared types, recommended defaults, clamping
     │   ├── hardware.rs       CPU + RAM detection
     │   ├── gpu.rs            NVIDIA detection with graceful fallback
+    │   ├── host_capabilities.rs  OS + KVM/WHPX/IOMMU/GPU probe (no Tauri; no hypervisor)
     │   ├── config.rs         load/save the sharing config; immediate pause
     │   ├── identity.rs       persisted Matchmaker host id
     │   ├── matchmaker.rs     inventory + heartbeat + earnings GET (clamp, fail-fast env)
@@ -250,13 +252,16 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 17 software is in: session guest/user tags live on Matchmaker JSON;
+- Phase 18 capability probe is in: OS + KVM / Windows hypervisor / IOMMU /
+  GPU / second display path, surfaced as Standard/Pro offered in the window.
+  Never asks which backend. Session guest/user tags live on Matchmaker JSON;
   this agent still joins as `tag:host` and never passes `--advertise-exit-node`
   or `--exit-node`. Complete provision locators return `guestRclone` argv
   (`--s3-env-auth`); `GuestRcloneMount::from_locators` / `from_env` never
   spawn rclone and never take S3 keys. GATE-FC / GATE-WHPX / GATE-PRO are
-  **operator-declared closed (2026-09-05)** — still no live hypervisor or
-  stream in this repo. Storage is renterd S3, not Storj. Guest `--exit-node`
+  **OPEN — pending real-hardware verification** (2026-09-05 operator PASS later
+  retracted) — still no live hypervisor or stream in this repo. Storage is
+  renterd S3, not Storj. Guest `--exit-node`
   is a Matchmaker join plan, not this binary (see
   `docs/runbooks/headscale.md`). On macOS, `POST /v1/provision` returns 400
   (`UnsupportedHostOs`); Matchmaker then keeps the seeded locator. Local

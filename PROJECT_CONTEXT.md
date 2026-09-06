@@ -12,8 +12,9 @@ share a CPU/RAM slice (and optionally one exclusive GPU) while they keep using
 the machine. Guests get an on-demand virtual desktop in a browser. Stack so far:
 Host Agent (Rust + Tauri v2 + React), Matchmaker (Python FastAPI + Postgres),
 and a thin React harness in `web/`. Manual Firecracker/QEMU+Kasm validation is
-**not evidenced in this repo** (gates are **operator-declared closed**
-2026-09-05 — no live session URL, guest image, or measurement appendix). Self-hosted Headscale
+**not evidenced in this repo** (gates are **OPEN — pending real-hardware
+verification**; 2026-09-05 operator PASS later retracted — no live session URL,
+guest image, or measurement appendix). Self-hosted Headscale
 mint+join is in (no Tailscale SaaS); default-deny ACL file + host `tag:host`
 are in; session book mints ephemeral `tag:guest`/`tag:user`; guest join plans
 include `--exit-node` (default `dcl-platform-exit`); live guest Tailscale is
@@ -29,10 +30,10 @@ From `docs/cahier-des-charges-distributed-compute-lab.md` §11.
 
 | Phase | Content | Status |
 | --- | --- | --- |
-| 0 | Manual Firecracker+Kasm (Linux) and QEMU+WHPX+Kasm (Windows), plus one Pro GPU session | **CLOSED by human operator declaration (2026-09-05)** — not evidenced by in-repo measurements. Runbooks in `docs/runbooks/`; no `gate-*-result.md`, guest image, or live Kasm URL. This Mac cannot host. |
-| 1 | MVP Standard Lab, hosts approved manually | **Software loop done (execution phases 1–17):** Matchmaker auth + host inventory (pending → manual approve) + occupancy + heartbeats + internal credits ledger + silence teardown/`interrupted` + rematch via `HostSelector`; Host Agent Rust client; OS-conditional **provisioner stubs** + Matchmaker `HostProvisioner`; signed image digest+Ed25519 verify before stub boot; self-hosted Headscale preauth mint + Rust join (no Tailscale SaaS) + default-deny ACL file + host `tag:host` + session ephemeral `tag:guest`/`tag:user` + guest `--exit-node` join plan; renterd S3 per-user bucket + guest rclone argv/plan (not Storj); `web/` harness with FR2 intent → `labTier` and session history; `RankedHostSelector` on declared caps; Host Agent tray + immediate pause + idle/in-session/paused + accrued earnings; Pro session JSON is Sunshine/Moonlight locators (not Kasm renamed). **Live desktop is still not in this repo** (`SEED_HOST_KASM_URL` stays `example.invalid`). Next: leftover paper (pairwise ACLs, live guest image, FR13 latency) or push. |
+| 0 | Manual Firecracker+Kasm (Linux) and QEMU+WHPX+Kasm (Windows), plus one Pro GPU session | **OPEN — pending real-hardware verification** (2026-09-05 operator PASS later retracted). Runbooks in `docs/runbooks/`; no `gate-*-result.md`, guest image, or live Kasm URL. This Mac cannot host. |
+| 1 | MVP Standard Lab, hosts approved manually | **Software loop done (execution phases 1–18):** Matchmaker auth + host inventory (pending → manual approve) + occupancy + heartbeats + internal credits ledger + silence teardown/`interrupted` + rematch via `HostSelector`; Host Agent Rust client; OS-conditional **provisioner stubs** + Matchmaker `HostProvisioner`; signed image digest+Ed25519 verify before stub boot; self-hosted Headscale preauth mint + Rust join (no Tailscale SaaS) + default-deny ACL file + host `tag:host` + session ephemeral `tag:guest`/`tag:user` + guest `--exit-node` join plan; renterd S3 per-user bucket + guest rclone argv/plan (not Storj); `web/` harness with FR2 intent → `labTier` and session history; `RankedHostSelector` on declared caps; Host Agent tray + immediate pause + idle/in-session/paused + accrued earnings; Pro session JSON is Sunshine/Moonlight locators (not Kasm renamed); Host Agent capability probe (OS/KVM/WHPX/IOMMU/GPU, no backend picker). **Live desktop is still not in this repo** (`SEED_HOST_KASM_URL` stays `example.invalid`). Next: phase 19 (hypervisor binary fetch + log). |
 | 2 | Full Matchmaker (matching + billing), automated host onboarding | Matching is `RankedHostSelector` (declared caps; no latency/reliability telemetry). Internal ledger meters sessions; payouts deferred. Silence teardown + rematch in. Plan phases 13–15. |
-| 3 | Pro/Gamer Lab, latency-aware matching | Phase 16 software locators (Sunshine/Moonlight vs Kasm). Stubs only (Pro backends in `provision.rs`). GATE-PRO operator-declared closed; no live stream in-repo. No measured latency. |
+| 3 | Pro/Gamer Lab, latency-aware matching | Phase 16 software locators (Sunshine/Moonlight vs Kasm). Stubs only (Pro backends in `provision.rs`). GATE-PRO **OPEN — pending real-hardware verification**; no live stream in-repo. No measured latency. |
 | 4 | Hardening: image signing, exit nodes, reliability scoring | Image signing software contract in (phase 13). Mesh mint+join in (phase 14). Default-deny ACL file + host tags in (14c). Session guest/user tags + guest `--exit-node` plan in (phase 17). Live egress still needs a guest image. |
 
 **FR1** signup/login: done. **FR2** intent → `labTier`: harness mapping in `web/src/intent.ts`; Pro 409 if no GPU host. **FR3** most suitable host: `RankedHostSelector` (declared CPU then RAM; Pro dedicated GPU id). **FR8** CPU/RAM + optional dedicated GPU: done except schedule. **FR5** streamed desktop: harness can open a URL; seed is still `example.invalid`. **FR7** session history + internal credits. **FR10** idle / in-session / paused + accrued earnings (not paid out); Rust tray. **FR11** immediate pause stops heartbeats (after 45s Matchmaker treats that as silence). **FR12** inventory: caps + heartbeats; ranking uses declared caps; no load/reliability score. **FR13** partial (tier + caps; no latency). **FR14**: mock provision + heartbeats + occupied silence teardown; no live hypervisor. **FR16** metering done; payouts deferred. **FR15** software rematch on silence (same renterd bucket follows the user). **FR9** image verify + host mesh mint/join + default-deny ACL file + session ephemeral guest/user tags + guest `--exit-node` join plan (role ACLs, not pairwise; live guest still paper). **FR4** renterd per-user bucket + guest rclone argv/plan (not a live guest mount). **FR6** still paper until a guest image exists in-repo.
@@ -54,7 +55,7 @@ project-0-p2p-cloude-pc/
 | Decision | Status |
 | --- | --- |
 | Only the Matchmaker is custom glue; everything else is reused | Adopted |
-| Standard Lab backend is OS-conditional: Firecracker on Linux, QEMU+WHPX on Windows | Adopted in **stubs**; hardware gates operator-declared closed (2026-09-05), still not recorded as in-repo measurements |
+| Standard Lab backend is OS-conditional: Firecracker on Linux, QEMU+WHPX on Windows | Adopted in **stubs**; hardware gates **OPEN — pending real-hardware verification** (2026-09-05 operator PASS later retracted) |
 | Pro needs VFIO / Hyper-V GPU assignment — Firecracker has no PCI passthrough | Forced; Pro stubs exist, no live passthrough in this repo |
 | Hosts keep using the PC. CPU/RAM is a concurrent slice; GPU is exclusive for the session | Adopted in Host Agent UI + config v2 |
 | Kasm runs *inside* the guest; the hypervisor is the isolation boundary | Adopted on paper; not evidenced in-repo |
@@ -81,7 +82,7 @@ Live in workspace `../.cursor/`.
 
 ## Current state
 
-**Host Agent (`host-agent/`)** — CPU/RAM via `sysinfo` 0.39; NVIDIA GPUs via `nvml-wrapper` (Windows/Linux), graceful empty list otherwise. UI: sliders + GPU picker with exclusivity copy, status board (paused / idle / in-session), immediate pause, accrued earnings from Matchmaker. Config v2 (`sharedGpuId`); v1 files still load. Rust Matchmaker client registers clamped caps, pings every 10s while sharing is on, and GETs host earnings. After register, optional Headscale join from Rust (`HEADSCALE_LOGIN_SERVER` + minted preauth tagged `tag:host`; never `--advertise-exit-node` or `--exit-node`). Guest rclone plan from locators or env (`GuestRcloneMount`; no S3 secrets, no spawn). Provisioner stubs: `plan_provision` (Linux→Firecracker, Windows→QEMU+WHPX, Pro→VFIO/Hyper-V GPU, macOS unsupported) plus opt-in `POST /v1/provision` that verifies SHA-256 + Ed25519 **before** the stub plan and returns Kasm vs Sunshine locators; complete storage locators yield `guestRclone`. Rust tray (no JS tray APIs). Image public key from env when listening. Cargo test count is in `PROJECT_STATUS.md`. Not built: pairwise session ACLs, live rclone mount, real VMs, payouts.
+**Host Agent (`host-agent/`)** — CPU/RAM via `sysinfo` 0.39; NVIDIA GPUs via `nvml-wrapper` (Windows/Linux), graceful empty list otherwise. Phase 18 capability probe (`host_capabilities.rs`, no Tauri): OS, KVM r/w, WHPX enum (stub off Windows), IOMMU sysfs (unknown off Linux), second-display heuristic; UI shows Standard/Pro offered and never asks which backend. UI: sliders + GPU picker with exclusivity copy, status board (paused / idle / in-session), immediate pause, accrued earnings from Matchmaker. Config v2 (`sharedGpuId`); v1 files still load. Rust Matchmaker client registers clamped caps, pings every 10s while sharing is on, and GETs host earnings. After register, optional Headscale join from Rust (`HEADSCALE_LOGIN_SERVER` + minted preauth tagged `tag:host`; never `--advertise-exit-node` or `--exit-node`). Guest rclone plan from locators or env (`GuestRcloneMount`; no S3 secrets, no spawn). Provisioner stubs: `plan_provision` (Linux→Firecracker, Windows→QEMU+WHPX, Pro→VFIO/Hyper-V GPU, macOS unsupported) plus opt-in `POST /v1/provision` that verifies SHA-256 + Ed25519 **before** the stub plan and returns Kasm vs Sunshine locators; complete storage locators yield `guestRclone`. Rust tray (no JS tray APIs). Image public key from env when listening. Cargo test count is in `PROJECT_STATUS.md`. Not built: pairwise session ACLs, live rclone mount, real VMs, payouts.
 
 **Matchmaker (`matchmaker/`)** — signup/login/me; host register/update (pending) + manual approve; heartbeats stamp `lastSeenAt`; `RankedHostSelector` ranks declared CPU/RAM among approved live free hosts (Pro needs a dedicated GPU id); `POST /v1/sessions` calls a `HostProvisioner` after occupancy commit (body includes image digest+signature and optional storage locators + guest-mesh hint); Standard session `connection` is Kasm, Pro is Sunshine/Moonlight locators (`gpuExclusive`); silent occupied hosts are `interrupted` and rematched via `HostSelector.select`; session end writes `ledger_entries`; `GET /v1/images/{labTier}` advertises checksums; `POST /v1/hosts/{id}/mesh/preauth` mints a Headscale key tagged `tag:host`; session JSON `mesh` mints ephemeral `tag:guest`/`tag:user` with guest `--exit-node`; `POST`/`GET /v1/storage` and session JSON `storage` are per-user renterd S3 **locators** (no access keys) for rclone **inside the guest**; camelCase JSON; Alembic through `0006_user_storage_bucket`. Pytest count is in `PROJECT_STATUS.md`. `SEED_HOST_KASM_URL` is still the `example.invalid` placeholder. Needs `HOST_BOOTSTRAP_TOKEN`, `HOST_APPROVE_TOKEN`, `CREDITS_PER_MINUTE`, `IMAGE_*`, `HEADSCALE_*`, and `S3_*` (or `RENTERD_S3_*`) in `.env` to boot.
 
@@ -89,13 +90,12 @@ Live in workspace `../.cursor/`.
 
 **Known issues**
 
-- Matchmaker / `web/` / Host Agent are on local `main` after execution phase 17; `origin/main` is still behind until someone pushes.
+- Matchmaker / `web/` / Host Agent are on local `main` after execution phase 18; `origin/main` is still behind until someone pushes.
 - Aikido MCP may still fail here; use `/aikido:setup` if a scan is required.
-- This Mac cannot *host*: Firecracker is Linux/KVM; Windows Standard needs QEMU+WHPX. GATE-FC / GATE-WHPX / GATE-PRO are **closed by human operator declaration (2026-09-05)** — not by tests, and not by an attached result file. Seed URL stays `example.invalid`. Do not invent lab output.
+- This Mac cannot *host*: Firecracker is Linux/KVM; Windows Standard needs QEMU+WHPX. GATE-FC / GATE-WHPX / GATE-PRO are **OPEN — pending real-hardware verification** (2026-09-05 operator PASS later retracted). Seed URL stays `example.invalid`. Do not invent lab output.
 
 ## Recent changes
 
-Execution phase 17 completed remaining mesh/storage guest-path software
-(session guest/user tags, guest `--exit-node` plan, locators-only rclone
-argv). Hardware gates are operator-declared closed (2026-09-05); no live
-Firecracker/Kasm in this repo. See `PROJECT_STATUS.md`.
+Execution phase 18 added Host Agent capability probing (OS, KVM, WHPX enum,
+IOMMU, GPU / second display path) and corrected hardware-gate wording to
+**OPEN — pending real-hardware verification**. See `PROJECT_STATUS.md`.

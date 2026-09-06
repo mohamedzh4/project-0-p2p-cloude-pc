@@ -1,7 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import { isTauriRuntime, previewConfig, previewHardware } from "./preview";
-import type { AgentStatus, HardwareSnapshot, HostRegistration, SharingConfig, SharingPresence } from "./types";
+import { isTauriRuntime, previewCapabilities, previewConfig, previewHardware } from "./preview";
+import type {
+  AgentStatus,
+  HardwareSnapshot,
+  HostCapabilities,
+  HostRegistration,
+  SharingConfig,
+  SharingPresence,
+} from "./types";
 
 /** True only when the UI runs in a plain browser during development. */
 export const IS_PREVIEW = import.meta.env.DEV && !isTauriRuntime();
@@ -32,6 +39,14 @@ export function getHardwareInfo(): Promise<HardwareSnapshot> {
   }
 
   return invoke<HardwareSnapshot>("get_hardware_info");
+}
+
+export function getHostCapabilities(): Promise<HostCapabilities> {
+  if (IS_PREVIEW) {
+    return Promise.resolve(previewCapabilities);
+  }
+
+  return invoke<HostCapabilities>("get_host_capabilities");
 }
 
 export function loadSharingConfig(): Promise<SharingConfig> {

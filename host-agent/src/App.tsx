@@ -4,6 +4,7 @@ import {
   getAgentStatus,
   getConfigFilePath,
   getHardwareInfo,
+  getHostCapabilities,
   IS_PREVIEW,
   loadHostRegistration,
   loadSharingConfig,
@@ -12,16 +13,25 @@ import {
   saveSharingConfig,
   setSharingEnabled,
 } from "./api";
+import { CapabilityPanel } from "./components/CapabilityPanel";
 import { HardwareCard } from "./components/HardwareCard";
 import { GpuShareField } from "./components/GpuShareField";
 import { ResourceSlider } from "./components/ResourceSlider";
 import { BYTES_PER_GIB, formatCores, formatGib, formatGpuLabel } from "./format";
-import { presenceLabel, type AgentStatus, type HardwareSnapshot, type HostRegistration, type SharingConfig } from "./types";
+import {
+  presenceLabel,
+  type AgentStatus,
+  type HardwareSnapshot,
+  type HostCapabilities,
+  type HostRegistration,
+  type SharingConfig,
+} from "./types";
 
 type SaveState = { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { kind: "error"; message: string };
 
 export default function App() {
   const [hardware, setHardware] = useState<HardwareSnapshot | null>(null);
+  const [capabilities, setCapabilities] = useState<HostCapabilities | null>(null);
   const [config, setConfig] = useState<SharingConfig | null>(null);
   const [savedConfig, setSavedConfig] = useState<SharingConfig | null>(null);
   const [configPath, setConfigPath] = useState("");
@@ -36,17 +46,19 @@ export default function App() {
 
     Promise.all([
       getHardwareInfo(),
+      getHostCapabilities(),
       loadSharingConfig(),
       getConfigFilePath(),
       loadHostRegistration(),
       getAgentStatus(),
     ])
-      .then(([detected, stored, path, storedRegistration, agentStatus]) => {
+      .then(([detected, hostCapabilities, stored, path, storedRegistration, agentStatus]) => {
         if (!active) {
           return;
         }
 
         setHardware(detected);
+        setCapabilities(hostCapabilities);
         setConfig(stored);
         setSavedConfig(stored);
         setConfigPath(path);
@@ -179,7 +191,7 @@ export default function App() {
     );
   }
 
-  if (!hardware || !config) {
+  if (!hardware || !config || !capabilities) {
     return (
       <main className="app">
         <div className="panel">
@@ -292,6 +304,8 @@ export default function App() {
           />
         </div>
       </section>
+
+      <CapabilityPanel capabilities={capabilities} />
 
       <section className="panel reveal" data-reveal={2}>
         <h2>What you share</h2>

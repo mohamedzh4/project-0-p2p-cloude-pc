@@ -1,9 +1,12 @@
 # GATE-PRO — exclusive GPU assignment + Sunshine/Moonlight
 
-**Status: CLOSED (human declared PASS 2026-09-05).**
-Closure is **operator-declared**, not agent-verified metal. This Mac cannot host.
+**Status: OPEN — pending real-hardware verification.**
+
+A human operator declared PASS on 2026-09-05 without attached measurements.
+That declaration was later **retracted as unverified**. This Mac cannot host.
 Agents must not invent VFIO bind, `nvidia-smi`, PCI ids, or Sunshine/Moonlight
-RTT from this file.
+RTT from this file. Do not mark this gate closed. Do not create
+`docs/phase-logs/gate-pro-result.md` from invented output.
 
 Gate id: `GATE-PRO`
 Architecture: Pro/Gamer Lab — the guest gets a **whole GPU** for the session.
@@ -19,15 +22,16 @@ split is mandatory”).
 CPU/RAM sharing is concurrent. **GPU sharing is not.** The Host Agent already
 says so in the picker copy. This gate exists to prove that sentence on metal.
 
-## Operator declaration
+## Operator declaration (historical, retracted)
 
 On 2026-09-05 a human operator declared GATE-PRO **PASS** and asked to skip a
 second Linux/Windows host PC so the software app could be finished. They did
 not paste runbook measurements (no PCI ids, `nvidia-smi`, VFIO bind, or
 Moonlight RTT). There is no `docs/phase-logs/gate-pro-result.md` and no live
-Sunshine/Moonlight session in this repo. Do not treat this closure as
-agent-verified GPU passthrough on metal. Do not weaken Host Agent GPU
-exclusivity copy or matching.
+Sunshine/Moonlight session in this repo. On 2026-09-06 that PASS was
+**retracted as unverified**. Current status is **OPEN — pending
+real-hardware verification**. Do not treat the 2026-09-05 declaration as
+metal evidence. Do not weaken Host Agent GPU exclusivity copy or matching.
 
 ## Pass / fail (read this first)
 
@@ -227,32 +231,32 @@ to that QEMU process and gone from the host, with the same exclusivity checks.
 
 ## C. Report results
 
-Create **`docs/phase-logs/gate-pro-result.md`** with this shape. The operator
-closed GATE-PRO **without** attaching that file; the filled template below is
-the in-runbook record only.
+Create **`docs/phase-logs/gate-pro-result.md`** with this shape **only after
+real hardware measurements**. Do not invent values. The 2026-09-05 operator
+PASS did not attach this file and was later retracted.
 
 ```markdown
 # GATE-PRO result
 
-- Date (ISO): 2026-09-05
-- Operator (human name): operator declared PASS; measurements not attached
-- Host OS / kernel or Windows build: operator declared PASS; measurements not attached
-- Path used: Linux VFIO / Hyper-V DDA / Hyper-V GPU-P / QEMU+WHPX passthrough: operator declared PASS; measurements not attached
-- Dedicated GPU model: operator declared PASS; measurements not attached
-- sharedGpuId (PCI BDF or Windows InstanceId): operator declared PASS; measurements not attached
-- Host remaining display path (iGPU / second GPU): operator declared PASS; measurements not attached
-- Evidence host lost the GPU during the session (command output or Device Manager note): operator declared PASS; measurements not attached
-- Evidence guest gained the GPU (driver + device name): operator declared PASS; measurements not attached
-- Sunshine version (in the guest): operator declared PASS; measurements not attached
-- Moonlight client OS: operator declared PASS; measurements not attached
-- Observed latency (ms) or qualitative note: operator declared PASS; measurements not attached
-- Live stream worked: operator declared PASS; measurements not attached
-- Failures / workarounds: operator declared PASS; measurements not attached
-- Human confirms GATE-PRO may be marked closed: yes (operator declaration 2026-09-05)
+- Date (ISO):
+- Operator (human name):
+- Host OS / kernel or Windows build:
+- Path used: Linux VFIO / Hyper-V DDA / Hyper-V GPU-P / QEMU+WHPX passthrough:
+- Dedicated GPU model:
+- sharedGpuId (PCI BDF or Windows InstanceId):
+- Host remaining display path (iGPU / second GPU):
+- Evidence host lost the GPU during the session (command output or Device Manager note):
+- Evidence guest gained the GPU (driver + device name):
+- Sunshine version (in the guest):
+- Moonlight client OS:
+- Observed latency (ms) or qualitative note:
+- Live stream worked:
+- Failures / workarounds:
+- Human confirms GATE-PRO may be marked closed:
 ```
 
 Do not commit Sunshine credentials or host serials. Do not invent PCI ids,
-`nvidia-smi`, VFIO bind, or Moonlight RTT to replace the lines above. There
+`nvidia-smi`, VFIO bind, or Moonlight RTT to fill the lines above. There
 is still no live GPU passthrough or Sunshine/Moonlight session in this repo.
 Until a measurement appendix exists, do not treat a Host Agent GPU picker
-screenshot as metal evidence.
+screenshot as metal evidence. This gate stays **OPEN**.

@@ -1,8 +1,12 @@
 # GATE-WHPX — QEMU+WHPX + Kasm inside the guest (Windows host)
 
-**Status: CLOSED (human declared PASS 2026-09-05).**
-Closure is **operator-declared**, not agent-verified metal. This Mac cannot host.
-Agents must not invent WHPX/QEMU logs or a live Kasm URL from this file.
+**Status: OPEN — pending real-hardware verification.**
+
+A human operator declared PASS on 2026-09-05 without attached measurements.
+That declaration was later **retracted as unverified**. This Mac cannot host.
+Agents must not invent WHPX/QEMU logs or a live Kasm URL from this file. Do
+not mark this gate closed. Do not create `docs/phase-logs/gate-whpx-result.md`
+from invented output. `SEED_HOST_KASM_URL` stays `https://example.invalid/kasm`.
 
 Gate id: `GATE-WHPX`
 Architecture: Standard Lab on Windows — QEMU with the Windows Hypervisor
@@ -14,14 +18,14 @@ gate — the point is a Windows volunteer PC.
 Hyper-V as the hypervisor is an allowed fallback **only if** QEMU+WHPX cannot
 be enabled and you document why. TCG (software emulation) is a **FAIL**.
 
-## Operator declaration
+## Operator declaration (historical, retracted)
 
 On 2026-09-05 a human operator declared GATE-WHPX **PASS** and asked to skip a
 second Linux/Windows host PC so the software app could be finished. They did
 not paste runbook measurements. There is no `docs/phase-logs/gate-whpx-result.md`
-and no live session URL in this repo. `SEED_HOST_KASM_URL` remains
-`https://example.invalid/kasm`. Do not treat this closure as agent-verified
-QEMU+WHPX/Kasm on metal.
+and no live session URL in this repo. On 2026-09-06 that PASS was **retracted
+as unverified**. Current status is **OPEN — pending real-hardware
+verification**. Do not treat the 2026-09-05 declaration as metal evidence.
 
 ## Pass / fail (read this first)
 
@@ -195,28 +199,28 @@ WSL2 is **not** an acceptable fallback (shared kernel with the host).
 
 ## 8. Report results
 
-Create **`docs/phase-logs/gate-whpx-result.md`** with this shape. The operator
-closed GATE-WHPX **without** attaching that file; the filled template below is
-the in-runbook record only.
+Create **`docs/phase-logs/gate-whpx-result.md`** with this shape **only after
+real hardware measurements**. Do not invent values. The 2026-09-05 operator
+PASS did not attach this file and was later retracted.
 
 ```markdown
 # GATE-WHPX result
 
-- Date (ISO): 2026-09-05
-- Operator (human name): operator declared PASS; measurements not attached
-- Host Windows edition / build / arch: operator declared PASS; measurements not attached
-- HypervisorPlatform enabled: operator declared PASS; measurements not attached
-- Accelerator actually used: operator declared PASS; measurements not attached
-- QEMU version (or Hyper-V VM generation): operator declared PASS; measurements not attached
-- Guest OS: operator declared PASS; measurements not attached
-- Guest vCPU / RAM / disk: operator declared PASS; measurements not attached
-- Live URL: operator declared PASS; measurements not attached
-- `curl -kI` status line: operator declared PASS; measurements not attached
-- WHPX errors (paste if any): operator declared PASS; measurements not attached
-- Failures / workarounds: operator declared PASS; measurements not attached
-- Human confirms GATE-WHPX may be marked closed: yes (operator declaration 2026-09-05)
+- Date (ISO):
+- Operator (human name):
+- Host Windows edition / build / arch:
+- HypervisorPlatform enabled:
+- Accelerator actually used:
+- QEMU version (or Hyper-V VM generation):
+- Guest OS:
+- Guest vCPU / RAM / disk:
+- Live URL:
+- `curl -kI` status line:
+- WHPX errors (paste if any):
+- Failures / workarounds:
+- Human confirms GATE-WHPX may be marked closed:
 ```
 
-Do not commit Kasm passwords. Do not invent lab output to replace the lines
+Do not commit Kasm passwords. Do not invent lab output to fill the lines
 above. `SEED_HOST_KASM_URL` stays `https://example.invalid/kasm`. There is
-still no live QEMU+WHPX/Kasm session in this repo.
+still no live QEMU+WHPX/Kasm session in this repo. This gate stays **OPEN**.
