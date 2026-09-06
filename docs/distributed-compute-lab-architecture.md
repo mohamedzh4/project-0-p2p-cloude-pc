@@ -22,6 +22,34 @@ Four principles run through every decision below:
 
 Everything in this document fits into one of these four planes.
 
+## Implemented vs this paper (2026-09-05)
+
+This file is the **target** architecture. Software on local `main` after
+execution phase 23 is the **control-plane MVP with stubs**, plus a Headscale
+mint+join contract, a default-deny ACL file, session ephemeral guest/user
+tags, a platform exit-node **guest join plan** (not live egress), a **renterd**
+S3 storage contract (not Storj; human decision 2026-09-05), Pro
+Sunshine/Moonlight **locators** on session JSON (not a live stream), a Host
+Agent capability probe, hypervisor **binary** locate/fetch (Firecracker
+cache on Linux; QEMU not downloaded — 19b), signed **guest-image**
+locate/fetch (Linux Firecracker/Pro images verified SHA-256+Ed25519 before
+ready; Windows would-fetch; macOS skip), a **launch config** from clamped
+sliders (no boot), a **VFIO/DDA bind plan** (Linux mock-sysfs apply +
+rollback; Windows would-assign, no PowerShell — 22b), and **insufficient-resource
+rejection UX** (blocked tiers are not offered). It is not a live lab.
+
+| Paper | In-repo now |
+| --- | --- |
+| Four planes | Control plane (Matchmaker). Compute is OS-conditional **stubs**. Network plane: Headscale mint+join, default-deny ACL file, host `tag:host`, session `tag:guest`/`tag:user`, guest `--exit-node` plan. Storage: renterd S3 locators + guest rclone argv (not Storj); live mount needs a guest image |
+| Standard: Firecracker (Linux) / QEMU+WHPX (Windows) + Kasm in the guest | `plan_provision` + `POST /v1/provision` return `https://provision.invalid/{backend}` unless the Host Agent eligibility gate refuses (phase 23: probe + 2 vCPU/4 GiB/50 GiB floor). Phase 19 locates/fetches the Firecracker **binary** on Linux (SHA-256, user cache, never executed); Windows logs would-fetch QEMU (19b). Phase 20 locates/fetches the signed **guest image** on Linux (SHA-256 + Ed25519 before ready); Windows logs would-fetch QEMU disk; macOS skips. Phase 21 maps clamped sliders to a **launch config** JSON (vCPU/RAM; GPU omitted on Standard). No boot. GATE-FC / GATE-WHPX **OPEN — pending real-hardware verification** (2026-09-05 operator PASS later retracted) |
+| Pro: VFIO / Hyper-V GPU + Sunshine | Stubs require `sharedGpuId` and set `gpuExclusive`. Launch config includes `{ id, exclusive: true }` when `shareGpu` is on. Linux VFIO bind is planned from sysfs (apply + rollback on a mock tree; not live). Windows DDA/GPU-P is would-assign (no PowerShell; 22b). Session JSON `streamer: sunshine` + Moonlight hint. GATE-PRO **OPEN — pending real-hardware verification**; no live stream in-repo |
+| Intent capture, ranking, billing | FR2 harness maps intent → `labTier`; ranking is `RankedHostSelector` (declared CPU/RAM, Pro GPU id); internal `ledger_entries` meter at session end (no payment processor) |
+| Tailscale/Headscale + exit-node egress | Phase 14: self-hosted Headscale compose + Matchmaker preauth mint + Host Agent Rust join. **No Tailscale SaaS.** Phase 14c: default-deny `acl.hujson` + host `tag:host`. Phase 17: ephemeral guest/user tags; guest join plan includes `--exit-node`. Live egress still needs a guest image (§9 items 4–5) |
+| Storj + rclone | **Not used.** Implemented storage is **renterd S3** (human decision 2026-09-05): compose + per-user bucket + guest rclone argv/plan. Live guest mount still needs a guest image |
+| Host Agent tray / mesh / signed images | Tray + pause + presence. Signed image **verify** before stub boot (fixture bytes). Phase 20 **fetch** to user cache + SHA-256/Ed25519 before ready (no CDN; no private key). Phase 21 **launch config** from sliders + exclusive GPU id (JSON only; never invoked). Phase 22 **VFIO/DDA plan** (Linux mock-sysfs bind + rollback; Windows would-assign; never Firecracker; no live bind from the window). Phase 23 **eligibility**: probe + CPU/RAM/disk floor + refused VFIO plan; blocked tier not offered. Host mesh mint+join tagged `tag:host`; session guest/user tags on Matchmaker JSON; Host Agent never `--exit-node`. Phase 19: Firecracker binary fetch to user cache (not invoked) |
+
+Do not treat a passing pytest/cargo suite as GATE-FC/WHPX/PRO.
+
 ## 3. Two-Tier Lab Architecture
 
 ### 3.1 Standard Lab — office work, browsing, programming, light computing
@@ -122,7 +150,11 @@ This is the one component with no off-the-shelf substitute. Most of the engineer
 
 ## 8. Data & Storage Architecture
 
-- **At rest:** Storj's client-side sharding and encryption mean no single storage node — or the host — ever holds plaintext
+**Implemented storage (2026-09-05):** Sia **renterd** S3 gateway, not Storj
+(human decision). rclone still belongs inside the guest; session keys must
+not live on the volunteer host’s bare disk. See `docs/runbooks/renterd.md`.
+
+- **At rest:** Implemented path is renterd S3 (not Storj). Architecture still requires client-side encryption so no volunteer host disk holds plaintext; rclone/VFS stays inside the guest.
 - **In transit:** every hop (user↔VM, VM↔storage) rides inside the WireGuard tunnel Tailscale already provides
 - **On the host's physical disk:** rclone's local VFS cache should itself sit on an encrypted virtual disk (a LUKS-backed file on Linux, a BitLocker-backed file on Windows, or simply the guest's own virtual block device) — so even the temporary cached fragments on the host's real drive are unreadable without a session key that lives only inside the guest and is discarded at teardown
 - **Sync cadence:** the 5–10 minute background timer is a floor, not the only trigger. Pair it with an immediate flush on explicit "save" and on logout, so the worst-case data-loss window shrinks from "up to 10 minutes" to "since your last save"

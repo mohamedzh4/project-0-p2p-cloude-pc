@@ -1,5 +1,13 @@
 # Dependencies
 node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Build output
 dist/
@@ -13,6 +21,14 @@ src-tauri/gen/schemas/
 *.pem
 *.key
 service-account.json
+
+# Headscale local state if bind-mounted instead of the named volume
+headscale/data/
+headscale/lib/
+headscale/run/
+
+# renterd consensus / metadata if bind-mounted instead of the named volume
+renterd/data/
 
 # OS and editor noise
 .DS_Store
