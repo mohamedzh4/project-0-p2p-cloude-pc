@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-06, after phase 24 Windows QEMU silent install
+# Project Status — last updated: 2026-09-06, after phase 25 Hyper-V DDA/GPU-P apply
 
 ## Done
 
@@ -15,7 +15,7 @@
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
   keypairs, guest rclone argv). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–24 on local `main` (not pushed):
+- Execution phases 1–25 on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -69,11 +69,18 @@
     (unbind host driver → bind vfio-pci) with injectable sysfs/driver paths
     and rollback to the previous driver on apply failure. PCI addresses come
     from sysfs (not `lspci`). Missing IOMMU or a second display path refuses
-    before any write. Windows logs **would assign DDA/GPU-P** and never
-    spawns PowerShell (live apply is leftover **22b**). Firecracker is never
-    used for Pro. The window shows the plan and does not bind a live GPU.
-    GPU exclusivity copy is unchanged. Tests use a mock sysfs tree (no root,
-    no real GPU). **Phase 23:** `eligibility.rs` combines the probe, the
+    before any write. Windows prefers Hyper-V DDA (`Disable-PnpDevice`,
+    `Dismount-VMHostAssignableDevice -Force`, `Add-VMAssignableDevice`) and
+    falls back to exclusive GPU-P (`Set-VMHostPartitionableGpu -PartitionCount
+    1`, `Add-VMGpuPartitionAdapter`, `Set-VMGpuPartitionAdapter` at
+    100000000). Apply uses an injectable runner; production is
+    `powershell.exe -NoProfile -NonInteractive` with a 30s kill. Tests inject
+    a fake runner and never spawn PowerShell. Mid-step failure rolls back
+    (Mount + Enable-PnpDevice, or Remove-VMGpuPartitionAdapter). The window
+    is plan-only (`apply: false`). Firecracker is never used for Pro. GPU
+    exclusivity copy is unchanged. Tests use a mock sysfs tree / fake Hyper-V
+    runner (no root, no real GPU). **Phase 23:** `eligibility.rs` combines the
+    probe, the
     2 vCPU / 4 GiB / 50 GiB floor, and a refused VFIO/DDA plan into one
     Standard/Pro offer. The window shows **Available** vs **Not available**
     with the reason. A blocked tier is not offered (no launch document; live
@@ -82,7 +89,8 @@
     Unknown spare disk does not block. **Phase 24:** Windows QEMU silent
     install (leftover **19b**): detect missing QEMU, fetch the documented
     NSIS installer, checksum, run `/S` `/D=`. Injected installer in tests.
-    UAC is not automated. **238/238**
+    UAC is not automated. **Phase 25:** leftover **22b** Hyper-V DDA/GPU-P
+    apply + rollback (injectable runner). **246/246**
     `cargo test --lib` (2026-09-06).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
@@ -130,9 +138,8 @@
 
 ## In Progress
 
-- None. Numbered software phases 1–24 are on local `main`. Hardware gates are
+- None. Numbered software phases 1–25 are on local `main`. Hardware gates are
   **OPEN — pending real-hardware verification**. Do not mark gates closed.
-  Live Hyper-V DDA/GPU-P apply is leftover **22b**.
 
 ## Up Next
 
@@ -148,7 +155,6 @@ from this Mac. Leftover paper (not numbered phases):
    software contract (tiny fixtures). No production guest disk in-repo to
    boot. “Saved as of HH:MM” still needs that image.
 3. FR13 latency ranking waits on a measured value — do not fake `latency_ms`.
-4. **22b** live Hyper-V DDA / GPU-P apply — phase 22 only logs would-assign.
 
 ## Known Risks / Open Items
 
@@ -162,7 +168,7 @@ from this Mac. Leftover paper (not numbered phases):
   `POST`/`GET /v1/storage`. Phase 16–17 kept the locators-only contract.
   An unused `0007_host_latency_ms` draft from a parallel agent was **not**
   applied.
-- Local `main` is ahead of `origin/main` (planning + phases 1–24). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–25). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
@@ -192,7 +198,8 @@ from this Mac. Leftover paper (not numbered phases):
   on the agent. Resume after pause can still show in-session if a guest already
   left.
 - Provisioner is stubs only. Launch config is JSON only (no boot). GPU bind is
-  a plan (Linux apply on mock sysfs only; Windows would-assign). Image
+  a plan from the window (Linux apply on mock sysfs; Windows apply on an
+  injected Hyper-V runner). Image
   fetch+verify is the software contract (small fixture bytes in tests; no
   multi-GB disk in-repo). Combined eligibility (phase 23) refuses a blocked
   tier in the window and on the live provision listener. On macOS, a real
@@ -234,11 +241,11 @@ from this Mac. Leftover paper (not numbered phases):
 
 ## Notes for next agent/session
 
-- Execution **phase 24 is done** (Windows QEMU silent install, leftover 19b).
-  Numbered software phases 18–24 are complete. Hardware gates stay **OPEN —
+- Execution **phase 25 is done** (Hyper-V DDA/GPU-P apply + rollback, leftover
+  22b). Numbered software phases 18–25 are complete. Hardware gates stay **OPEN —
   pending real-hardware verification** — see
   `docs/phase-logs/phase-gates-operator-pass.md` (historical PASS + retraction)
-  and `docs/phase-logs/phase-24-windows-qemu-silent-install.md`. A human
+  and `docs/phase-logs/phase-25-hyperv-dda-gpu-p.md`. A human
   closes GATE-FC / GATE-WHPX / GATE-PRO on Linux/Windows metal using the Host
   Agent runbooks (paste capability + fetch/launch logs; do not invent
   `gate-*-result.md`). Read `PHASE_PLAN.md` and this file. Do
@@ -248,9 +255,11 @@ from this Mac. Leftover paper (not numbered phases):
   or CSP. Do not mark gates closed. Do not fetch Firecracker, QEMU, or a guest
   disk from `cargo test` (injected fetcher / installer / file:// / httptest).
   Do not boot a VM. Do not use Firecracker for Pro. Do not bind live `/sys`
-  from tests. Live Hyper-V DDA/GPU-P apply is leftover **22b** (do not spawn
-  PowerShell). Windows QEMU still needs a human UAC click when the NSIS
-  installer elevates; that is documented, not automated.
+  from tests. Do not spawn live PowerShell from tests (inject `HyperVGpuOps`).
+  Windows QEMU still needs a human UAC click when the NSIS installer elevates.
+  Hyper-V DDA/GPU-P apply on metal still needs an elevated Host Agent, the
+  Hyper-V feature (reboot if Windows asks), and an existing VM named
+  `dcl-pro-guest` (not created or started here).
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.
@@ -271,10 +280,11 @@ from this Mac. Leftover paper (not numbered phases):
   tier, is `Err` (`TierNotOffered` / resource errors). Combined offers live
   in `eligibility.rs`.
 - GPU bind: `host_agent_lib::gpu_bind::assign` / `report` take injectable
-  `PciSysfs` paths. Linux Pro plans vfio-pci and can apply on a mock tree with
-  rollback. Windows is `WouldAssign` (no PowerShell). UI command is plan-only
-  (`apply: false`). Never Firecracker. A refused plan with shareGpu on blocks
-  the Pro offer.
+  `PciSysfs` paths and optional `HyperVGpuOps`. Linux Pro plans vfio-pci and
+  can apply on a mock tree with rollback. Windows Pro plans DDA from the
+  window; apply prefers DDA then exclusive GPU-P through the runner, with
+  rollback. UI command is plan-only (`apply: false`). Never Firecracker. A
+  refused plan with shareGpu on blocks the Pro offer.
 - Mesh: Matchmaker holds `HEADSCALE_API_KEY`; the agent never does. Host join
   uses `HEADSCALE_LOGIN_SERVER` from agent env plus a minted preauth key tagged
   `tag:host`. Session JSON `mesh` holds guest/user keys. Unit tests mock

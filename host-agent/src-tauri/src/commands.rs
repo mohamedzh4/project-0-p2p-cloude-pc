@@ -81,6 +81,8 @@ pub fn evaluate_hosting_offers(
             shared_gpu_id: config.shared_gpu_id.as_deref(),
             sysfs: &PciSysfs::live(),
             apply: false,
+            hyperv: None,
+            hyperv_vm_name: None,
         },
         &SysfsBindOps,
     );
@@ -93,8 +95,9 @@ pub fn evaluate_hosting_offers(
     })
 }
 
-/// Plan Pro GPU assignment from the probe + sliders. Never binds live sysfs
-/// and never invokes a hypervisor. Windows is log-only (22b).
+/// Plan Pro GPU assignment from the probe + sliders. Never binds live sysfs,
+/// never spawns PowerShell, and never invokes a hypervisor. Windows apply
+/// (DDA/GPU-P) is leftover test/injectable path, not this command.
 #[tauri::command]
 pub fn plan_gpu_bind(state: State<'_, AgentState>, config: SharingConfig) -> GpuBindStatus {
     gpu_bind::report(
@@ -105,6 +108,8 @@ pub fn plan_gpu_bind(state: State<'_, AgentState>, config: SharingConfig) -> Gpu
             shared_gpu_id: config.shared_gpu_id.as_deref(),
             sysfs: &PciSysfs::live(),
             apply: false,
+            hyperv: None,
+            hyperv_vm_name: None,
         },
         &SysfsBindOps,
     )

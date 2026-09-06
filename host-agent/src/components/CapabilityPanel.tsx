@@ -83,11 +83,23 @@ function gpuBindHeadline(status: GpuBindStatus | null): { value: string; empty: 
   }
   switch (status.action) {
     case "planned":
+      if (status.backend === "hyperv-gpu") {
+        return {
+          value: status.targetDriver === "gpu-p" ? "GPU-P plan" : "DDA plan",
+          empty: false,
+        };
+      }
       return {
         value: status.pciAddress ? `VFIO plan · ${status.pciAddress}` : "VFIO plan",
         empty: false,
       };
     case "bound":
+      if (status.backend === "hyperv-gpu") {
+        return {
+          value: status.targetDriver === "gpu-p" ? "Assigned via GPU-P" : "Assigned via DDA",
+          empty: false,
+        };
+      }
       return { value: "Bound to vfio-pci", empty: false };
     case "wouldAssign":
       return { value: "Would assign DDA/GPU-P", empty: true };
@@ -200,7 +212,7 @@ export function CapabilityPanel({
       <p className="hint">
         The agent locates or fetches the hypervisor and signed guest image for this OS after the
         probe, then maps your CPU/RAM sliders (and a dedicated GPU, when you opt in) into a launch
-        document and a VFIO / DDA plan. It computes PCI addresses itself — you do not run lspci.
+        document and a VFIO / DDA / GPU-P plan. It computes PCI addresses itself — you do not run lspci.
         It does not boot a guest or bind a live GPU from this window. Standard needs at least 2 vCPU,
         4 GiB RAM, and 50 GiB spare disk.
       </p>

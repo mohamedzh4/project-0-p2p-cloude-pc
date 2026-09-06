@@ -33,7 +33,7 @@ Sunshine/Moonlight session in this repo. On 2026-09-06 that PASS was
 real-hardware verification**. Do not treat the 2026-09-05 declaration as
 metal evidence. Do not weaken Host Agent GPU exclusivity copy or matching.
 
-## Using Host Agent automation (phases 18–24)
+## Using Host Agent automation (phases 18–25)
 
 This does **not** close GATE-PRO. Numbered software phases are done. Keep
 this gate **OPEN**. Do not create `docs/phase-logs/gate-pro-result.md` from
@@ -52,8 +52,8 @@ or another GPU):
    - Pro launch config (must show `GPU … exclusive` when offered) or Cannot
      launch + reason
    - Pro GPU assignment: Linux **VFIO plan · BDF** (not applied from the
-     window); Windows **Would assign DDA/GPU-P** (live PowerShell is leftover
-     **22b**)
+     window); Windows **DDA plan** (apply uses an injectable Hyper-V runner
+     in tests; the window does not spawn PowerShell)
 4. If Pro is **Not available**, stop. Typical reasons: no second display
    path, no IOMMU on Linux, Standard not offered, too little CPU/RAM/disk.
    Do not use Firecracker for Pro.
@@ -234,13 +234,24 @@ Follow current Microsoft docs for your path:
   partition to the guest for the session. A shared slice that the host still
   renders with is **not** exclusivity; do not call that a pass.
 
-High-level DDA shape (names are examples):
+High-level DDA shape (Microsoft deploy-graphics DDA docs):
 
 ```powershell
 # Disable the device on the host, then assign to the VM.
-# Use the cmdlets/docs for your Windows build (Dismount-VMHostAssignableDevice /
-# Add-VMAssignableDevice, or the GPU-P Enable-VMGpuPartitionAdapter path).
-Get-VM -Name "pro-guest"
+Disable-PnpDevice -InstanceId $instanceId -Confirm:$false
+Dismount-VMHostAssignableDevice -Force -LocationPath $locationPath
+Add-VMAssignableDevice -LocationPath $locationPath -VMName $vm
+Get-VM -Name "dcl-pro-guest"
+```
+
+GPU-P is used only when there is no DDA location path and
+`Get-VMHostPartitionableGpu` reports `ValidPartitionCounts` including `1`
+(entire GPU, not a host-kept slice):
+
+```powershell
+Set-VMHostPartitionableGpu -Name $instancePath -PartitionCount 1
+Add-VMGpuPartitionAdapter -VMName $vm -InstancePath $instancePath
+Set-VMGpuPartitionAdapter -VMName $vm -MinPartitionVRAM 100000000 ...
 ```
 
 **Expect:** host Device Manager shows the dedicated GPU gone or “hidden” from

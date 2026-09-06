@@ -2,7 +2,7 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is the Host Agent after execution phase 24 (Windows QEMU silent install). It does these things and nothing else:
+This is the Host Agent after execution phase 25 (Hyper-V DDA/GPU-P apply). It does these things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU, and whether Standard/Pro sessions
    can be offered (OS + KVM / Windows hypervisor / IOMMU / second display
@@ -46,8 +46,9 @@ This is the Host Agent after execution phase 24 (Windows QEMU silent install). I
     suppressed. macOS skips with a reason. The hypervisor is never executed.
     The webview does not download it. Tests inject a fake installer.
 12. Plans Pro GPU assignment from the dedicated GPU id: Linux vfio-pci
-    (injectable sysfs, rollback on apply failure); Windows DDA/GPU-P as a
-    would-assign log (no PowerShell). The volunteer does not run `lspci`.
+    (injectable sysfs, rollback on apply failure); Windows Hyper-V DDA
+    (preferred) or exclusive GPU-P via an injectable PowerShell/CIM runner
+    (rollback on apply failure). The volunteer does not run `lspci`.
     The window does not bind a live GPU.
 
 13. Combines the capability probe, the 2 vCPU / 4 GiB / 50 GiB floor, and a
@@ -103,7 +104,7 @@ host-agent/
     │   ├── launch.rs         clamped sliders → launch-config JSON (never boot)
     │   ├── eligibility.rs    probe + CPU/RAM/disk floor + VFIO plan → offered vs blocked
     │   ├── disk_space.rs     spare bytes on the image-cache volume (not a disk inventory)
-    │   ├── gpu_bind.rs       VFIO plan/apply with rollback; Windows DDA/GPU-P log (never PowerShell)
+    │   ├── gpu_bind.rs       VFIO plan/apply with rollback; Windows DDA/GPU-P apply via injectable runner
     │   ├── provision_http.rs POST /v1/provision → verify image → plan + optional guestRclone (Bearer)
     │   ├── tray.rs           system tray in Rust (no webview tray APIs)
     │   ├── commands.rs       the command surface exposed to the UI
@@ -295,7 +296,7 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   returns 400 (no stub URL, occupancy unset). GPU exclusivity copy stays
   when Pro is offered. Capability probe still never asks which backend.
   Phase 22 VFIO/DDA bind remains plan-only from the window (Linux mock-sysfs
-  apply in tests; Windows would-assign). Firecracker is never used for Pro.
+  apply in tests; Windows DDA/GPU-P apply on an injected runner). Firecracker is never used for Pro.
   Session guest/user tags live on Matchmaker JSON; this agent still joins as
   `tag:host` and never passes `--advertise-exit-node` or `--exit-node`.
   Complete provision locators return `guestRclone` argv (`--s3-env-auth`).
@@ -309,7 +310,10 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   Real host payouts are not in this agent. This agent never reads
   `HEADSCALE_API_KEY` or renterd S3 secrets. Do not fake latency. Phase 24
   (leftover **19b**) runs the QEMU NSIS installer with `/S` `/D=`; UAC
-  consent is still manual. Live Hyper-V DDA/GPU-P apply is leftover **22b**.
+  consent is still manual. Phase 25 (leftover **22b**) applies Hyper-V
+  DDA/GPU-P through an injectable runner with rollback; live PowerShell is
+  never spawned from tests. On metal, Hyper-V apply still needs an elevated
+  agent, the Hyper-V feature, and an existing VM `dcl-pro-guest`.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

@@ -27,10 +27,10 @@ and no live session URL in this repo. On 2026-09-06 that PASS was **retracted
 as unverified**. Current status is **OPEN — pending real-hardware
 verification**. Do not treat the 2026-09-05 declaration as metal evidence.
 
-## Using Host Agent automation (phases 18–24)
+## Using Host Agent automation (phases 18–25)
 
 This does **not** close GATE-WHPX. Numbered software phases are done through
-24 (including Windows QEMU silent install). Keep
+25 (including Windows QEMU silent install and Hyper-V DDA/GPU-P apply). Keep
 this gate **OPEN**. Do not create `docs/phase-logs/gate-whpx-result.md` from
 invented output. `SEED_HOST_KASM_URL` stays `https://example.invalid/kasm`.
 

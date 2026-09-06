@@ -127,7 +127,7 @@ export interface BindStep {
   device: string;
 }
 
-/** Pro GPU assignment plan. Never a live VFIO/DDA apply from the window. */
+/** Pro GPU assignment plan. Never a live VFIO/DDA/GPU-P apply from the window. */
 export interface GpuBindStatus {
   action: GpuBindAction;
   backend: string | null;

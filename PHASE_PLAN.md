@@ -42,7 +42,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 24: pytest 161, cargo test 238, vitest 31.
+  Counts after phase 25: pytest 161, cargo test 246, vitest 31.
 
 ## Contracts to keep stable
 
@@ -549,13 +549,15 @@ Done as a **software contract** (2026-09-06). Linux Pro plans vfio-pci bind
 tests never touch real devices. Apply rolls back to the previous driver on
 failure. Missing IOMMU or a second display path refuses before any write.
 PCI addresses are resolved from sysfs (UUID / BDF), not `lspci`. Windows
-Pro logs **would assign DDA/GPU-P** and never spawns PowerShell (live
-assignment is leftover **22b**). Firecracker is never used for Pro. GPU
+Pro logs a **DDA plan** from the window (no PowerShell). Apply (leftover
+**22b**, done in **phase 25**) runs documented Hyper-V/PnP cmdlets through
+an injectable runner with rollback. Firecracker is never used for Pro. GPU
 exclusivity copy stays at config time. GATE-PRO stays OPEN. See
-`docs/phase-logs/phase-22-vfio-bind.md`.
+`docs/phase-logs/phase-22-vfio-bind.md` and
+`docs/phase-logs/phase-25-hyperv-dda-gpu-p.md`.
 
-**22b (not this session):** live Hyper-V DDA / GPU-P apply via PowerShell,
-with a hang-safe timeout. Phase 22 only records the plan/log.
+**22b (done in phase 25):** live Hyper-V DDA / GPU-P apply via injectable
+PowerShell/CIM, hang-safe timeout, rollback on mid-step failure.
 
 ### Phase 23 — Insufficient-resource rejection UX + tests
 
@@ -583,7 +585,7 @@ copy stays when Pro *is* offered. Unknown spare disk does not block.
 macOS / Linux-without-KVM / no second display path / below-minimum sliders
 are covered by unit tests. Leftover **19b** (Windows QEMU silent install) was
 done in **phase 24**. Leftover **22b** (live Hyper-V DDA/GPU-P PowerShell)
-stays paper. GATE-* stay OPEN. See
+was done in **phase 25**. GATE-* stay OPEN. See
 `docs/phase-logs/phase-23-insufficient-resource-ux.md`.
 
 ### Phase 24 — Windows QEMU silent/unattended install (leftover 19b)
@@ -612,9 +614,35 @@ remaining manual step — `/S` does not suppress it. The hypervisor is
 never invoked. GATE-* stay OPEN. See
 `docs/phase-logs/phase-24-windows-qemu-silent-install.md`.
 
+### Phase 25 — Hyper-V DDA / GPU-P apply with rollback (leftover 22b)
+
+**Why next:** Phase 22 bound Linux VFIO on a mock sysfs tree with rollback,
+but Windows only logged **would assign**. GATE-PRO still needs the
+documented Hyper-V cmdlets to run when hardware is eligible.
+
+**Do:** When the probe offers Pro, execute exclusive DDA (preferred) or
+GPU-P (full partition only) through an injectable PowerShell/CIM runner.
+Roll back mid-step failures. Do not boot a guest. Do not spawn live
+PowerShell from tests.
+
+**Do not:** Close GATE-PRO. Do not invent nvidia-smi / WHPX / Firecracker
+boot logs. Do not rebase existing `pr/*` branches. Do not push `main`.
+
+**Exit:** Tests cover assign success and assign-fail → rollback on a fake
+runner; `cargo test --lib` green.
+
+Done as a **software contract** (2026-09-06). Windows Pro apply prefers
+DDA (`Disable-PnpDevice`, `Dismount-VMHostAssignableDevice -Force`,
+`Add-VMAssignableDevice`) and falls back to exclusive GPU-P
+(`Set-VMHostPartitionableGpu -PartitionCount 1`,
+`Add-VMGpuPartitionAdapter`, `Set-VMGpuPartitionAdapter` at 100000000).
+Production uses `ProcessHyperVGpuOps` (`powershell.exe -NoProfile
+-NonInteractive`, 30s kill). Tests inject a fake runner. The window stays
+plan-only (`apply: false`). GATE-* stay OPEN. See
+`docs/phase-logs/phase-25-hyperv-dda-gpu-p.md`.
+
 Hardware gates remain human metal work using the Host Agent automation
-(runbooks below). Leftover **22b** is not a numbered phase in this
-session.
+(runbooks below). Numbered leftover **22b** is closed.
 
 ## Handoff template
 
