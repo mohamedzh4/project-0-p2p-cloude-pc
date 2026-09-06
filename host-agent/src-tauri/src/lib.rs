@@ -13,6 +13,7 @@ mod host_capabilities;
 mod hypervisor;
 mod identity;
 mod image;
+mod launch;
 mod matchmaker;
 mod mesh;
 mod models;
@@ -29,6 +30,7 @@ pub use hypervisor::HypervisorStatus;
 pub use image::{
     verify_fetched_bytes, verify_image, GuestImageStatus, ImageError, ImageManifest, ImageTrust,
 };
+pub use launch::{LaunchConfig, LaunchError};
 pub use models::HardwareSnapshot;
 /// Phase 6: Matchmaker calls the HTTP port; that port verifies the signed
 /// image then calls [`plan_provision`]. Selection takes plain types (no Tauri)
@@ -172,6 +174,7 @@ pub fn run() {
             commands::get_host_capabilities,
             commands::get_hypervisor_status,
             commands::get_guest_image_status,
+            commands::build_launch_config,
             commands::load_sharing_config,
             commands::save_sharing_config,
             commands::get_config_file_path,

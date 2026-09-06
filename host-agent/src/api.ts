@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import { BYTES_PER_GIB } from "./format";
 import {
   isTauriRuntime,
   previewCapabilities,
@@ -15,6 +16,7 @@ import type {
   HostCapabilities,
   HostRegistration,
   HypervisorStatus,
+  LaunchConfig,
   SharingConfig,
   SharingPresence,
 } from "./types";
@@ -72,6 +74,78 @@ export function getGuestImageStatus(): Promise<GuestImageStatus> {
   }
 
   return invoke<GuestImageStatus>("get_guest_image_status");
+}
+
+const BYTES_PER_MIB = 1024 * 1024;
+const MIN_VCPU = 2;
+const MIN_MEMORY_BYTES = 4 * BYTES_PER_GIB;
+
+/** Preview-only mirror of `launch::build` for the sample Linux host. Rust is the source of truth. */
+function previewBuildLaunchConfig(config: SharingConfig, labTier: string): LaunchConfig {
+  const cores = Math.min(config.sharedLogicalCores, previewHardware.cpu.logicalCores);
+  const memoryBytes = Math.min(config.sharedMemoryBytes, previewHardware.memory.totalBytes);
+  if (cores < MIN_VCPU) {
+    throw new Error(`this PC would lend ${cores} vCPU, but a session needs at least ${MIN_VCPU} vCPU`);
+  }
+  if (memoryBytes < MIN_MEMORY_BYTES) {
+    throw new Error(
+      `this PC would lend ${memoryBytes / BYTES_PER_GIB} GiB of RAM, but a session needs at least 4 GiB`,
+    );
+  }
+
+  if (labTier === "standard") {
+    return {
+      backend: "firecracker",
+      labTier: "standard",
+      vcpuCount: cores,
+      memoryMib: memoryBytes / BYTES_PER_MIB,
+      kernelPath: null,
+      rootfsPath: previewGuestImage.path,
+      hypervisorInvoked: false,
+    };
+  }
+
+  if (labTier === "pro") {
+    const shareGpu = config.shareGpu && previewHardware.gpus.length > 0;
+    if (!shareGpu) {
+      throw new Error(
+        "a Pro session needs you to dedicate a GPU (shareGpu); that GPU is exclusive for the session, not a concurrent slice",
+      );
+    }
+    const id =
+      config.sharedGpuId && previewHardware.gpus.some((gpu) => gpu.id === config.sharedGpuId)
+        ? config.sharedGpuId
+        : previewHardware.gpus[0]?.id;
+    if (!id) {
+      throw new Error(
+        "a Pro session needs a dedicated GPU id (sharedGpuId); GPU assignment is exclusive for the session, not a concurrent slice",
+      );
+    }
+    return {
+      backend: "qemu-vfio",
+      labTier: "pro",
+      vcpuCount: cores,
+      memoryMib: memoryBytes / BYTES_PER_MIB,
+      kernelPath: null,
+      rootfsPath: null,
+      gpu: { id, exclusive: true },
+      hypervisorInvoked: false,
+    };
+  }
+
+  throw new Error(`unknown lab tier ${JSON.stringify(labTier)}; expected "standard" or "pro"`);
+}
+
+export function buildLaunchConfig(config: SharingConfig, labTier: string): Promise<LaunchConfig> {
+  if (IS_PREVIEW) {
+    try {
+      return Promise.resolve(previewBuildLaunchConfig(config, labTier));
+    } catch (error: unknown) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  return invoke<LaunchConfig>("build_launch_config", { config, labTier });
 }
 
 export function loadSharingConfig(): Promise<SharingConfig> {

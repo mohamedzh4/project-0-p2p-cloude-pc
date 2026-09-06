@@ -94,6 +94,24 @@ export interface GuestImageStatus {
   imageBooted: boolean;
 }
 
+export type LaunchBackend = "firecracker" | "qemu-whpx" | "qemu-vfio" | "hyperv-gpu";
+
+/** Generated hypervisor document. Never a running VM. */
+export interface LaunchConfig {
+  backend: LaunchBackend;
+  labTier: "standard" | "pro";
+  vcpuCount: number;
+  memoryMib: number;
+  kernelPath: string | null;
+  rootfsPath: string | null;
+  /** Present only for Pro when a GPU is dedicated. Omitted on Standard. */
+  gpu?: {
+    id: string;
+    exclusive: boolean;
+  };
+  hypervisorInvoked: boolean;
+}
+
 export interface SharingConfig {
   version: number;
   sharingEnabled: boolean;

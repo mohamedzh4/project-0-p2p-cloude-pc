@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-06, after phase 20 guest image fetch
+# Project Status — last updated: 2026-09-06, after phase 21 launch config
 
 ## Done
 
@@ -15,7 +15,7 @@
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
   keypairs, guest rclone argv). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–20 on local `main` (not pushed):
+- Execution phases 1–21 on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -32,10 +32,10 @@
     `--advertise-exit-node`, `--exit-node`, or `--advertise-tags`). Provision
     may include storage locators (endpoint/bucket/prefix/region, no keys) and
     a guest-mesh hint (no preauth). The stub never rclone-mounts on the host
-    OS and     never `tailscale up`s as the guest. When locators are complete it
+    OS and never `tailscale up`s as the guest. When locators are complete it
     returns `guestRclone` argv (`--s3-env-auth`). Pro HTTP 200 adds `streamer:
     sunshine`, stub `sunshineUrl`, and a Moonlight host hint (`gpuExclusive`
-    true).     Standard stays `streamer: kasm`. **Phase 18:** `host_capabilities.rs`
+    true). Standard stays `streamer: kasm`. **Phase 18:** `host_capabilities.rs`
     probes OS, Linux `/dev/kvm` r/w (path-injectable), Windows WHPX/Hyper-V as
     a stub enum on non-Windows, GPU list + second-display heuristic (iGPU or
     2+ GPUs), and Linux IOMMU sysfs (unknown off Linux). The window shows
@@ -54,7 +54,14 @@
     leave a ready disk. Windows Standard logs would-fetch QEMU disk (not
     Firecracker). macOS skips with a logged reason. Tests inject a fetcher /
     `file://` / httptest (no multi-GB download). The webview does not fetch.
-    **176/176** `cargo test --lib` (2026-09-06).
+    **Phase 21:** `launch.rs` maps clamped v2 sliders to a launch-config JSON
+    for the stub backend (`firecracker` / `qemu-whpx` / `qemu-vfio` /
+    `hyperv-gpu`). vCPU and memory come from the sliders. Standard omits GPU
+    assignment. Pro includes `{ id, exclusive: true }` when `shareGpu` is on.
+    Kernel/rootfs paths come from the phase-20 cache when present. Below
+    2 vCPU / 4 GiB is a plain-language error (phase 23 owns full UX). macOS
+    is still unsupported. Never invokes a hypervisor. **193/193**
+    `cargo test --lib` (2026-09-06).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
     `sessions_one_active_per_host` / `sessions_one_active_per_user`;
@@ -101,16 +108,17 @@
 
 ## In Progress
 
-- None. Numbered software phases 1–20 are on local `main`. Hardware gates are
-  **OPEN — pending real-hardware verification**. Next numbered phase is 21
-  (launch config from sliders + GPU id). Do not mark gates closed. Windows QEMU
-  silent install is leftover **19b**, not a substitute for 21.
+- None. Numbered software phases 1–21 are on local `main`. Hardware gates are
+  **OPEN — pending real-hardware verification**. Next numbered phase is 22
+  (VFIO/DDA bind with rollback). Do not mark gates closed. Windows QEMU silent
+  install is leftover **19b**, not a substitute for 22.
 
 ## Up Next
 
-**Phase 21 — Generate launch config from sliders + GPU id** (`PHASE_PLAN.md`).
-Do not invoke Firecracker/QEMU. Do not create `gate-*-result.md`. Do not
-invent live URLs. Leftover paper (not a substitute for 21):
+**Phase 22 — VFIO/DDA bind with rollback** (`PHASE_PLAN.md`). Do not invoke
+Firecracker/QEMU. Do not use Firecracker for Pro. Do not create
+`gate-*-result.md`. Do not invent live URLs. Leftover paper (not a substitute
+for 22):
 
 1. Pairwise mesh ACLs — Headscale 0.26 file policy cannot mint
    `tag:session-<uuid>` owners; every `tag:user` may still reach every
@@ -120,6 +128,7 @@ invent live URLs. Leftover paper (not a substitute for 21):
    boot. “Saved as of HH:MM” still needs that image.
 3. FR13 latency ranking waits on a measured value — do not fake `latency_ms`.
 4. **19b** Windows QEMU silent install — phase 19 only logs would-fetch.
+5. Phase 23 — insufficient-resource rejection UX (thin Err exists in phase 21).
 
 ## Known Risks / Open Items
 
@@ -133,7 +142,7 @@ invent live URLs. Leftover paper (not a substitute for 21):
   `POST`/`GET /v1/storage`. Phase 16–17 kept the locators-only contract.
   An unused `0007_host_latency_ms` draft from a parallel agent was **not**
   applied.
-- Local `main` is ahead of `origin/main` (planning + phases 1–20). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–21). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
@@ -162,11 +171,12 @@ invent live URLs. Leftover paper (not a substitute for 21):
   **not** cleared when Matchmaker interrupts — there is no teardown HTTP port
   on the agent. Resume after pause can still show in-session if a guest already
   left.
-- Provisioner is stubs only. Image fetch+verify is the software contract (small
-  fixture bytes in tests; no multi-GB disk in-repo). On macOS, a real Host Agent
-  `POST /v1/provision` is 400 (`UnsupportedHostOs`) even with a valid signature;
-  Matchmaker then keeps the seeded locator. Guest-image ensure on this Mac logs
-  skip (Firecracker images are not fetched).
+- Provisioner is stubs only. Launch config is JSON only (no boot). Image
+  fetch+verify is the software contract (small fixture bytes in tests; no
+  multi-GB disk in-repo). On macOS, a real Host Agent `POST /v1/provision` is
+  400 (`UnsupportedHostOs`) even with a valid signature; Matchmaker then keeps
+  the seeded locator. Guest-image ensure and launch-config generation on this
+  Mac skip / fail as unsupported (Firecracker images are not fetched).
 - Intent text stays in the harness. It is not persisted and is not on the
   session JSON. Keyword mapping is a smallest-slice heuristic (office/code →
   Standard; GPU/game/3D/training → Pro).
@@ -200,16 +210,17 @@ invent live URLs. Leftover paper (not a substitute for 21):
 
 ## Notes for next agent/session
 
-- Execution **phase 20 is done** (guest image fetch + SHA-256/Ed25519 verify).
-  Hardware gates stay **OPEN — pending real-hardware verification** — see
+- Execution **phase 21 is done** (launch config from sliders + exclusive GPU
+  id). Hardware gates stay **OPEN — pending real-hardware verification** — see
   `docs/phase-logs/phase-gates-operator-pass.md` (historical PASS + retraction)
-  and `docs/phase-logs/phase-20-guest-image-fetch.md`. Next is **phase 21**.
+  and `docs/phase-logs/phase-21-launch-config.md`. Next is **phase 22**.
   Read `PHASE_PLAN.md` and this file. Do not start Storj. Do not invent lab
   output, a live Kasm URL, or `latency_ms`. Do not treat renterd compose-up as
   a live desktop. Do not weaken HostSelector, occupancy indexes, GPU
   exclusivity copy, OS-conditional stubs, or CSP. Do not mark gates closed.
   Do not fetch Firecracker or a guest disk from `cargo test` (injected fetcher /
-  file:// / httptest). Do not boot a VM. Windows QEMU silent install is **19b**.
+  file:// / httptest). Do not boot a VM. Do not use Firecracker for Pro.
+  Windows QEMU silent install is **19b**.
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.
@@ -222,6 +233,11 @@ invent live URLs. Leftover paper (not a substitute for 21):
   hold the private key. Tests use a documented fixture seed in Rust only.
   Phase 20 fetch reuses those `IMAGE_*` checksums; bytes come from
   `HOST_AGENT_*_IMAGE_URL` (injected in tests).
+- Launch config: `host_agent_lib::launch::build` takes OS + lab tier + clamped
+  `SharingConfig`. JSON fields are `backend`, `labTier`, `vcpuCount`,
+  `memoryMib`, `kernelPath`, `rootfsPath`, optional `gpu: { id, exclusive }`,
+  `hypervisorInvoked: false`. Standard omits `gpu`. Below 2 vCPU / 4 GiB is
+  `Err`. Phase 23 owns the Host Agent rejection UX.
 - Mesh: Matchmaker holds `HEADSCALE_API_KEY`; the agent never does. Host join
   uses `HEADSCALE_LOGIN_SERVER` from agent env plus a minted preauth key tagged
   `tag:host`. Session JSON `mesh` holds guest/user keys. Unit tests mock

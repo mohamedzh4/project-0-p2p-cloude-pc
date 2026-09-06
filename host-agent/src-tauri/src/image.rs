@@ -736,7 +736,7 @@ fn locate_or_fetch_image(
     backend: ImageBackend,
     fetcher: &dyn ImageFetcher,
 ) -> Result<GuestImageStatus, ImageError> {
-    let dest = image_install_path(cache_dir, spec.lab_tier);
+    let dest = cached_rootfs_path(cache_dir, spec.lab_tier);
     let manifest_path = dest.with_extension("manifest.json");
 
     if let Some(status) =
@@ -836,8 +836,14 @@ fn skip_if_present(
     ))
 }
 
-fn image_install_path(cache_dir: &Path, lab_tier: LabTier) -> PathBuf {
+/// Phase-20 cache layout: `{cache}/{labTier}/rootfs.img`.
+pub fn cached_rootfs_path(cache_dir: &Path, lab_tier: LabTier) -> PathBuf {
     cache_dir.join(lab_tier.as_str()).join("rootfs.img")
+}
+
+/// Optional Firecracker kernel next to the rootfs: `{cache}/{labTier}/vmlinux`.
+pub fn cached_kernel_path(cache_dir: &Path, lab_tier: LabTier) -> PathBuf {
+    cache_dir.join(lab_tier.as_str()).join("vmlinux")
 }
 
 fn write_cached_manifest(path: &Path, manifest: &CachedImageManifest) -> Result<(), ImageError> {

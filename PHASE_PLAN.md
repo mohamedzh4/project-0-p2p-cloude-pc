@@ -42,7 +42,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 20: pytest 161, cargo test 176, vitest 31.
+  Counts after phase 21: pytest 161, cargo test 193, vitest 31.
 
 ## Contracts to keep stable
 
@@ -514,6 +514,17 @@ change occupancy indexes or `HostSelector.select`.
 
 **Exit:** Tests: slider values appear in the config; Pro requires GPU id;
 macOS still unsupported.
+
+Done as a **software contract** (2026-09-06). `launch.rs` maps clamped v2
+sliders onto the stub backend already selected in `provision.rs` (Linux
+Standard → Firecracker, Windows Standard → QEMU+WHPX, Linux Pro → QEMU+VFIO,
+Windows Pro → Hyper-V GPU). Standard omits GPU assignment even if an id is
+stored. Pro includes `{ id, exclusive: true }` when `shareGpu` is on; GPU is
+never a concurrent slice. Kernel/rootfs paths come from the phase-20 cache
+(`vmlinux` / `rootfs.img`) when present. Below the documented Kasm minimum
+(2 vCPU / 4 GiB) returns a plain-language `Err` (phase 23 owns full UX).
+macOS is still unsupported. Never invokes a hypervisor. See
+`docs/phase-logs/phase-21-launch-config.md`.
 
 ### Phase 22 — VFIO/DDA bind with rollback
 

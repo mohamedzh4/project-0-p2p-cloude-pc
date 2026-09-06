@@ -1,10 +1,14 @@
 import { HardwareCard } from "./HardwareCard";
-import type { GuestImageStatus, HostCapabilities, HypervisorStatus } from "../types";
+import type { GuestImageStatus, HostCapabilities, HypervisorStatus, LaunchConfig } from "../types";
 
 interface CapabilityPanelProps {
   capabilities: HostCapabilities;
   hypervisor: HypervisorStatus;
   guestImage: GuestImageStatus;
+  standardLaunch: LaunchConfig | null;
+  standardLaunchError: string | null;
+  proLaunch: LaunchConfig | null;
+  proLaunchError: string | null;
 }
 
 function hypervisorHeadline(status: HypervisorStatus): { value: string; empty: boolean } {
@@ -49,9 +53,46 @@ function guestImageHeadline(status: GuestImageStatus): { value: string; empty: b
   }
 }
 
-export function CapabilityPanel({ capabilities, hypervisor, guestImage }: CapabilityPanelProps) {
+function launchHeadline(config: LaunchConfig | null, error: string | null): { value: string; empty: boolean } {
+  if (error) {
+    return { value: "Cannot launch", empty: true };
+  }
+  if (!config) {
+    return { value: "Generating…", empty: true };
+  }
+  return {
+    value: `${config.vcpuCount} vCPU · ${config.memoryMib} MiB`,
+    empty: false,
+  };
+}
+
+function launchDetail(config: LaunchConfig | null, error: string | null): string {
+  if (error) {
+    return error;
+  }
+  if (!config) {
+    return "Launch configuration is generated from your sliders. It does not boot a guest.";
+  }
+  const gpu = config.gpu
+    ? `GPU ${config.gpu.id} exclusive`
+    : "GPU omitted";
+  const rootfs = config.rootfsPath ? ` · ${config.rootfsPath}` : "";
+  return `${config.backend} · ${gpu}${rootfs}. Not booted.`;
+}
+
+export function CapabilityPanel({
+  capabilities,
+  hypervisor,
+  guestImage,
+  standardLaunch,
+  standardLaunchError,
+  proLaunch,
+  proLaunchError,
+}: CapabilityPanelProps) {
   const headline = hypervisorHeadline(hypervisor);
   const imageHeadline = guestImageHeadline(guestImage);
+  const standard = launchHeadline(standardLaunch, standardLaunchError);
+  const pro = launchHeadline(proLaunch, proLaunchError);
 
   return (
     <section className="panel reveal" data-reveal={1}>
@@ -82,6 +123,18 @@ export function CapabilityPanel({ capabilities, hypervisor, guestImage }: Capabi
           detail={guestImage.log}
           empty={imageHeadline.empty}
         />
+        <HardwareCard
+          title="Standard launch config"
+          value={standard.value}
+          detail={launchDetail(standardLaunch, standardLaunchError)}
+          empty={standard.empty}
+        />
+        <HardwareCard
+          title="Pro launch config"
+          value={pro.value}
+          detail={launchDetail(proLaunch, proLaunchError)}
+          empty={pro.empty}
+        />
       </div>
       <p className="hint">
         {capabilities.secondDisplayPath
@@ -90,8 +143,10 @@ export function CapabilityPanel({ capabilities, hypervisor, guestImage }: Capabi
       </p>
       <p className="hint">
         The agent locates or fetches the hypervisor and signed guest image for this OS after the
-        probe. It does not boot a guest, and this window does not download anything.
+        probe, then maps your CPU/RAM sliders (and a dedicated GPU, when you opt in) into a launch
+        document. It does not boot a guest, and this window does not download anything.
       </p>
     </section>
   );
 }
+

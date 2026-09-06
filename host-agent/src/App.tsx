@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  buildLaunchConfig,
   getAgentStatus,
   getConfigFilePath,
   getGuestImageStatus,
@@ -28,6 +29,7 @@ import {
   type HostCapabilities,
   type HostRegistration,
   type HypervisorStatus,
+  type LaunchConfig,
   type SharingConfig,
 } from "./types";
 
@@ -38,6 +40,10 @@ export default function App() {
   const [capabilities, setCapabilities] = useState<HostCapabilities | null>(null);
   const [hypervisor, setHypervisor] = useState<HypervisorStatus | null>(null);
   const [guestImage, setGuestImage] = useState<GuestImageStatus | null>(null);
+  const [standardLaunch, setStandardLaunch] = useState<LaunchConfig | null>(null);
+  const [standardLaunchError, setStandardLaunchError] = useState<string | null>(null);
+  const [proLaunch, setProLaunch] = useState<LaunchConfig | null>(null);
+  const [proLaunchError, setProLaunchError] = useState<string | null>(null);
   const [config, setConfig] = useState<SharingConfig | null>(null);
   const [savedConfig, setSavedConfig] = useState<SharingConfig | null>(null);
   const [configPath, setConfigPath] = useState("");
@@ -85,6 +91,44 @@ export default function App() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!config) {
+      return;
+    }
+
+    let active = true;
+
+    Promise.allSettled([buildLaunchConfig(config, "standard"), buildLaunchConfig(config, "pro")]).then(
+      ([standard, pro]) => {
+        if (!active) {
+          return;
+        }
+
+        if (standard.status === "fulfilled") {
+          setStandardLaunch(standard.value);
+          setStandardLaunchError(null);
+        } else {
+          setStandardLaunch(null);
+          setStandardLaunchError(
+            standard.reason instanceof Error ? standard.reason.message : String(standard.reason),
+          );
+        }
+
+        if (pro.status === "fulfilled") {
+          setProLaunch(pro.value);
+          setProLaunchError(null);
+        } else {
+          setProLaunch(null);
+          setProLaunchError(pro.reason instanceof Error ? pro.reason.message : String(pro.reason));
+        }
+      },
+    );
+
+    return () => {
+      active = false;
+    };
+  }, [config]);
 
   useEffect(() => {
     let active = true;
@@ -315,7 +359,15 @@ export default function App() {
         </div>
       </section>
 
-      <CapabilityPanel capabilities={capabilities} hypervisor={hypervisor} guestImage={guestImage} />
+      <CapabilityPanel
+        capabilities={capabilities}
+        hypervisor={hypervisor}
+        guestImage={guestImage}
+        standardLaunch={standardLaunch}
+        standardLaunchError={standardLaunchError}
+        proLaunch={proLaunch}
+        proLaunchError={proLaunchError}
+      />
 
       <section className="panel reveal" data-reveal={2}>
         <h2>What you share</h2>

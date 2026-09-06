@@ -12,9 +12,11 @@ use crate::host_capabilities::HostCapabilities;
 use crate::hypervisor::HypervisorStatus;
 use crate::identity::{self, HostRegistration};
 use crate::image::GuestImageStatus;
+use crate::launch::{self, LaunchConfig};
 use crate::matchmaker::{self, UreqTransport};
 use crate::mesh::{self, ProcessJoinRunner};
 use crate::models::{HardwareSnapshot, SharingConfig};
+use crate::provision::{HostOs, LabTier};
 use crate::AgentState;
 
 #[tauri::command]
@@ -35,6 +37,26 @@ pub fn get_hypervisor_status(state: State<'_, AgentState>) -> HypervisorStatus {
 #[tauri::command]
 pub fn get_guest_image_status(state: State<'_, AgentState>) -> GuestImageStatus {
     state.guest_image.clone()
+}
+
+/// Map the webview's sliders (re-clamped) to a launch document. Never boots.
+#[tauri::command]
+pub fn build_launch_config(
+    state: State<'_, AgentState>,
+    config: SharingConfig,
+    lab_tier: String,
+) -> Result<LaunchConfig, String> {
+    let lab_tier = LabTier::parse(&lab_tier).map_err(|error| error.to_string())?;
+    let cache = crate::image::resolve_image_cache_dir(|key| std::env::var(key).ok());
+    launch::build(launch::LaunchRequest {
+        os: HostOs::current(),
+        lab_tier,
+        hardware: &state.hardware,
+        sharing: &config,
+        image_cache_dir: Some(cache.as_path()),
+        guest_image: Some(&state.guest_image),
+    })
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

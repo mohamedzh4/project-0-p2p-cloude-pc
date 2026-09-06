@@ -269,14 +269,15 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 20 guest image fetch is in: Linux Standard fetches the signed Firecracker
-  guest image into a user cache and verifies SHA-256 + Ed25519 **before** it is
-  ready. Linux Pro (when offered) fetches the Pro image the same way. Windows
-  records would-fetch QEMU disk (not Firecracker). macOS skips with a reason.
-  Tests inject a fetcher / `file://` / httptest — no multi-GB download. The
-  webview does not fetch. Hypervisor binary fetch (phase 19) is unchanged.
-  Capability probe still never asks which backend. Session guest/user tags live
-  on Matchmaker JSON; this agent still joins as `tag:host` and never passes
+- Phase 21 launch config is in: clamped v2 sliders become a JSON document for
+  the stub backend (`firecracker` / `qemu-whpx` / `qemu-vfio` / `hyperv-gpu`).
+  Standard is a CPU/RAM slice (GPU omitted). Pro assigns one exclusive GPU id
+  when `shareGpu` is on. Kernel/rootfs paths are filled from the phase-20 cache
+  when those files exist. Below 2 vCPU / 4 GiB is a plain-language error.
+  Nothing is booted. The webview does not fetch. Hypervisor binary fetch
+  (phase 19) and guest-image fetch (phase 20) are unchanged. Capability probe
+  still never asks which backend. Session guest/user tags live on Matchmaker
+  JSON; this agent still joins as `tag:host` and never passes
   `--advertise-exit-node` or `--exit-node`. Complete provision locators return
   `guestRclone` argv (`--s3-env-auth`); `GuestRcloneMount::from_locators` /
   `from_env` never spawn rclone and never take S3 keys. GATE-FC / GATE-WHPX /
@@ -284,12 +285,14 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   operator PASS later retracted) — still no live hypervisor or stream in this
   repo. Storage is renterd S3, not Storj. Guest `--exit-node` is a Matchmaker
   join plan, not this binary (see `docs/runbooks/headscale.md`). On macOS,
-  `POST /v1/provision` returns 400 (`UnsupportedHostOs`); Matchmaker then keeps
-  the seeded locator. Local in-session occupancy is still not cleared when
-  Matchmaker interrupts a session (no teardown port). Real host payouts are
-  not in this agent; the ledger only accrues credits. This agent never reads
-  `HEADSCALE_API_KEY` or renterd S3 secrets. Do not fake latency. Next
-  numbered phase is **21** (launch config from sliders + GPU id).
+  `POST /v1/provision` returns 400 (`UnsupportedHostOs`) and launch config
+  generation fails the same way; Matchmaker then keeps the seeded locator.
+  Local in-session occupancy is still not cleared when Matchmaker interrupts a
+  session (no teardown port). Real host payouts are not in this agent; the
+  ledger only accrues credits. This agent never reads `HEADSCALE_API_KEY` or
+  renterd S3 secrets. Do not fake latency. Next numbered phase is **22**
+  (VFIO/DDA bind with rollback). Windows QEMU silent install is leftover
+  **19b**.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.
