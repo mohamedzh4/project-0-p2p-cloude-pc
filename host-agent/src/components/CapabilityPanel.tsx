@@ -38,6 +38,8 @@ function hypervisorHeadline(status: HypervisorStatus): { value: string; empty: b
       return { value: "Checksum failed", empty: true };
     case "fetchFailed":
       return { value: "Fetch failed", empty: true };
+    case "installFailed":
+      return { value: "Install failed", empty: true };
   }
 }
 

@@ -42,7 +42,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 23: pytest 161, cargo test 231, vitest 31.
+  Counts after phase 24: pytest 161, cargo test 238, vitest 31.
 
 ## Contracts to keep stable
 
@@ -460,14 +460,16 @@ indexes.
 Done as a **software contract** (2026-09-06). Linux Standard locates or fetches
 Firecracker into a user cache (`~/.cache/dcl-host-agent/hypervisors` or
 `HOST_AGENT_HYPERVISOR_CACHE`) from a documented GitHub release URL, SHA-256
-verified, never executed. Windows Standard logs **would fetch QEMU** (silent
-install is **19b**). macOS skips with a logged reason. Tests inject a fetcher,
+verified, never executed. Windows Standard fetches the pinned Weilnetz NSIS
+installer, verifies the published SHA-512, and runs `/S` `/D=<cache>` (phase
+24 / leftover **19b**). macOS skips with a logged reason. Tests inject a fetcher,
 `file://`, or loopback httptest; non-loopback HTTP is refused under `cfg(test)`
 unless `HOST_AGENT_HYPERVISOR_NETWORK=1`. GATE-* stay OPEN. See
-`docs/phase-logs/phase-19-hypervisor-fetch.md`.
+`docs/phase-logs/phase-19-hypervisor-fetch.md` and
+`docs/phase-logs/phase-24-windows-qemu-silent-install.md`.
 
-**19b (not this session):** Windows QEMU silent install with checksum. Phase 19
-only records “would fetch QEMU” plus tests.
+**19b (done in phase 24):** Windows QEMU silent install with checksum. UAC
+consent remains the only manual step (`qemu.nsi` `RequestExecutionLevel admin`).
 
 ### Phase 20 — Guest image fetch/verify (extend `image.rs`)
 
@@ -579,13 +581,40 @@ does not emit, and `POST /v1/provision` with the live gate returns 400
 (plain-language `detail`, no stub URL, occupancy unset). GPU exclusivity
 copy stays when Pro *is* offered. Unknown spare disk does not block.
 macOS / Linux-without-KVM / no second display path / below-minimum sliders
-are covered by unit tests. This is the last numbered automation phase.
-Leftover **19b** (Windows QEMU silent install) and **22b** (live Hyper-V
-DDA/GPU-P PowerShell) stay paper. GATE-* stay OPEN. See
+are covered by unit tests. Leftover **19b** (Windows QEMU silent install) was
+done in **phase 24**. Leftover **22b** (live Hyper-V DDA/GPU-P PowerShell)
+stays paper. GATE-* stay OPEN. See
 `docs/phase-logs/phase-23-insufficient-resource-ux.md`.
 
-There is no phase 24. Hardware gates remain human metal work using the
-Host Agent automation (runbooks below).
+### Phase 24 — Windows QEMU silent/unattended install (leftover 19b)
+
+**Why next:** Phase 19 located Firecracker on Linux but only logged
+**would fetch QEMU** on Windows. GATE-WHPX still needs the installer to
+run with the flags the official NSIS setup actually supports.
+
+**Do:** Detect missing QEMU on Windows, fetch the documented Weilnetz
+installer (SHA-512), run NSIS `/S` and `/D=<dir>` (last, unquoted). Keep
+the injectable fetcher/installer pattern so CI never hits the QEMU CDN.
+Document UAC if it cannot be suppressed. Do not boot a VM.
+
+**Do not:** Close GATE-WHPX. Do not invent WHPX/QEMU lab logs. Do not
+start leftover **22b** (Hyper-V DDA). Do not execute `qemu-system-*.exe`.
+
+**Exit:** Tests prove silent argv on an injected installer; non-zero
+installer is not treated as installed; suites green.
+
+Done as a **software contract** (2026-09-06). Windows Standard fetches
+`qemu-w64-setup-20260811.exe` (or the ARM sibling) from qemu.weilnetz.de,
+verifies the published SHA-512, and runs the NSIS installer with `/S`
+`/D=<user cache>`. Tests inject a fake installer (no real download).
+`qemu.nsi` `RequestExecutionLevel admin` means Windows UAC is the only
+remaining manual step — `/S` does not suppress it. The hypervisor is
+never invoked. GATE-* stay OPEN. See
+`docs/phase-logs/phase-24-windows-qemu-silent-install.md`.
+
+Hardware gates remain human metal work using the Host Agent automation
+(runbooks below). Leftover **22b** is not a numbered phase in this
+session.
 
 ## Handoff template
 

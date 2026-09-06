@@ -27,9 +27,10 @@ and no live session URL in this repo. On 2026-09-06 that PASS was **retracted
 as unverified**. Current status is **OPEN — pending real-hardware
 verification**. Do not treat the 2026-09-05 declaration as metal evidence.
 
-## Using Host Agent automation (phases 18–23)
+## Using Host Agent automation (phases 18–24)
 
-This does **not** close GATE-WHPX. Numbered software phases are done. Keep
+This does **not** close GATE-WHPX. Numbered software phases are done through
+24 (including Windows QEMU silent install). Keep
 this gate **OPEN**. Do not create `docs/phase-logs/gate-whpx-result.md` from
 invented output. `SEED_HOST_KASM_URL` stays `https://example.invalid/kasm`.
 
@@ -43,8 +44,8 @@ On a **Windows 10/11** volunteer PC (not this Mac):
    - the summary line
    - Standard sessions: Available / Not available + the reason (Windows
      hypervisor missing or unverified is a block)
-   - Hypervisor binary log (**Would fetch QEMU** is expected; silent install
-     is leftover **19b**)
+   - Hypervisor binary log (QEMU present, or NSIS `/S` `/D=` install
+     logged; a UAC consent prompt is the only remaining manual step)
    - Guest image log (would-fetch QEMU disk)
    - Standard launch config (`N vCPU · N MiB`) or Cannot launch + reason
 4. Paste that block into a local note. Later, a human (not an agent) may put
@@ -111,9 +112,14 @@ state (`Enabled`).
 
 ## 2. Install QEMU for Windows
 
-1. Install a current QEMU Windows build (MSYS2 `mingw-w64-x86_64-qemu` or the
-   installer from https://www.qemu.org/download/#windows).
-2. Confirm the binary:
+The Host Agent (phase 24) fetches the documented Weilnetz NSIS installer and
+runs it with `/S /D=<user cache>`. Windows may still show a UAC consent
+prompt (`qemu.nsi` `RequestExecutionLevel admin`); approve it. That is the
+only remaining installer prompt. Then confirm the binary:
+
+Alternatively, install a current QEMU Windows build yourself (MSYS2
+`mingw-w64-x86_64-qemu` or the installer from
+https://www.qemu.org/download/#windows) and set `HOST_AGENT_QEMU_BIN`.
 
 ```powershell
 qemu-system-x86_64.exe --version

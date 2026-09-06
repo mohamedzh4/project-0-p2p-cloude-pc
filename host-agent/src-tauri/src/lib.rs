@@ -153,6 +153,7 @@ pub fn run() {
         std::env::consts::ARCH,
         |key| std::env::var(key).ok(),
         &hypervisor::HttpBinaryFetcher,
+        &hypervisor::ProcessQemuInstaller,
     ));
     eprintln!("host-agent hypervisor: {}", hypervisor.log);
     let guest_image = match image::max_image_bytes(|key| std::env::var(key).ok()) {

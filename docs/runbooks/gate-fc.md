@@ -23,7 +23,7 @@ and no live session URL in this repo. On 2026-09-06 that PASS was **retracted
 as unverified**. Current status is **OPEN — pending real-hardware
 verification**. Do not treat the 2026-09-05 declaration as metal evidence.
 
-## Using Host Agent automation (phases 18–23)
+## Using Host Agent automation (phases 18–24)
 
 This does **not** close GATE-FC. Numbered software phases are done. Keep this
 gate **OPEN**. Do not create `docs/phase-logs/gate-fc-result.md` from invented

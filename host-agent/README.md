@@ -2,7 +2,7 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is the Host Agent after execution phase 23 (insufficient-resource rejection UX). It does these things and nothing else:
+This is the Host Agent after execution phase 24 (Windows QEMU silent install). It does these things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU, and whether Standard/Pro sessions
    can be offered (OS + KVM / Windows hypervisor / IOMMU / second display
@@ -40,8 +40,11 @@ This is the Host Agent after execution phase 23 (insufficient-resource rejection
     installed.
 11. After the capability probe, locates or fetches the OS hypervisor **binary**
     into a user cache (Linux Firecracker, documented GitHub URL + SHA-256).
-    Windows logs **would fetch QEMU** (19b). macOS skips with a reason. The
-    binary is never executed. The webview does not download it.
+    Windows Standard fetches the documented Weilnetz NSIS installer, verifies
+    SHA-512, and runs it with `/S` and `/D=<cache>` (NSIS Chapter 3). UAC may
+    still appear (`qemu.nsi` `RequestExecutionLevel admin`) and cannot be
+    suppressed. macOS skips with a reason. The hypervisor is never executed.
+    The webview does not download it. Tests inject a fake installer.
 12. Plans Pro GPU assignment from the dedicated GPU id: Linux vfio-pci
     (injectable sysfs, rollback on apply failure); Windows DDA/GPU-P as a
     would-assign log (no PowerShell). The volunteer does not run `lspci`.
@@ -143,8 +146,10 @@ Copy `.env.example` to `.env` on the host machine (never commit `.env`):
 | `HOST_AGENT_IMAGE_NETWORK` | tests only | `1` allows non-loopback HTTP during `cargo test`. Leave unset in CI. |
 | `HEADSCALE_LOGIN_SERVER` | to join mesh | Headscale origin for `tailscale up --login-server`. Fail fast if join is attempted without it. Omit to skip join after register. |
 | `TAILSCALE_BIN` | no | Defaults to `tailscale` on PATH. |
-| `HOST_AGENT_HYPERVISOR_CACHE` | no | User-writable dir for Firecracker. Default `~/.cache/dcl-host-agent/hypervisors` (Linux), `~/Library/Caches/dcl-host-agent/hypervisors` (macOS), `%LOCALAPPDATA%\dcl-host-agent\hypervisors` (Windows). |
+| `HOST_AGENT_HYPERVISOR_CACHE` | no | User-writable dir for Firecracker and the Windows QEMU NSIS install. Default `~/.cache/dcl-host-agent/hypervisors` (Linux), `~/Library/Caches/dcl-host-agent/hypervisors` (macOS), `%LOCALAPPDATA%\dcl-host-agent\hypervisors` (Windows). |
 | `HOST_AGENT_FIRECRACKER_URL` / `HOST_AGENT_FIRECRACKER_SHA256` | no | Override the documented GitHub tarball + published SHA-256. Not secrets. |
+| `HOST_AGENT_QEMU_URL` / `HOST_AGENT_QEMU_SHA512` | no | Override the pinned Weilnetz NSIS installer + published SHA-512. `HOST_AGENT_QEMU_SHA256` is accepted for test fixtures. Not secrets. |
+| `HOST_AGENT_QEMU_BIN` | no | Existing `qemu-system-*.exe` (skip fetch/install when present). |
 | `HOST_AGENT_HYPERVISOR_NETWORK` | tests only | `1` allows non-loopback HTTP during `cargo test`. Leave unset in CI. |
 
 The agent fails registration and heartbeats if the URL or bootstrap token is
@@ -302,9 +307,9 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   Matchmaker then keeps the seeded locator. Local in-session occupancy is
   still not cleared when Matchmaker interrupts a session (no teardown port).
   Real host payouts are not in this agent. This agent never reads
-  `HEADSCALE_API_KEY` or renterd S3 secrets. Do not fake latency. There is
-  no numbered phase 24. Windows QEMU silent install is leftover **19b**.
-  Live Hyper-V DDA/GPU-P apply is leftover **22b**.
+  `HEADSCALE_API_KEY` or renterd S3 secrets. Do not fake latency. Phase 24
+  (leftover **19b**) runs the QEMU NSIS installer with `/S` `/D=`; UAC
+  consent is still manual. Live Hyper-V DDA/GPU-P apply is leftover **22b**.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

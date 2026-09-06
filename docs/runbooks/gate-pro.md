@@ -33,7 +33,7 @@ Sunshine/Moonlight session in this repo. On 2026-09-06 that PASS was
 real-hardware verification**. Do not treat the 2026-09-05 declaration as
 metal evidence. Do not weaken Host Agent GPU exclusivity copy or matching.
 
-## Using Host Agent automation (phases 18–23)
+## Using Host Agent automation (phases 18–24)
 
 This does **not** close GATE-PRO. Numbered software phases are done. Keep
 this gate **OPEN**. Do not create `docs/phase-logs/gate-pro-result.md` from

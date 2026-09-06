@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-06, after phase 23 insufficient-resource UX
+# Project Status — last updated: 2026-09-06, after phase 24 Windows QEMU silent install
 
 ## Done
 
@@ -15,7 +15,7 @@
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
   keypairs, guest rclone argv). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–23 on local `main` (not pushed):
+- Execution phases 1–24 on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -43,9 +43,13 @@
     **Phase 19:** `hypervisor.rs` locates or fetches Firecracker on Linux
     Standard (documented GitHub v1.16.1 tarball + published SHA-256) into a
     user cache; checksum mismatch fails fast and does not install; the binary
-    is never executed. Windows Standard logs **would fetch QEMU** (19b silent
-    install). macOS skips with a logged reason. Tests inject a fetcher /
-    `file://` / loopback httptest (no live GitHub in CI). **Phase 20:**
+    is never executed. Windows Standard fetches the pinned Weilnetz NSIS
+    installer (`qemu-w64-setup-20260811.exe` / ARM sibling), verifies the
+    published SHA-512, and runs `/S` `/D=<user cache>` (phase 24 / leftover
+    **19b**). UAC consent is still manual (`qemu.nsi` RequestExecutionLevel
+    admin). macOS skips with a logged reason. Tests inject a fetcher /
+    installer / `file://` / loopback httptest (no live GitHub or Weilnetz
+    in CI). **Phase 20:**
     `image.rs` locates or fetches the signed guest image for the probed
     backend into a user cache. Linux Standard fetches the Firecracker guest
     image; Linux Pro (when offered) fetches the Pro image. SHA-256 + Ed25519
@@ -75,7 +79,10 @@
     with the reason. A blocked tier is not offered (no launch document; live
     `POST /v1/provision` is 400 with plain-language `detail`, no stub URL,
     occupancy unset). GPU exclusivity copy stays when Pro *is* offered.
-    Unknown spare disk does not block. **231/231**
+    Unknown spare disk does not block. **Phase 24:** Windows QEMU silent
+    install (leftover **19b**): detect missing QEMU, fetch the documented
+    NSIS installer, checksum, run `/S` `/D=`. Injected installer in tests.
+    UAC is not automated. **238/238**
     `cargo test --lib` (2026-09-06).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
@@ -123,10 +130,9 @@
 
 ## In Progress
 
-- None. Numbered software phases 1–23 are on local `main`. Hardware gates are
-  **OPEN — pending real-hardware verification**. There is no phase 24. Do not
-  mark gates closed. Windows QEMU silent install is leftover **19b**. Live
-  Hyper-V DDA/GPU-P apply is leftover **22b**.
+- None. Numbered software phases 1–24 are on local `main`. Hardware gates are
+  **OPEN — pending real-hardware verification**. Do not mark gates closed.
+  Live Hyper-V DDA/GPU-P apply is leftover **22b**.
 
 ## Up Next
 
@@ -142,8 +148,7 @@ from this Mac. Leftover paper (not numbered phases):
    software contract (tiny fixtures). No production guest disk in-repo to
    boot. “Saved as of HH:MM” still needs that image.
 3. FR13 latency ranking waits on a measured value — do not fake `latency_ms`.
-4. **19b** Windows QEMU silent install — phase 19 only logs would-fetch.
-5. **22b** live Hyper-V DDA / GPU-P apply — phase 22 only logs would-assign.
+4. **22b** live Hyper-V DDA / GPU-P apply — phase 22 only logs would-assign.
 
 ## Known Risks / Open Items
 
@@ -157,7 +162,7 @@ from this Mac. Leftover paper (not numbered phases):
   `POST`/`GET /v1/storage`. Phase 16–17 kept the locators-only contract.
   An unused `0007_host_latency_ms` draft from a parallel agent was **not**
   applied.
-- Local `main` is ahead of `origin/main` (planning + phases 1–23). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–24). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
@@ -229,22 +234,23 @@ from this Mac. Leftover paper (not numbered phases):
 
 ## Notes for next agent/session
 
-- Execution **phase 23 is done** (insufficient-resource rejection UX). Numbered
-  software phases 18–23 are complete. Hardware gates stay **OPEN — pending
-  real-hardware verification** — see
+- Execution **phase 24 is done** (Windows QEMU silent install, leftover 19b).
+  Numbered software phases 18–24 are complete. Hardware gates stay **OPEN —
+  pending real-hardware verification** — see
   `docs/phase-logs/phase-gates-operator-pass.md` (historical PASS + retraction)
-  and `docs/phase-logs/phase-23-insufficient-resource-ux.md`. There is no
-  phase 24. A human closes GATE-FC / GATE-WHPX / GATE-PRO on Linux/Windows
-  metal using the Host Agent runbooks (paste capability + fetch/launch logs;
-  do not invent `gate-*-result.md`). Read `PHASE_PLAN.md` and this file. Do
+  and `docs/phase-logs/phase-24-windows-qemu-silent-install.md`. A human
+  closes GATE-FC / GATE-WHPX / GATE-PRO on Linux/Windows metal using the Host
+  Agent runbooks (paste capability + fetch/launch logs; do not invent
+  `gate-*-result.md`). Read `PHASE_PLAN.md` and this file. Do
   not start Storj. Do not invent lab output, a live Kasm URL, or `latency_ms`.
   Do not treat renterd compose-up as a live desktop. Do not weaken
   HostSelector, occupancy indexes, GPU exclusivity copy, OS-conditional stubs,
-  or CSP. Do not mark gates closed. Do not fetch Firecracker or a guest disk
-  from `cargo test` (injected fetcher / file:// / httptest). Do not boot a VM.
-  Do not use Firecracker for Pro. Do not bind live `/sys` from tests. Windows
-  QEMU silent install is leftover **19b**. Live Hyper-V DDA/GPU-P apply is
-  leftover **22b** (do not spawn PowerShell).
+  or CSP. Do not mark gates closed. Do not fetch Firecracker, QEMU, or a guest
+  disk from `cargo test` (injected fetcher / installer / file:// / httptest).
+  Do not boot a VM. Do not use Firecracker for Pro. Do not bind live `/sys`
+  from tests. Live Hyper-V DDA/GPU-P apply is leftover **22b** (do not spawn
+  PowerShell). Windows QEMU still needs a human UAC click when the NSIS
+  installer elevates; that is documented, not automated.
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.

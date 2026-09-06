@@ -64,7 +64,8 @@ export type HypervisorAction =
   | "wouldFetch"
   | "refused"
   | "checksumMismatch"
-  | "fetchFailed";
+  | "fetchFailed"
+  | "installFailed";
 
 export type HypervisorName = "firecracker" | "qemu" | "none";
 
