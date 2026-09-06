@@ -11,6 +11,7 @@ use crate::config;
 use crate::host_capabilities::HostCapabilities;
 use crate::hypervisor::HypervisorStatus;
 use crate::identity::{self, HostRegistration};
+use crate::image::GuestImageStatus;
 use crate::matchmaker::{self, UreqTransport};
 use crate::mesh::{self, ProcessJoinRunner};
 use crate::models::{HardwareSnapshot, SharingConfig};
@@ -29,6 +30,11 @@ pub fn get_host_capabilities(state: State<'_, AgentState>) -> HostCapabilities {
 #[tauri::command]
 pub fn get_hypervisor_status(state: State<'_, AgentState>) -> HypervisorStatus {
     state.hypervisor.clone()
+}
+
+#[tauri::command]
+pub fn get_guest_image_status(state: State<'_, AgentState>) -> GuestImageStatus {
+    state.guest_image.clone()
 }
 
 #[tauri::command]

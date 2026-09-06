@@ -26,7 +26,9 @@ mod test_support;
 
 pub use host_capabilities::{evaluate as evaluate_host_capabilities, probe_live, HostCapabilities};
 pub use hypervisor::HypervisorStatus;
-pub use image::{verify_image, ImageError, ImageManifest, ImageTrust};
+pub use image::{
+    verify_fetched_bytes, verify_image, GuestImageStatus, ImageError, ImageManifest, ImageTrust,
+};
 pub use models::HardwareSnapshot;
 /// Phase 6: Matchmaker calls the HTTP port; that port verifies the signed
 /// image then calls [`plan_provision`]. Selection takes plain types (no Tauri)
@@ -53,6 +55,8 @@ pub struct AgentState {
     pub capabilities: HostCapabilities,
     /// Locate/fetch result for the OS hypervisor binary. Never invoked.
     pub hypervisor: HypervisorStatus,
+    /// Locate/fetch result for the signed guest image. Never booted.
+    pub guest_image: GuestImageStatus,
     /// Set when stub provision succeeds. Pause does not clear this; phase 12
     /// teardown will.
     pub occupancy: Arc<Occupancy>,
@@ -130,12 +134,23 @@ pub fn run() {
         &hypervisor::HttpBinaryFetcher,
     ));
     eprintln!("host-agent hypervisor: {}", hypervisor.log);
+    let guest_image = match image::max_image_bytes(|key| std::env::var(key).ok()) {
+        Ok(max_bytes) => image::status_from_result(image::ensure_from_env(
+            os,
+            &capabilities,
+            |key| std::env::var(key).ok(),
+            &image::HttpImageFetcher { max_bytes },
+        )),
+        Err(error) => image::status_from_result(Err(error)),
+    };
+    eprintln!("host-agent guest image: {}", guest_image.log);
 
     tauri::Builder::default()
         .manage(AgentState {
             hardware,
             capabilities,
             hypervisor,
+            guest_image,
             occupancy: Arc::new(Occupancy::new()),
         })
         .setup(|app| {
@@ -156,6 +171,7 @@ pub fn run() {
             commands::get_hardware_info,
             commands::get_host_capabilities,
             commands::get_hypervisor_status,
+            commands::get_guest_image_status,
             commands::load_sharing_config,
             commands::save_sharing_config,
             commands::get_config_file_path,

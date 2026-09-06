@@ -72,6 +72,28 @@ export interface HypervisorStatus {
   hypervisorInvoked: boolean;
 }
 
+export type GuestImageAction =
+  | "skippedPresent"
+  | "fetched"
+  | "skippedOs"
+  | "wouldFetch"
+  | "refused"
+  | "rejected"
+  | "fetchFailed";
+
+export type GuestImageBackend = "firecracker" | "qemu" | "none";
+
+/** Locate/fetch log for the signed guest image. Never booted. */
+export interface GuestImageStatus {
+  action: GuestImageAction;
+  labTier: string | null;
+  backend: GuestImageBackend;
+  path: string | null;
+  digest: string | null;
+  log: string;
+  imageBooted: boolean;
+}
+
 export interface SharingConfig {
   version: number;
   sharingEnabled: boolean;

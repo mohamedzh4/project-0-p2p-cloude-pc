@@ -1,9 +1,10 @@
 import { HardwareCard } from "./HardwareCard";
-import type { HostCapabilities, HypervisorStatus } from "../types";
+import type { GuestImageStatus, HostCapabilities, HypervisorStatus } from "../types";
 
 interface CapabilityPanelProps {
   capabilities: HostCapabilities;
   hypervisor: HypervisorStatus;
+  guestImage: GuestImageStatus;
 }
 
 function hypervisorHeadline(status: HypervisorStatus): { value: string; empty: boolean } {
@@ -27,8 +28,30 @@ function hypervisorHeadline(status: HypervisorStatus): { value: string; empty: b
   }
 }
 
-export function CapabilityPanel({ capabilities, hypervisor }: CapabilityPanelProps) {
+function guestImageHeadline(status: GuestImageStatus): { value: string; empty: boolean } {
+  switch (status.action) {
+    case "skippedPresent":
+    case "fetched":
+      return {
+        value: status.labTier ? `${status.labTier} (${status.backend})` : status.backend,
+        empty: false,
+      };
+    case "wouldFetch":
+      return { value: "Would fetch QEMU image", empty: true };
+    case "skippedOs":
+      return { value: "Not fetched", empty: true };
+    case "refused":
+      return { value: "Not offered", empty: true };
+    case "rejected":
+      return { value: "Signature failed", empty: true };
+    case "fetchFailed":
+      return { value: "Fetch failed", empty: true };
+  }
+}
+
+export function CapabilityPanel({ capabilities, hypervisor, guestImage }: CapabilityPanelProps) {
   const headline = hypervisorHeadline(hypervisor);
+  const imageHeadline = guestImageHeadline(guestImage);
 
   return (
     <section className="panel reveal" data-reveal={1}>
@@ -53,6 +76,12 @@ export function CapabilityPanel({ capabilities, hypervisor }: CapabilityPanelPro
           detail={hypervisor.log}
           empty={headline.empty}
         />
+        <HardwareCard
+          title="Guest image"
+          value={imageHeadline.value}
+          detail={guestImage.log}
+          empty={imageHeadline.empty}
+        />
       </div>
       <p className="hint">
         {capabilities.secondDisplayPath
@@ -60,8 +89,8 @@ export function CapabilityPanel({ capabilities, hypervisor }: CapabilityPanelPro
           : "No second display path was detected. Pro hosting needs an iGPU or another GPU so you can keep using this PC."}
       </p>
       <p className="hint">
-        The agent locates or fetches the hypervisor for this OS after the probe. It does not boot a
-        guest, and this window does not download anything.
+        The agent locates or fetches the hypervisor and signed guest image for this OS after the
+        probe. It does not boot a guest, and this window does not download anything.
       </p>
     </section>
   );

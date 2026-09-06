@@ -4,11 +4,13 @@ import {
   isTauriRuntime,
   previewCapabilities,
   previewConfig,
+  previewGuestImage,
   previewHardware,
   previewHypervisor,
 } from "./preview";
 import type {
   AgentStatus,
+  GuestImageStatus,
   HardwareSnapshot,
   HostCapabilities,
   HostRegistration,
@@ -62,6 +64,14 @@ export function getHypervisorStatus(): Promise<HypervisorStatus> {
   }
 
   return invoke<HypervisorStatus>("get_hypervisor_status");
+}
+
+export function getGuestImageStatus(): Promise<GuestImageStatus> {
+  if (IS_PREVIEW) {
+    return Promise.resolve(previewGuestImage);
+  }
+
+  return invoke<GuestImageStatus>("get_guest_image_status");
 }
 
 export function loadSharingConfig(): Promise<SharingConfig> {

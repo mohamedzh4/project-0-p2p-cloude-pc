@@ -42,7 +42,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 19: pytest 161, cargo test 159, vitest 31.
+  Counts after phase 20: pytest 161, cargo test 176, vitest 31.
 
 ## Contracts to keep stable
 
@@ -485,6 +485,18 @@ or Matchmaker runtime. Do not close hardware gates. Do not boot the image.
 
 **Exit:** Tests cover fetch + verify success/mismatch; existing image fixture
 tests stay green.
+
+Done as a **software contract** (2026-09-06). Linux Standard fetches the signed
+Firecracker guest image into a user cache (`HOST_AGENT_IMAGE_CACHE` or
+`~/.cache/dcl-host-agent/images`) and verifies SHA-256 + Ed25519 against
+Matchmaker `IMAGE_*` metadata **before** the file is treated as ready.
+Mismatch fails fast and does not leave a ready disk. Linux Pro (when offered)
+fetches the Pro image the same way. Windows Standard logs **would fetch** a
+QEMU disk (not Firecracker). macOS skips with a logged reason. Tests inject a
+fetcher, `file://`, or loopback httptest; non-loopback HTTP is refused under
+`cfg(test)` unless `HOST_AGENT_IMAGE_NETWORK=1`. No private key in the agent.
+The webview does not fetch. GATE-* stay OPEN. See
+`docs/phase-logs/phase-20-guest-image-fetch.md`.
 
 ### Phase 21 — Generate launch config from sliders + GPU id
 

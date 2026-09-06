@@ -86,7 +86,7 @@ host-agent/
     │   ├── storage.rs        Guest rclone argv/plan from locators or env (no S3 secrets, no spawn)
     │   ├── agent_status.rs   paused / idle / in-session (no Tauri types)
     │   ├── provision.rs      OS-conditional stub backends (peers; no hypervisor)
-    │   ├── image.rs          SHA-256 + Ed25519 verify (public key from env)
+    │   ├── image.rs          SHA-256 + Ed25519 verify; locate/fetch signed guest image (never boot)
     │   ├── provision_http.rs POST /v1/provision → verify image → plan + optional guestRclone (Bearer)
     │   ├── tray.rs           system tray in Rust (no webview tray APIs)
     │   ├── commands.rs       the command surface exposed to the UI
@@ -122,6 +122,11 @@ Copy `.env.example` to `.env` on the host machine (never commit `.env`):
 | `HOST_AGENT_URL` | no | Origin advertised as `agentUrl`. Defaults to `http://$HOST_AGENT_LISTEN_ADDR` when listening. |
 | `IMAGE_SIGNING_PUBLIC_KEY` | when listening | 32-byte Ed25519 public key (64 hex chars). No private key on the agent. |
 | `IMAGE_LOCAL_DIGEST` | when listening | SHA-256 hex of the standby image (or the Standard fixture for local stub). |
+| `IMAGE_STANDARD_DIGEST` / `IMAGE_STANDARD_SIGNATURE` | Linux fetch | Same Matchmaker `IMAGE_*` checksum metadata (`GET /v1/images/standard`). Required to fetch+verify on Linux when Standard is offered. |
+| `IMAGE_PRO_DIGEST` / `IMAGE_PRO_SIGNATURE` | Linux Pro fetch | Same Matchmaker `IMAGE_*` metadata when Pro is offered. |
+| `HOST_AGENT_IMAGE_CACHE` | no | User-writable dir for guest images. Default `~/.cache/dcl-host-agent/images` (Linux), `~/Library/Caches/dcl-host-agent/images` (macOS), `%LOCALAPPDATA%\dcl-host-agent\images` (Windows). |
+| `HOST_AGENT_STANDARD_IMAGE_URL` / `HOST_AGENT_PRO_IMAGE_URL` | Linux fetch | Bytes URL for the signed image. Not a secret. Matchmaker does not host blobs. |
+| `HOST_AGENT_IMAGE_NETWORK` | tests only | `1` allows non-loopback HTTP during `cargo test`. Leave unset in CI. |
 | `HEADSCALE_LOGIN_SERVER` | to join mesh | Headscale origin for `tailscale up --login-server`. Fail fast if join is attempted without it. Omit to skip join after register. |
 | `TAILSCALE_BIN` | no | Defaults to `tailscale` on PATH. |
 | `HOST_AGENT_HYPERVISOR_CACHE` | no | User-writable dir for Firecracker. Default `~/.cache/dcl-host-agent/hypervisors` (Linux), `~/Library/Caches/dcl-host-agent/hypervisors` (macOS), `%LOCALAPPDATA%\dcl-host-agent\hypervisors` (Windows). |
@@ -264,13 +269,17 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 19 hypervisor fetch is in: Linux Firecracker to a user cache with
-  SHA-256 (never executed). Windows records would-fetch QEMU (**19b**). macOS
-  skips. Capability probe still never asks which backend. Session guest/user
-  tags live on Matchmaker JSON; this agent still joins as `tag:host` and never
-  passes `--advertise-exit-node` or `--exit-node`. Complete provision locators
-  return `guestRclone` argv (`--s3-env-auth`); `GuestRcloneMount::from_locators`
-  / `from_env` never spawn rclone and never take S3 keys. GATE-FC / GATE-WHPX /
+- Phase 20 guest image fetch is in: Linux Standard fetches the signed Firecracker
+  guest image into a user cache and verifies SHA-256 + Ed25519 **before** it is
+  ready. Linux Pro (when offered) fetches the Pro image the same way. Windows
+  records would-fetch QEMU disk (not Firecracker). macOS skips with a reason.
+  Tests inject a fetcher / `file://` / httptest — no multi-GB download. The
+  webview does not fetch. Hypervisor binary fetch (phase 19) is unchanged.
+  Capability probe still never asks which backend. Session guest/user tags live
+  on Matchmaker JSON; this agent still joins as `tag:host` and never passes
+  `--advertise-exit-node` or `--exit-node`. Complete provision locators return
+  `guestRclone` argv (`--s3-env-auth`); `GuestRcloneMount::from_locators` /
+  `from_env` never spawn rclone and never take S3 keys. GATE-FC / GATE-WHPX /
   GATE-PRO are **OPEN — pending real-hardware verification** (2026-09-05
   operator PASS later retracted) — still no live hypervisor or stream in this
   repo. Storage is renterd S3, not Storj. Guest `--exit-node` is a Matchmaker
@@ -280,7 +289,7 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   Matchmaker interrupts a session (no teardown port). Real host payouts are
   not in this agent; the ledger only accrues credits. This agent never reads
   `HEADSCALE_API_KEY` or renterd S3 secrets. Do not fake latency. Next
-  numbered phase is **20** (guest image fetch/verify).
+  numbered phase is **21** (launch config from sliders + GPU id).
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   getAgentStatus,
   getConfigFilePath,
+  getGuestImageStatus,
   getHardwareInfo,
   getHostCapabilities,
   getHypervisorStatus,
@@ -22,6 +23,7 @@ import { BYTES_PER_GIB, formatCores, formatGib, formatGpuLabel } from "./format"
 import {
   presenceLabel,
   type AgentStatus,
+  type GuestImageStatus,
   type HardwareSnapshot,
   type HostCapabilities,
   type HostRegistration,
@@ -35,6 +37,7 @@ export default function App() {
   const [hardware, setHardware] = useState<HardwareSnapshot | null>(null);
   const [capabilities, setCapabilities] = useState<HostCapabilities | null>(null);
   const [hypervisor, setHypervisor] = useState<HypervisorStatus | null>(null);
+  const [guestImage, setGuestImage] = useState<GuestImageStatus | null>(null);
   const [config, setConfig] = useState<SharingConfig | null>(null);
   const [savedConfig, setSavedConfig] = useState<SharingConfig | null>(null);
   const [configPath, setConfigPath] = useState("");
@@ -51,12 +54,13 @@ export default function App() {
       getHardwareInfo(),
       getHostCapabilities(),
       getHypervisorStatus(),
+      getGuestImageStatus(),
       loadSharingConfig(),
       getConfigFilePath(),
       loadHostRegistration(),
       getAgentStatus(),
     ])
-      .then(([detected, hostCapabilities, hypervisorStatus, stored, path, storedRegistration, agentStatus]) => {
+      .then(([detected, hostCapabilities, hypervisorStatus, guestImageStatus, stored, path, storedRegistration, agentStatus]) => {
         if (!active) {
           return;
         }
@@ -64,6 +68,7 @@ export default function App() {
         setHardware(detected);
         setCapabilities(hostCapabilities);
         setHypervisor(hypervisorStatus);
+        setGuestImage(guestImageStatus);
         setConfig(stored);
         setSavedConfig(stored);
         setConfigPath(path);
@@ -196,7 +201,7 @@ export default function App() {
     );
   }
 
-  if (!hardware || !config || !capabilities || !hypervisor) {
+  if (!hardware || !config || !capabilities || !hypervisor || !guestImage) {
     return (
       <main className="app">
         <div className="panel">
@@ -310,7 +315,7 @@ export default function App() {
         </div>
       </section>
 
-      <CapabilityPanel capabilities={capabilities} hypervisor={hypervisor} />
+      <CapabilityPanel capabilities={capabilities} hypervisor={hypervisor} guestImage={guestImage} />
 
       <section className="panel reveal" data-reveal={2}>
         <h2>What you share</h2>

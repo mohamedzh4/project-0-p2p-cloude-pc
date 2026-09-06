@@ -8,7 +8,7 @@
  */
 
 import { BYTES_PER_GIB } from "./format";
-import type { HardwareSnapshot, HostCapabilities, HypervisorStatus, SharingConfig } from "./types";
+import type { HardwareSnapshot, HostCapabilities, HypervisorStatus, GuestImageStatus, SharingConfig } from "./types";
 
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -66,6 +66,17 @@ export const previewHypervisor: HypervisorStatus = {
   path: "/home/host/.cache/dcl-host-agent/hypervisors/firecracker/v1.16.1/firecracker",
   log: "skipped because present; firecracker v1.16.1 at /home/host/.cache/dcl-host-agent/hypervisors/firecracker/v1.16.1/firecracker (sha256 fixture)",
   hypervisorInvoked: false,
+};
+
+/** Sample Linux host that already has the signed Standard image (no live fetch). */
+export const previewGuestImage: GuestImageStatus = {
+  action: "skippedPresent",
+  labTier: "standard",
+  backend: "firecracker",
+  path: "/home/host/.cache/dcl-host-agent/images/standard/rootfs.img",
+  digest: "6ed707af13eb04a928001996ae5fc7a49ab405e73534caacf86ad65c51bab8fe",
+  log: "skipped because present; standard Firecracker guest image at /home/host/.cache/dcl-host-agent/images/standard/rootfs.img (sha256 6ed707af13eb04a928001996ae5fc7a49ab405e73534caacf86ad65c51bab8fe)",
+  imageBooted: false,
 };
 
 export const previewConfig: SharingConfig = {
