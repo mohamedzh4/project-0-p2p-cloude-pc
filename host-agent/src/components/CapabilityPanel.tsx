@@ -1,5 +1,6 @@
 import { HardwareCard } from "./HardwareCard";
 import type {
+  EligibilityReport,
   GpuBindStatus,
   GuestImageStatus,
   HostCapabilities,
@@ -16,6 +17,7 @@ interface CapabilityPanelProps {
   proLaunch: LaunchConfig | null;
   proLaunchError: string | null;
   gpuBind: GpuBindStatus | null;
+  offers: EligibilityReport | null;
 }
 
 function hypervisorHeadline(status: HypervisorStatus): { value: string; empty: boolean } {
@@ -117,29 +119,33 @@ export function CapabilityPanel({
   proLaunch,
   proLaunchError,
   gpuBind,
+  offers,
 }: CapabilityPanelProps) {
   const headline = hypervisorHeadline(hypervisor);
   const imageHeadline = guestImageHeadline(guestImage);
   const standard = launchHeadline(standardLaunch, standardLaunchError);
   const pro = launchHeadline(proLaunch, proLaunchError);
   const bind = gpuBindHeadline(gpuBind);
+  const standardOffer = offers?.standard ?? capabilities.standard;
+  const proOffer = offers?.pro ?? capabilities.pro;
+  const summary = offers?.summary ?? capabilities.summary;
 
   return (
     <section className="panel reveal" data-reveal={1}>
       <h2>What this PC can host</h2>
-      <p className="capability-summary">{capabilities.summary}</p>
+      <p className="capability-summary">{summary}</p>
       <div className="cards">
         <HardwareCard
           title="Standard sessions"
-          value={capabilities.standard.offered ? "Available" : "Not available"}
-          detail={capabilities.standard.reason}
-          empty={!capabilities.standard.offered}
+          value={standardOffer.offered ? "Available" : "Not available"}
+          detail={standardOffer.reason}
+          empty={!standardOffer.offered}
         />
         <HardwareCard
           title="Pro sessions"
-          value={capabilities.pro.offered ? "Available" : "Not available"}
-          detail={capabilities.pro.reason}
-          empty={!capabilities.pro.offered}
+          value={proOffer.offered ? "Available" : "Not available"}
+          detail={proOffer.reason}
+          empty={!proOffer.offered}
         />
         <HardwareCard
           title="Hypervisor binary"
@@ -177,11 +183,24 @@ export function CapabilityPanel({
           ? "A second display path was detected (iGPU or more than one GPU), so this PC can keep a screen while a guest uses a dedicated GPU."
           : "No second display path was detected. Pro hosting needs an iGPU or another GPU so you can keep using this PC."}
       </p>
+      {proOffer.offered ? (
+        <p className="hint gpu-warning">
+          When Pro is offered, the dedicated GPU is exclusive for the session — not a concurrent
+          slice like CPU or RAM. This PC cannot use that card while a guest is connected.
+        </p>
+      ) : null}
+      {!standardOffer.offered || !proOffer.offered ? (
+        <p className="hint">
+          A blocked tier is not offered. This agent will not start a session for it, and it will not
+          leave a half-built guest.
+        </p>
+      ) : null}
       <p className="hint">
         The agent locates or fetches the hypervisor and signed guest image for this OS after the
         probe, then maps your CPU/RAM sliders (and a dedicated GPU, when you opt in) into a launch
         document and a VFIO / DDA plan. It computes PCI addresses itself — you do not run lspci.
-        It does not boot a guest or bind a live GPU from this window.
+        It does not boot a guest or bind a live GPU from this window. Standard needs at least 2 vCPU,
+        4 GiB RAM, and 50 GiB spare disk.
       </p>
     </section>
   );

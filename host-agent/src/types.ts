@@ -51,6 +51,12 @@ export interface HostCapabilities {
   summary: string;
 }
 
+export interface EligibilityReport {
+  standard: LabOffer;
+  pro: LabOffer;
+  summary: string;
+}
+
 export type HypervisorAction =
   | "skippedPresent"
   | "fetched"

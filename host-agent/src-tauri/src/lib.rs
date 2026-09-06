@@ -7,6 +7,8 @@
 mod agent_status;
 mod commands;
 mod config;
+mod disk_space;
+mod eligibility;
 mod gpu;
 mod gpu_bind;
 mod hardware;
@@ -26,6 +28,7 @@ mod tray;
 #[cfg(test)]
 mod test_support;
 
+pub use eligibility::{EligibilityReport, MIN_DISK_BYTES};
 pub use gpu_bind::GpuBindStatus;
 pub use host_capabilities::{evaluate as evaluate_host_capabilities, probe_live, HostCapabilities};
 pub use hypervisor::HypervisorStatus;
@@ -106,16 +109,30 @@ fn tick_heartbeat(
 }
 
 fn spawn_provision_listener(app: &tauri::App) {
-    let occupancy = app.state::<AgentState>().occupancy.clone();
+    let state = app.state::<AgentState>();
+    let occupancy = state.occupancy.clone();
+    let capabilities = state.capabilities.clone();
+    let hardware = state.hardware.clone();
     match provision_http::listen_config_from_env(|key| std::env::var(key).ok()) {
         Ok(None) => {}
         Ok(Some(config)) => {
             std::thread::Builder::new()
                 .name("host-agent-provision".into())
                 .spawn(move || {
-                    if let Err(error) =
-                        provision_http::serve(&config, HostOs::current(), occupancy.as_ref())
-                    {
+                    let cache =
+                        crate::image::resolve_image_cache_dir(|key| std::env::var(key).ok());
+                    let gate = provision_http::ProvisionGate {
+                        capabilities,
+                        hardware,
+                        sharing: None,
+                        spare_disk_bytes: crate::disk_space::available_bytes(&cache),
+                    };
+                    if let Err(error) = provision_http::serve(
+                        &config,
+                        HostOs::current(),
+                        occupancy.as_ref(),
+                        Some(gate),
+                    ) {
                         eprintln!("host-agent provision listener: {error}");
                     }
                 })
@@ -178,6 +195,7 @@ pub fn run() {
             commands::get_guest_image_status,
             commands::build_launch_config,
             commands::plan_gpu_bind,
+            commands::evaluate_hosting_offers,
             commands::load_sharing_config,
             commands::save_sharing_config,
             commands::get_config_file_path,

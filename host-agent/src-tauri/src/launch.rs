@@ -4,22 +4,26 @@
 //! already chosen in [`crate::provision`]. Kernel and rootfs paths come from
 //! the phase-20 image cache when those files exist. This module never invokes
 //! a hypervisor. Tests assert JSON fields, not a running VM.
+//!
+//! Phase 23: when a capability probe is supplied, an unoffered tier (missing
+//! KVM/WHPX, no Pro display path, or CPU/RAM/disk below the documented floor)
+//! returns a plain-language error and does not emit a config.
 
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::eligibility::{self, format_bytes_plain, EligibilityRequest};
+use crate::host_capabilities::HostCapabilities;
 use crate::image::{cached_kernel_path, cached_rootfs_path, GuestImageStatus};
-use crate::models::{HardwareSnapshot, SharingConfig, BYTES_PER_GIB};
+use crate::models::{HardwareSnapshot, SharingConfig};
 use crate::provision::{
     plan, ComputeBackend, HostOs, LabTier, ProvisionError, ProvisionRequest, StubProvisioner,
 };
 
-/// Official Kasm single-server minimum, documented in `docs/runbooks/gate-fc.md`.
-/// Phase 23 owns the full rejection UX; this slice only refuses to emit a config.
-pub const MIN_VCPU: u32 = 2;
-pub const MIN_MEMORY_BYTES: u64 = 4 * BYTES_PER_GIB;
+pub use crate::eligibility::{MIN_DISK_BYTES, MIN_MEMORY_BYTES, MIN_VCPU};
+
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +34,9 @@ pub struct LaunchRequest<'a> {
     pub sharing: &'a SharingConfig,
     pub image_cache_dir: Option<&'a Path>,
     pub guest_image: Option<&'a GuestImageStatus>,
+    /// When set, an unoffered tier (probe or resources) does not emit a config.
+    pub capabilities: Option<&'a HostCapabilities>,
+    pub spare_disk_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -69,6 +76,10 @@ pub enum LaunchError {
         "a Pro session needs you to dedicate a GPU (shareGpu); that GPU is exclusive for the session, not a concurrent slice"
     )]
     GpuNotDedicated,
+    #[error("{0}")]
+    TierNotOffered(String),
+    #[error("this PC has {requested} of spare disk, but a session needs at least {minimum}")]
+    InsufficientDisk { requested: String, minimum: String },
 }
 
 fn serialize_backend<S: serde::Serializer>(
@@ -87,6 +98,20 @@ fn serialize_lab_tier<S: serde::Serializer>(
 
 /// Build a launch document for the selected stub backend. Never starts a VM.
 pub fn build(request: LaunchRequest<'_>) -> Result<LaunchConfig, LaunchError> {
+    if let Some(capabilities) = request.capabilities {
+        let report = eligibility::evaluate(EligibilityRequest {
+            capabilities,
+            hardware: request.hardware,
+            sharing: request.sharing,
+            spare_disk_bytes: request.spare_disk_bytes,
+            gpu_bind: None,
+        });
+        let offer = eligibility::offer_for_tier(&report, request.lab_tier);
+        if !offer.offered {
+            return Err(LaunchError::TierNotOffered(offer.reason.clone()));
+        }
+    }
+
     StubProvisioner::select(request.os, request.lab_tier)?;
     let clamped = request.sharing.clamped_to(request.hardware);
 
@@ -101,6 +126,14 @@ pub fn build(request: LaunchRequest<'_>) -> Result<LaunchConfig, LaunchError> {
             requested: format_bytes_plain(clamped.shared_memory_bytes),
             minimum: format_bytes_plain(MIN_MEMORY_BYTES),
         });
+    }
+    if let Some(disk) = request.spare_disk_bytes {
+        if disk < MIN_DISK_BYTES {
+            return Err(LaunchError::InsufficientDisk {
+                requested: format_bytes_plain(disk),
+                minimum: format_bytes_plain(MIN_DISK_BYTES),
+            });
+        }
     }
 
     let provision_request = match request.lab_tier {
@@ -148,14 +181,6 @@ pub fn build(request: LaunchRequest<'_>) -> Result<LaunchConfig, LaunchError> {
     })
 }
 
-fn format_bytes_plain(bytes: u64) -> String {
-    if bytes >= BYTES_PER_GIB && bytes % BYTES_PER_GIB == 0 {
-        format!("{} GiB", bytes / BYTES_PER_GIB)
-    } else {
-        format!("{} MiB", bytes / BYTES_PER_MIB)
-    }
-}
-
 fn resolve_rootfs(
     lab_tier: LabTier,
     cache_dir: Option<&Path>,
@@ -191,8 +216,11 @@ fn existing_file(path: Option<PathBuf>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_capabilities::{
+        evaluate as evaluate_probe, EvaluateInput, IommuStatus, KvmAccess, WhpxCapability,
+    };
     use crate::image::{ImageBackend, ImageEnsureAction};
-    use crate::models::{GpuInfo, CONFIG_VERSION};
+    use crate::models::{GpuInfo, BYTES_PER_GIB, CONFIG_VERSION};
     use crate::test_support::{nvidia_gpu, nvidia_gpu_with, snapshot};
     use std::fs;
     use tempfile::TempDir;
@@ -236,6 +264,8 @@ mod tests {
             sharing,
             image_cache_dir: None,
             guest_image: None,
+            capabilities: None,
+            spare_disk_bytes: None,
         }
     }
 
@@ -502,6 +532,8 @@ mod tests {
             sharing: &sharing,
             image_cache_dir: None,
             guest_image: Some(&guest),
+            capabilities: None,
+            spare_disk_bytes: None,
         })
         .unwrap();
         let json = serde_json::to_value(&config).unwrap();
@@ -529,6 +561,8 @@ mod tests {
             sharing: &sharing,
             image_cache_dir: None,
             guest_image: Some(&guest),
+            capabilities: None,
+            spare_disk_bytes: None,
         })
         .unwrap();
 
@@ -553,6 +587,8 @@ mod tests {
             sharing: &sharing,
             image_cache_dir: Some(cache.path()),
             guest_image: None,
+            capabilities: None,
+            spare_disk_bytes: None,
         })
         .unwrap();
         let json = serde_json::to_value(&config).unwrap();
@@ -602,5 +638,138 @@ mod tests {
         assert!(!win_std.hypervisor_invoked);
         assert!(!linux_pro.hypervisor_invoked);
         assert!(!win_pro.hypervisor_invoked);
+    }
+
+    fn linux_kvm_caps() -> HostCapabilities {
+        evaluate_probe(EvaluateInput {
+            os: HostOs::Linux,
+            kvm: KvmAccess::PresentReadWrite,
+            whpx: WhpxCapability::NotApplicable,
+            iommu: IommuStatus::Present,
+            gpus: &[nvidia_gpu(), second_gpu()],
+        })
+    }
+
+    fn linux_no_kvm_caps() -> HostCapabilities {
+        evaluate_probe(EvaluateInput {
+            os: HostOs::Linux,
+            kvm: KvmAccess::Missing,
+            whpx: WhpxCapability::NotApplicable,
+            iommu: IommuStatus::Absent,
+            gpus: &[nvidia_gpu(), second_gpu()],
+        })
+    }
+
+    #[test]
+    fn probe_without_kvm_does_not_emit_a_config() {
+        let hardware = hardware();
+        let sharing = sharing(4, 8 * BYTES_PER_GIB, false, None);
+        let caps = linux_no_kvm_caps();
+        let error = build(LaunchRequest {
+            os: HostOs::Linux,
+            lab_tier: LabTier::Standard,
+            hardware: &hardware,
+            sharing: &sharing,
+            image_cache_dir: None,
+            guest_image: None,
+            capabilities: Some(&caps),
+            spare_disk_bytes: Some(64 * BYTES_PER_GIB),
+        })
+        .unwrap_err();
+
+        match error {
+            LaunchError::TierNotOffered(reason) => {
+                assert!(reason.contains("hardware virtualization"));
+            }
+            other => panic!("expected TierNotOffered, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn insufficient_resources_with_probe_is_a_clean_rejection() {
+        let hardware = hardware();
+        let sharing = sharing(1, 8 * BYTES_PER_GIB, false, None);
+        let caps = linux_kvm_caps();
+        let error = build(LaunchRequest {
+            os: HostOs::Linux,
+            lab_tier: LabTier::Standard,
+            hardware: &hardware,
+            sharing: &sharing,
+            image_cache_dir: None,
+            guest_image: None,
+            capabilities: Some(&caps),
+            spare_disk_bytes: Some(64 * BYTES_PER_GIB),
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "this PC would lend 1 vCPU, but a session needs at least 2 vCPU"
+        );
+        match error {
+            LaunchError::TierNotOffered(_) => {}
+            other => panic!("expected TierNotOffered so the UI can hide the tier, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn insufficient_disk_does_not_emit_a_config() {
+        let hardware = hardware();
+        let sharing = sharing(4, 8 * BYTES_PER_GIB, false, None);
+        let error = build(LaunchRequest {
+            os: HostOs::Linux,
+            lab_tier: LabTier::Standard,
+            hardware: &hardware,
+            sharing: &sharing,
+            image_cache_dir: None,
+            guest_image: None,
+            capabilities: None,
+            spare_disk_bytes: Some(10 * BYTES_PER_GIB),
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            LaunchError::InsufficientDisk {
+                requested: "10 GiB".to_string(),
+                minimum: "50 GiB".to_string(),
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "this PC has 10 GiB of spare disk, but a session needs at least 50 GiB"
+        );
+    }
+
+    #[test]
+    fn macos_probe_reason_is_used_when_capabilities_are_supplied() {
+        let hardware = hardware();
+        let sharing = sharing(4, 8 * BYTES_PER_GIB, false, None);
+        let caps = evaluate_probe(EvaluateInput {
+            os: HostOs::MacOs,
+            kvm: KvmAccess::NotApplicable,
+            whpx: WhpxCapability::NotApplicable,
+            iommu: IommuStatus::Unknown,
+            gpus: &[],
+        });
+        let error = build(LaunchRequest {
+            os: HostOs::MacOs,
+            lab_tier: LabTier::Standard,
+            hardware: &hardware,
+            sharing: &sharing,
+            image_cache_dir: None,
+            guest_image: None,
+            capabilities: Some(&caps),
+            spare_disk_bytes: None,
+        })
+        .unwrap_err();
+
+        match error {
+            LaunchError::TierNotOffered(reason) => {
+                assert!(reason.contains("Mac"));
+                assert!(!reason.contains("Firecracker"));
+            }
+            other => panic!("expected TierNotOffered, got {other:?}"),
+        }
     }
 }

@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::agent_status::AgentStatus;
 use crate::config;
+use crate::eligibility::{self, EligibilityReport, EligibilityRequest};
 use crate::gpu_bind::{self, GpuBindStatus, PciSysfs, SysfsBindOps};
 use crate::host_capabilities::HostCapabilities;
 use crate::hypervisor::HypervisorStatus;
@@ -49,6 +50,7 @@ pub fn build_launch_config(
 ) -> Result<LaunchConfig, String> {
     let lab_tier = LabTier::parse(&lab_tier).map_err(|error| error.to_string())?;
     let cache = crate::image::resolve_image_cache_dir(|key| std::env::var(key).ok());
+    let spare_disk_bytes = crate::disk_space::available_bytes(&cache);
     launch::build(launch::LaunchRequest {
         os: HostOs::current(),
         lab_tier,
@@ -56,8 +58,39 @@ pub fn build_launch_config(
         sharing: &config,
         image_cache_dir: Some(cache.as_path()),
         guest_image: Some(&state.guest_image),
+        capabilities: Some(&state.capabilities),
+        spare_disk_bytes,
     })
     .map_err(|error| error.to_string())
+}
+
+/// Combined Standard/Pro offer from the probe, sliders, spare disk, and VFIO
+/// plan. A blocked tier is not offered. Never boots.
+#[tauri::command]
+pub fn evaluate_hosting_offers(
+    state: State<'_, AgentState>,
+    config: SharingConfig,
+) -> EligibilityReport {
+    let cache = crate::image::resolve_image_cache_dir(|key| std::env::var(key).ok());
+    let spare_disk_bytes = crate::disk_space::available_bytes(&cache);
+    let gpu_bind = gpu_bind::report(
+        gpu_bind::BindRequest {
+            os: HostOs::current(),
+            capabilities: &state.capabilities,
+            share_gpu: config.share_gpu,
+            shared_gpu_id: config.shared_gpu_id.as_deref(),
+            sysfs: &PciSysfs::live(),
+            apply: false,
+        },
+        &SysfsBindOps,
+    );
+    eligibility::evaluate(EligibilityRequest {
+        capabilities: &state.capabilities,
+        hardware: &state.hardware,
+        sharing: &config,
+        spare_disk_bytes,
+        gpu_bind: Some(&gpu_bind),
+    })
 }
 
 /// Plan Pro GPU assignment from the probe + sliders. Never binds live sysfs

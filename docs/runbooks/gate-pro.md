@@ -33,6 +33,35 @@ Sunshine/Moonlight session in this repo. On 2026-09-06 that PASS was
 real-hardware verification**. Do not treat the 2026-09-05 declaration as
 metal evidence. Do not weaken Host Agent GPU exclusivity copy or matching.
 
+## Using Host Agent automation (phases 18–23)
+
+This does **not** close GATE-PRO. Numbered software phases are done. Keep
+this gate **OPEN**. Do not create `docs/phase-logs/gate-pro-result.md` from
+invented output.
+
+On Linux or Windows metal (not this Mac), with a second display path (iGPU
+or another GPU):
+
+1. Run the Host Agent as in `docs/runbooks/gate-fc.md` (Linux) or
+   `docs/runbooks/gate-whpx.md` (Windows).
+2. Dedicate a GPU in **What you share** (exclusive for the session — not a
+   concurrent slice). Leave CPU ≥ 2 and RAM ≥ 4 GiB.
+3. From **What this PC can host**, copy:
+   - the summary line
+   - Pro sessions: Available / Not available + the reason
+   - Pro launch config (must show `GPU … exclusive` when offered) or Cannot
+     launch + reason
+   - Pro GPU assignment: Linux **VFIO plan · BDF** (not applied from the
+     window); Windows **Would assign DDA/GPU-P** (live PowerShell is leftover
+     **22b**)
+4. If Pro is **Not available**, stop. Typical reasons: no second display
+   path, no IOMMU on Linux, Standard not offered, too little CPU/RAM/disk.
+   Do not use Firecracker for Pro.
+5. Paste that block into a local note. A human may later put it in
+   `docs/phase-logs/gate-pro-result.md` **only after** Sunshine in the guest
+   and Moonlight on a client actually stream. Host Agent does not bind a live
+   GPU from this window and does not start Sunshine.
+
 ## Pass / fail (read this first)
 
 **PASS** only if all of these are true:

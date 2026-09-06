@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   buildLaunchConfig,
+  evaluateHostingOffers,
   getAgentStatus,
   getConfigFilePath,
   getGuestImageStatus,
@@ -25,6 +26,7 @@ import { BYTES_PER_GIB, formatCores, formatGib, formatGpuLabel } from "./format"
 import {
   presenceLabel,
   type AgentStatus,
+  type EligibilityReport,
   type GuestImageStatus,
   type HardwareSnapshot,
   type HostCapabilities,
@@ -47,6 +49,7 @@ export default function App() {
   const [proLaunch, setProLaunch] = useState<LaunchConfig | null>(null);
   const [proLaunchError, setProLaunchError] = useState<string | null>(null);
   const [gpuBind, setGpuBind] = useState<GpuBindStatus | null>(null);
+  const [offers, setOffers] = useState<EligibilityReport | null>(null);
   const [config, setConfig] = useState<SharingConfig | null>(null);
   const [savedConfig, setSavedConfig] = useState<SharingConfig | null>(null);
   const [configPath, setConfigPath] = useState("");
@@ -106,7 +109,8 @@ export default function App() {
       buildLaunchConfig(config, "standard"),
       buildLaunchConfig(config, "pro"),
       planGpuBind(config),
-    ]).then(([standard, pro, bind]) => {
+      evaluateHostingOffers(config),
+    ]).then(([standard, pro, bind, hosting]) => {
         if (!active) {
           return;
         }
@@ -133,6 +137,10 @@ export default function App() {
           setGpuBind(bind.value);
         } else {
           setGpuBind(null);
+        }
+
+        if (hosting.status === "fulfilled") {
+          setOffers(hosting.value);
         }
       },
     );
@@ -380,6 +388,7 @@ export default function App() {
         proLaunch={proLaunch}
         proLaunchError={proLaunchError}
         gpuBind={gpuBind}
+        offers={offers}
       />
 
       <section className="panel reveal" data-reveal={2}>
@@ -403,7 +412,7 @@ export default function App() {
           min={0}
           max={hardware.cpu.logicalCores}
           value={config.sharedLogicalCores}
-          hint="Leave at least one core for your own work."
+          hint="Leave at least one core for your own work. A session needs at least 2 vCPU — below that, Standard is not offered."
           onChange={(value) => update({ sharedLogicalCores: value })}
         />
 
@@ -415,7 +424,7 @@ export default function App() {
           max={maxMemoryGib}
           value={sharedMemoryGib}
           disabled={maxMemoryGib === 0}
-          hint="Reserved while a session is running, so keep enough for your own applications."
+          hint="Reserved while a session is running, so keep enough for your own applications. A session needs at least 4 GiB — below that, Standard is not offered."
           onChange={(value) => update({ sharedMemoryBytes: value * BYTES_PER_GIB })}
         />
 

@@ -11,6 +11,7 @@ import {
 } from "./preview";
 import type {
   AgentStatus,
+  EligibilityReport,
   GpuBindStatus,
   GuestImageStatus,
   HardwareSnapshot,
@@ -81,10 +82,78 @@ const BYTES_PER_MIB = 1024 * 1024;
 const MIN_VCPU = 2;
 const MIN_MEMORY_BYTES = 4 * BYTES_PER_GIB;
 
+function formatBytesPlain(bytes: number): string {
+  if (bytes >= BYTES_PER_GIB && bytes % BYTES_PER_GIB === 0) {
+    return `${bytes / BYTES_PER_GIB} GiB`;
+  }
+  return `${bytes / BYTES_PER_MIB} MiB`;
+}
+
+function previewResourceReason(config: SharingConfig): string | null {
+  const cores = Math.min(config.sharedLogicalCores, previewHardware.cpu.logicalCores);
+  const memoryBytes = Math.min(config.sharedMemoryBytes, previewHardware.memory.totalBytes);
+  if (cores < MIN_VCPU) {
+    return `this PC would lend ${cores} vCPU, but a session needs at least ${MIN_VCPU} vCPU`;
+  }
+  if (memoryBytes < MIN_MEMORY_BYTES) {
+    return `this PC would lend ${formatBytesPlain(memoryBytes)} of RAM, but a session needs at least 4 GiB`;
+  }
+  return null;
+}
+
+/** Preview-only mirror of `eligibility::evaluate` for the sample Linux host. */
+function previewEvaluateHostingOffers(config: SharingConfig): EligibilityReport {
+  const resource = previewResourceReason(config);
+  if (resource) {
+    return {
+      standard: { offered: false, reason: resource },
+      pro: {
+        offered: false,
+        reason: "Pro sessions are not available until this PC can host Standard sessions.",
+      },
+      summary:
+        "This Linux PC cannot host Standard or Pro sessions with the current CPU, RAM, or disk share.",
+    };
+  }
+
+  const standard = previewCapabilities.standard;
+  let pro = previewCapabilities.pro;
+  if (config.shareGpu) {
+    const bind = previewPlanGpuBind(config);
+    if (bind.action === "refused") {
+      pro = { offered: false, reason: bind.log };
+    }
+  }
+
+  return {
+    standard,
+    pro,
+    summary:
+      standard.offered && pro.offered
+        ? "This Linux PC can host Standard and Pro sessions."
+        : standard.offered
+          ? "This Linux PC can host Standard sessions. Pro is not available."
+          : "This Linux PC cannot host Standard or Pro sessions yet.",
+  };
+}
+
+export function evaluateHostingOffers(config: SharingConfig): Promise<EligibilityReport> {
+  if (IS_PREVIEW) {
+    return Promise.resolve(previewEvaluateHostingOffers(config));
+  }
+
+  return invoke<EligibilityReport>("evaluate_hosting_offers", { config });
+}
+
 /** Preview-only mirror of `launch::build` for the sample Linux host. Rust is the source of truth. */
 function previewBuildLaunchConfig(config: SharingConfig, labTier: string): LaunchConfig {
   const cores = Math.min(config.sharedLogicalCores, previewHardware.cpu.logicalCores);
   const memoryBytes = Math.min(config.sharedMemoryBytes, previewHardware.memory.totalBytes);
+  const offers = previewEvaluateHostingOffers(config);
+  const offer = labTier === "pro" ? offers.pro : offers.standard;
+  if (!offer.offered) {
+    throw new Error(offer.reason);
+  }
   if (cores < MIN_VCPU) {
     throw new Error(`this PC would lend ${cores} vCPU, but a session needs at least ${MIN_VCPU} vCPU`);
   }

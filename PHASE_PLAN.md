@@ -42,7 +42,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 22: pytest 161, cargo test 208, vitest 31.
+  Counts after phase 23: pytest 161, cargo test 231, vitest 31.
 
 ## Contracts to keep stable
 
@@ -570,6 +570,22 @@ Matchmaker occupancy or `HostSelector.select`.
 
 **Exit:** Tests for Mac / Linux-without-KVM / no second display path; pytest
 and vitest unchanged unless a documented contract changes.
+
+Done as a **software contract** (2026-09-06). `eligibility.rs` wires the
+phase-18 probe, the 2 vCPU / 4 GiB / 50 GiB floor, and a refused VFIO/DDA
+plan into one Standard/Pro offer. The window shows **Available** vs **Not
+available** with the reason. A blocked tier is not offered: launch config
+does not emit, and `POST /v1/provision` with the live gate returns 400
+(plain-language `detail`, no stub URL, occupancy unset). GPU exclusivity
+copy stays when Pro *is* offered. Unknown spare disk does not block.
+macOS / Linux-without-KVM / no second display path / below-minimum sliders
+are covered by unit tests. This is the last numbered automation phase.
+Leftover **19b** (Windows QEMU silent install) and **22b** (live Hyper-V
+DDA/GPU-P PowerShell) stay paper. GATE-* stay OPEN. See
+`docs/phase-logs/phase-23-insufficient-resource-ux.md`.
+
+There is no phase 24. Hardware gates remain human metal work using the
+Host Agent automation (runbooks below).
 
 ## Handoff template
 

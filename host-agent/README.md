@@ -2,7 +2,7 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is the Host Agent after execution phase 22 (VFIO/DDA bind with rollback). It does these things and nothing else:
+This is the Host Agent after execution phase 23 (insufficient-resource rejection UX). It does these things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU, and whether Standard/Pro sessions
    can be offered (OS + KVM / Windows hypervisor / IOMMU / second display
@@ -47,6 +47,11 @@ This is the Host Agent after execution phase 22 (VFIO/DDA bind with rollback). I
     would-assign log (no PowerShell). The volunteer does not run `lspci`.
     The window does not bind a live GPU.
 
+13. Combines the capability probe, the 2 vCPU / 4 GiB / 50 GiB floor, and a
+    refused VFIO/DDA plan into one Standard/Pro offer. A blocked tier is not
+    offered (plain-language reason; no launch document; live provision is
+    400). GPU exclusivity copy stays when Pro *is* offered.
+
 There is no real Firecracker or QEMU boot. See
 `../docs/distributed-compute-lab-architecture.md` for where those land.
 
@@ -58,8 +63,9 @@ There is no real Firecracker or QEMU boot. See
 - **React + TypeScript + Vite** for the window contents.
 
 `sysinfo` is asked for the narrowest refresh it supports (no process list, no
-disks, no networks). NVIDIA GPUs are read through `nvml-wrapper`; anything else
-reports "No GPU detected" with a note explaining why.
+networks) when detecting CPU/RAM. NVIDIA GPUs are read through `nvml-wrapper`;
+anything else reports "No GPU detected" with a note explaining why. Spare-disk
+eligibility only asks free space on the image-cache volume — not a disk inventory.
 
 The Content-Security-Policy allows no remote origins. Matchmaker calls belong
 in Rust, not `fetch` from the webview.
@@ -92,6 +98,8 @@ host-agent/
     │   ├── provision.rs      OS-conditional stub backends (peers; no hypervisor)
     │   ├── image.rs          SHA-256 + Ed25519 verify; locate/fetch signed guest image (never boot)
     │   ├── launch.rs         clamped sliders → launch-config JSON (never boot)
+    │   ├── eligibility.rs    probe + CPU/RAM/disk floor + VFIO plan → offered vs blocked
+    │   ├── disk_space.rs     spare bytes on the image-cache volume (not a disk inventory)
     │   ├── gpu_bind.rs       VFIO plan/apply with rollback; Windows DDA/GPU-P log (never PowerShell)
     │   ├── provision_http.rs POST /v1/provision → verify image → plan + optional guestRclone (Bearer)
     │   ├── tray.rs           system tray in Rust (no webview tray APIs)
@@ -275,31 +283,28 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 22 VFIO/DDA bind is in: Linux plans vfio-pci (unbind host driver →
-  bind vfio-pci) from injectable sysfs and applies that plan in tests with
-  rollback. PCI addresses come from sysfs (UUID / BDF), not `lspci`. Missing
-  IOMMU or a second display path refuses before any bind. Windows logs **would
-  assign DDA/GPU-P** and never spawns PowerShell (live assignment is leftover
-  **22b**). Firecracker is never used for Pro. The window shows the plan; it
-  does not bind a live GPU. GPU exclusivity copy is unchanged. Launch config
-  (phase 21), hypervisor fetch (phase 19), and guest-image fetch (phase 20)
-  are unchanged. Capability probe still never asks which backend. Session
-  guest/user tags live on Matchmaker JSON; this agent still joins as
+- Phase 23 insufficient-resource UX is in: the window shows Standard/Pro as
+  **Available** or **Not available** with a reason from the probe, the
+  2 vCPU / 4 GiB / 50 GiB floor, or a refused VFIO/DDA plan. A blocked tier
+  is not offered. Launch config does not emit; live `POST /v1/provision`
+  returns 400 (no stub URL, occupancy unset). GPU exclusivity copy stays
+  when Pro is offered. Capability probe still never asks which backend.
+  Phase 22 VFIO/DDA bind remains plan-only from the window (Linux mock-sysfs
+  apply in tests; Windows would-assign). Firecracker is never used for Pro.
+  Session guest/user tags live on Matchmaker JSON; this agent still joins as
   `tag:host` and never passes `--advertise-exit-node` or `--exit-node`.
-  Complete provision locators return `guestRclone` argv (`--s3-env-auth`);
-  `GuestRcloneMount::from_locators` / `from_env` never spawn rclone and never
-  take S3 keys. GATE-FC / GATE-WHPX / GATE-PRO are **OPEN — pending
-  real-hardware verification** (2026-09-05 operator PASS later retracted) —
-  still no live hypervisor or stream in this repo. Storage is renterd S3, not
-  Storj. Guest `--exit-node` is a Matchmaker join plan, not this binary (see
-  `docs/runbooks/headscale.md`). On macOS, `POST /v1/provision` returns 400
-  (`UnsupportedHostOs`) and launch config generation fails the same way;
+  Complete provision locators return `guestRclone` argv (`--s3-env-auth`).
+  GATE-FC / GATE-WHPX / GATE-PRO are **OPEN — pending real-hardware
+  verification** (2026-09-05 operator PASS later retracted) — still no live
+  hypervisor or stream in this repo. Runbooks tell a human what to paste from
+  this window on Linux/Windows metal. Storage is renterd S3, not Storj. On
+  macOS, `POST /v1/provision` is 400 (not offered / unsupported OS);
   Matchmaker then keeps the seeded locator. Local in-session occupancy is
   still not cleared when Matchmaker interrupts a session (no teardown port).
-  Real host payouts are not in this agent; the ledger only accrues credits.
-  This agent never reads `HEADSCALE_API_KEY` or renterd S3 secrets. Do not
-  fake latency. Next numbered phase is **23** (insufficient-resource
-  rejection UX). Windows QEMU silent install is leftover **19b**.
+  Real host payouts are not in this agent. This agent never reads
+  `HEADSCALE_API_KEY` or renterd S3 secrets. Do not fake latency. There is
+  no numbered phase 24. Windows QEMU silent install is leftover **19b**.
+  Live Hyper-V DDA/GPU-P apply is leftover **22b**.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

@@ -23,6 +23,34 @@ and no live session URL in this repo. On 2026-09-06 that PASS was **retracted
 as unverified**. Current status is **OPEN — pending real-hardware
 verification**. Do not treat the 2026-09-05 declaration as metal evidence.
 
+## Using Host Agent automation (phases 18–23)
+
+This does **not** close GATE-FC. Numbered software phases are done. Keep this
+gate **OPEN**. Do not create `docs/phase-logs/gate-fc-result.md` from invented
+output. `SEED_HOST_KASM_URL` stays `https://example.invalid/kasm`.
+
+On a **Linux x86_64/aarch64** volunteer PC (not this Mac):
+
+1. From this repo: `cd host-agent && npm install && npm run tauri dev` (or run
+   the packaged agent). Copy `host-agent/.env.example` to `.env` if you want
+   Matchmaker registration; the capability panel works without it.
+2. Set CPU cores to **at least 2** and memory to **at least 4 GiB**. A session
+   also needs about **50 GiB** spare disk on the image-cache volume.
+3. From **What this PC can host**, copy:
+   - the summary line
+   - Standard sessions: Available / Not available + the reason
+   - Hypervisor binary log (path / version, or Not offered)
+   - Guest image log
+   - Standard launch config (`N vCPU · N MiB`) or Cannot launch + reason
+4. Paste that block into a local note. Later, a human (not an agent) may put
+   it in `docs/phase-logs/gate-fc-result.md` **only after** a live desktop
+   exists. If Standard is **Not available**, stop — that reason is why this
+   PC cannot host yet (no usable KVM, too little CPU/RAM/disk). Do not boot
+   a guest by hand to work around the agent.
+5. A PASS still needs Firecracker + Kasm **inside the guest** and a live URL
+   that is not `example.invalid` (steps below). Host Agent does not boot a
+   guest.
+
 ## Pass / fail (read this first)
 
 **PASS** only if all of these are true:
