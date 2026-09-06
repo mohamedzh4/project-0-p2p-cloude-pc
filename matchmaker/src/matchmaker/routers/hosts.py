@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy.orm import Session
+
+from matchmaker.config import get_settings
+from matchmaker.db import get_db
+from matchmaker.deps import (
+    get_headscale_client,
+    get_host_provisioner,
+    get_host_selector,
+    require_host_approver,
+    require_host_bootstrap,
+)
+from matchmaker.inventory import (
+    approve_host,
+    apply_declared_caps,
+    host_response,
+    new_pending_host,
+    record_heartbeat,
+)
+from matchmaker.ledger import host_credits_accrued
+from matchmaker.headscale import HeadscaleClient, HeadscaleError
+from matchmaker.matching import HostSelector
+from matchmaker.models import Host
+from matchmaker.provision import HostProvisioner
+from matchmaker.schemas import (
+    HostEarningsResponse,
+    HostInventoryRequest,
+    HostResponse,
+    MeshPreauthResponse,
+)
+from matchmaker.silence import reclaim_stale_sessions
+
+router = APIRouter()
+
+
+@router.post("/hosts", response_model=HostResponse, status_code=status.HTTP_201_CREATED)
+def register_host(
+    payload: HostInventoryRequest,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_host_bootstrap)],
+) -> HostResponse:
+    host = new_pending_host(payload)
+    db.add(host)
+    db.commit()
+    db.refresh(host)
+    return host_response(host)
+
+
+@router.put("/hosts/{host_id}", response_model=HostResponse)
+def update_host(
+    host_id: UUID,
+    payload: HostInventoryRequest,
+    response: Response,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_host_bootstrap)],
+) -> HostResponse:
+    existing = db.get(Host, host_id)
+    if existing is None:
+        host = new_pending_host(payload, host_id=host_id)
+        db.add(host)
+        db.commit()
+        db.refresh(host)
+        response.status_code = status.HTTP_201_CREATED
+        return host_response(host)
+
+    apply_declared_caps(
+        existing,
+        payload,
+        replace_kasm_url="kasm_url" in payload.model_fields_set,
+        replace_agent_url="agent_url" in payload.model_fields_set,
+    )
+    db.commit()
+    db.refresh(existing)
+    response.status_code = status.HTTP_200_OK
+    return host_response(existing)
+
+
+@router.post("/hosts/{host_id}/heartbeat", response_model=HostResponse)
+def heartbeat_host(
+    host_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    selector: Annotated[HostSelector, Depends(get_host_selector)],
+    provisioner: Annotated[HostProvisioner, Depends(get_host_provisioner)],
+    _: Annotated[None, Depends(require_host_bootstrap)],
+    headscale: Annotated[HeadscaleClient, Depends(get_headscale_client)],
+) -> HostResponse:
+    host = record_heartbeat(db, host_id)
+    if host is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Host not found")
+    # Stamp first so a late ping keeps its own session. Then reclaim others.
+    reclaim_stale_sessions(
+        db,
+        selector,
+        provisioner,
+        credits_per_minute=get_settings().credits_per_minute,
+        headscale=headscale,
+    )
+    db.refresh(host)
+    return host_response(host)
+
+
+@router.post("/hosts/{host_id}/approve", response_model=HostResponse)
+def approve_registered_host(
+    host_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_host_approver)],
+) -> HostResponse:
+    host = approve_host(db, host_id)
+    if host is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Host not found")
+    return host_response(host)
+
+
+@router.get("/hosts/{host_id}/earnings", response_model=HostEarningsResponse)
+def host_earnings(
+    host_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_host_bootstrap)],
+) -> HostEarningsResponse:
+    host = db.get(Host, host_id)
+    if host is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Host not found")
+    return HostEarningsResponse(
+        host_id=host.id,
+        credits_accrued=host_credits_accrued(db, host.id),
+    )
+
+
+@router.post("/hosts/{host_id}/mesh/preauth", response_model=MeshPreauthResponse)
+def mint_host_mesh_preauth(
+    host_id: UUID,
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_host_bootstrap)],
+    headscale: Annotated[HeadscaleClient, Depends(get_headscale_client)],
+) -> MeshPreauthResponse:
+    """Mint a Host Agent preauth key via Headscale, tagged `tag:host`.
+
+    Default-deny policy lives in `headscale/acl.hujson`. Guest/user identities
+    are minted on `POST /v1/sessions`, not here. This join never sets
+    `--exit-node` or `--advertise-exit-node`.
+    """
+    host = db.get(Host, host_id)
+    if host is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Host not found")
+    try:
+        grant = headscale.mint_host_preauth()
+    except HeadscaleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Headscale preauth mint failed",
+        ) from exc
+    return MeshPreauthResponse(
+        login_server=grant.login_server,
+        preauth_key=grant.key,
+        user=grant.user,
+        reusable=grant.reusable,
+        ephemeral=grant.ephemeral,
+        expires_at=grant.expires_at,
+    )
