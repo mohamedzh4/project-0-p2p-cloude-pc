@@ -8,7 +8,7 @@
  */
 
 import { BYTES_PER_GIB } from "./format";
-import type { HardwareSnapshot, SharingConfig } from "./types";
+import type { HardwareSnapshot, HostCapabilities, SharingConfig } from "./types";
 
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -36,6 +36,26 @@ export const previewHardware: HardwareSnapshot = {
     },
   ],
   gpuNote: null,
+};
+
+/** Sample dual-GPU Linux host so the capability panel can be designed without metal. */
+export const previewCapabilities: HostCapabilities = {
+  os: "linux",
+  kvm: "presentReadWrite",
+  whpx: "notApplicable",
+  iommu: "present",
+  secondDisplayPath: true,
+  gpuCount: 2,
+  standard: {
+    offered: true,
+    reason: "This PC can host Standard sessions.",
+  },
+  pro: {
+    offered: true,
+    reason:
+      "This PC can host Pro sessions when you dedicate a GPU. That GPU is exclusive for the session — not a concurrent slice like CPU or RAM.",
+  },
+  summary: "This Linux PC can host Standard and Pro sessions.",
 };
 
 export const previewConfig: SharingConfig = {

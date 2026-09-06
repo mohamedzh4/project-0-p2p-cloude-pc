@@ -28,6 +28,29 @@ export interface HardwareSnapshot {
   gpuNote: string | null;
 }
 
+export type CapabilityOs = "linux" | "windows" | "macos" | "other";
+export type KvmAccess = "presentReadWrite" | "presentNotWritable" | "missing" | "notApplicable";
+export type WhpxCapability = "available" | "unavailable" | "unknown" | "notApplicable";
+export type IommuStatus = "present" | "absent" | "unknown" | "notApplicable";
+
+export interface LabOffer {
+  offered: boolean;
+  reason: string;
+}
+
+/** Hosting eligibility. The agent chooses the backend; the UI never asks. */
+export interface HostCapabilities {
+  os: CapabilityOs;
+  kvm: KvmAccess;
+  whpx: WhpxCapability;
+  iommu: IommuStatus;
+  secondDisplayPath: boolean;
+  gpuCount: number;
+  standard: LabOffer;
+  pro: LabOffer;
+  summary: string;
+}
+
 export interface SharingConfig {
   version: number;
   sharingEnabled: boolean;
@@ -36,4 +59,36 @@ export interface SharingConfig {
   shareGpu: boolean;
   /** Which card to dedicate. Null when no supported GPU is present. */
   sharedGpuId: string | null;
+}
+
+/** Last Matchmaker host-inventory response persisted by Rust. */
+export interface HostRegistration {
+  hostId: string;
+  displayName: string;
+  labTier: string;
+  status: string;
+  sharedLogicalCores: number;
+  sharedMemoryBytes: number;
+  shareGpu: boolean;
+  sharedGpuId: string | null;
+}
+
+export type SharingPresence = "paused" | "idle" | "inSession";
+
+export interface AgentStatus {
+  presence: SharingPresence;
+  sharingEnabled: boolean;
+  inSession: boolean;
+  earningsNote: string;
+}
+
+export function presenceLabel(presence: SharingPresence): string {
+  switch (presence) {
+    case "paused":
+      return "Paused";
+    case "idle":
+      return "Idle";
+    case "inSession":
+      return "In session";
+  }
 }

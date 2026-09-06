@@ -14,13 +14,24 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+hostname = "0.4"
+dotenvy = "0.15"
+# Blocking HTTP, rustls, no redirect-following in our AgentBuilder. JSON via serde.
+ureq = { version = "2.12", features = ["json"] }
+tiny_http = "0.12"
 # Only the "system" feature is enabled: disk, network, component and user probing
 # would pull in extra platform APIs the agent never reads.
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+# Image verify (phase 13): SHA-256 digest + Ed25519 over the raw 32-byte digest.
+# The agent holds the public key only. Never a signing secret in this crate.
+sha2 = "0.10"
+ed25519-dalek = "2.2"
+hex = "0.4"
+base64 = "0.22"
 
 # NVML only ships for Windows and Linux, so the GPU probe falls back to
 # "no GPU detected" everywhere else.
