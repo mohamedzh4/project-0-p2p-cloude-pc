@@ -51,6 +51,27 @@ export interface HostCapabilities {
   summary: string;
 }
 
+export type HypervisorAction =
+  | "skippedPresent"
+  | "fetched"
+  | "skippedOs"
+  | "wouldFetch"
+  | "refused"
+  | "checksumMismatch"
+  | "fetchFailed";
+
+export type HypervisorName = "firecracker" | "qemu" | "none";
+
+/** Locate/fetch log for the OS hypervisor binary. Never invoked. */
+export interface HypervisorStatus {
+  action: HypervisorAction;
+  hypervisor: HypervisorName;
+  version: string | null;
+  path: string | null;
+  log: string;
+  hypervisorInvoked: boolean;
+}
+
 export interface SharingConfig {
   version: number;
   sharingEnabled: boolean;

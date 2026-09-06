@@ -2,7 +2,7 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is the Host Agent after execution phase 18 (capability probe). It does these things and nothing else:
+This is the Host Agent after execution phase 19 (hypervisor binary fetch). It does these things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU, and whether Standard/Pro sessions
    can be offered (OS + KVM / Windows hypervisor / IOMMU / second display
@@ -38,8 +38,12 @@ This is the Host Agent after execution phase 18 (capability probe). It does thes
 10. Sits in the system tray (Rust, not the webview): tooltip, pause/resume,
     open window, quit. Closing the window hides to the tray when the icon
     installed.
+11. After the capability probe, locates or fetches the OS hypervisor **binary**
+    into a user cache (Linux Firecracker, documented GitHub URL + SHA-256).
+    Windows logs **would fetch QEMU** (19b). macOS skips with a reason. The
+    binary is never executed. The webview does not download it.
 
-There is no real Firecracker or QEMU. See
+There is no real Firecracker or QEMU boot. See
 `../docs/distributed-compute-lab-architecture.md` for where those land.
 
 ## Stack
@@ -74,6 +78,7 @@ host-agent/
     │   ├── hardware.rs       CPU + RAM detection
     │   ├── gpu.rs            NVIDIA detection with graceful fallback
     │   ├── host_capabilities.rs  OS + KVM/WHPX/IOMMU/GPU probe (no Tauri; no hypervisor)
+    │   ├── hypervisor.rs     locate/fetch Firecracker (Linux) / QEMU stub (Windows); never invoke
     │   ├── config.rs         load/save the sharing config; immediate pause
     │   ├── identity.rs       persisted Matchmaker host id
     │   ├── matchmaker.rs     inventory + heartbeat + earnings GET (clamp, fail-fast env)
@@ -119,6 +124,9 @@ Copy `.env.example` to `.env` on the host machine (never commit `.env`):
 | `IMAGE_LOCAL_DIGEST` | when listening | SHA-256 hex of the standby image (or the Standard fixture for local stub). |
 | `HEADSCALE_LOGIN_SERVER` | to join mesh | Headscale origin for `tailscale up --login-server`. Fail fast if join is attempted without it. Omit to skip join after register. |
 | `TAILSCALE_BIN` | no | Defaults to `tailscale` on PATH. |
+| `HOST_AGENT_HYPERVISOR_CACHE` | no | User-writable dir for Firecracker. Default `~/.cache/dcl-host-agent/hypervisors` (Linux), `~/Library/Caches/dcl-host-agent/hypervisors` (macOS), `%LOCALAPPDATA%\dcl-host-agent\hypervisors` (Windows). |
+| `HOST_AGENT_FIRECRACKER_URL` / `HOST_AGENT_FIRECRACKER_SHA256` | no | Override the documented GitHub tarball + published SHA-256. Not secrets. |
+| `HOST_AGENT_HYPERVISOR_NETWORK` | tests only | `1` allows non-loopback HTTP during `cargo test`. Leave unset in CI. |
 
 The agent fails registration and heartbeats if the URL or bootstrap token is
 missing when it would send. It does not read `HOST_APPROVE_TOKEN`. Operators
@@ -201,6 +209,10 @@ Provision HTTP: Linux/Windows stub URLs, 401 without Bearer, macOS rejected,
 bind round-trip with `hypervisorInvoked` false, occupancy marked only on
 HTTP 200. Image verify: valid signature accepts; tampered bytes reject;
 missing public key / local digest fail fast; HTTP mismatch does not boot.
+Hypervisor fetch: Linux missing → install into cache after SHA-256; present →
+skip; checksum mismatch → fail fast and do not install; macOS skip; Windows
+would-fetch QEMU; tests use an injected fetcher, `file://`, or loopback
+httptest (no GitHub download).
 
 ```bash
 npm run typecheck
@@ -252,23 +264,23 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 18 capability probe is in: OS + KVM / Windows hypervisor / IOMMU /
-  GPU / second display path, surfaced as Standard/Pro offered in the window.
-  Never asks which backend. Session guest/user tags live on Matchmaker JSON;
-  this agent still joins as `tag:host` and never passes `--advertise-exit-node`
-  or `--exit-node`. Complete provision locators return `guestRclone` argv
-  (`--s3-env-auth`); `GuestRcloneMount::from_locators` / `from_env` never
-  spawn rclone and never take S3 keys. GATE-FC / GATE-WHPX / GATE-PRO are
-  **OPEN — pending real-hardware verification** (2026-09-05 operator PASS later
-  retracted) — still no live hypervisor or stream in this repo. Storage is
-  renterd S3, not Storj. Guest `--exit-node`
-  is a Matchmaker join plan, not this binary (see
-  `docs/runbooks/headscale.md`). On macOS, `POST /v1/provision` returns 400
-  (`UnsupportedHostOs`); Matchmaker then keeps the seeded locator. Local
-  in-session occupancy is still not cleared when Matchmaker interrupts a
-  session (no teardown port). Real host payouts are not in this agent; the
-  ledger only accrues credits. This agent never reads `HEADSCALE_API_KEY` or
-  renterd S3 secrets. Do not fake latency.
+- Phase 19 hypervisor fetch is in: Linux Firecracker to a user cache with
+  SHA-256 (never executed). Windows records would-fetch QEMU (**19b**). macOS
+  skips. Capability probe still never asks which backend. Session guest/user
+  tags live on Matchmaker JSON; this agent still joins as `tag:host` and never
+  passes `--advertise-exit-node` or `--exit-node`. Complete provision locators
+  return `guestRclone` argv (`--s3-env-auth`); `GuestRcloneMount::from_locators`
+  / `from_env` never spawn rclone and never take S3 keys. GATE-FC / GATE-WHPX /
+  GATE-PRO are **OPEN — pending real-hardware verification** (2026-09-05
+  operator PASS later retracted) — still no live hypervisor or stream in this
+  repo. Storage is renterd S3, not Storj. Guest `--exit-node` is a Matchmaker
+  join plan, not this binary (see `docs/runbooks/headscale.md`). On macOS,
+  `POST /v1/provision` returns 400 (`UnsupportedHostOs`); Matchmaker then keeps
+  the seeded locator. Local in-session occupancy is still not cleared when
+  Matchmaker interrupts a session (no teardown port). Real host payouts are
+  not in this agent; the ledger only accrues credits. This agent never reads
+  `HEADSCALE_API_KEY` or renterd S3 secrets. Do not fake latency. Next
+  numbered phase is **20** (guest image fetch/verify).
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

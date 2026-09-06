@@ -25,22 +25,23 @@ Everything in this document fits into one of these four planes.
 ## Implemented vs this paper (2026-09-05)
 
 This file is the **target** architecture. Software on local `main` after
-execution phase 18 is the **control-plane MVP with stubs**, plus a Headscale
+execution phase 19 is the **control-plane MVP with stubs**, plus a Headscale
 mint+join contract, a default-deny ACL file, session ephemeral guest/user
 tags, a platform exit-node **guest join plan** (not live egress), a **renterd**
-S3 storage contract (not Storj; human decision 2026-09-05), and Pro
-Sunshine/Moonlight **locators** on session JSON (not a live stream). It is not
-a live lab.
+S3 storage contract (not Storj; human decision 2026-09-05), Pro
+Sunshine/Moonlight **locators** on session JSON (not a live stream), a Host
+Agent capability probe, and hypervisor **binary** locate/fetch (Firecracker
+cache on Linux; QEMU not downloaded — 19b). It is not a live lab.
 
 | Paper | In-repo now |
 | --- | --- |
 | Four planes | Control plane (Matchmaker). Compute is OS-conditional **stubs**. Network plane: Headscale mint+join, default-deny ACL file, host `tag:host`, session `tag:guest`/`tag:user`, guest `--exit-node` plan. Storage: renterd S3 locators + guest rclone argv (not Storj); live mount needs a guest image |
-| Standard: Firecracker (Linux) / QEMU+WHPX (Windows) + Kasm in the guest | `plan_provision` + `POST /v1/provision` return `https://provision.invalid/{backend}`. No hypervisor, no guest image. GATE-FC / GATE-WHPX **OPEN — pending real-hardware verification** (2026-09-05 operator PASS later retracted) |
+| Standard: Firecracker (Linux) / QEMU+WHPX (Windows) + Kasm in the guest | `plan_provision` + `POST /v1/provision` return `https://provision.invalid/{backend}`. Phase 19 locates/fetches the Firecracker **binary** on Linux (SHA-256, user cache, never executed); Windows logs would-fetch QEMU (19b). No boot, no guest image. GATE-FC / GATE-WHPX **OPEN — pending real-hardware verification** (2026-09-05 operator PASS later retracted) |
 | Pro: VFIO / Hyper-V GPU + Sunshine | Stubs require `sharedGpuId` and set `gpuExclusive`. Session JSON `streamer: sunshine` + Moonlight hint. GATE-PRO **OPEN — pending real-hardware verification**; no live stream in-repo |
 | Intent capture, ranking, billing | FR2 harness maps intent → `labTier`; ranking is `RankedHostSelector` (declared CPU/RAM, Pro GPU id); internal `ledger_entries` meter at session end (no payment processor) |
 | Tailscale/Headscale + exit-node egress | Phase 14: self-hosted Headscale compose + Matchmaker preauth mint + Host Agent Rust join. **No Tailscale SaaS.** Phase 14c: default-deny `acl.hujson` + host `tag:host`. Phase 17: ephemeral guest/user tags; guest join plan includes `--exit-node`. Live egress still needs a guest image (§9 items 4–5) |
 | Storj + rclone | **Not used.** Implemented storage is **renterd S3** (human decision 2026-09-05): compose + per-user bucket + guest rclone argv/plan. Live guest mount still needs a guest image |
-| Host Agent tray / mesh / signed images | Tray + pause + presence. Signed image **verify** before stub boot (fixture bytes, no CDN). Host mesh mint+join tagged `tag:host`; session guest/user tags on Matchmaker JSON; Host Agent never `--exit-node` |
+| Host Agent tray / mesh / signed images | Tray + pause + presence. Signed image **verify** before stub boot (fixture bytes, no CDN). Host mesh mint+join tagged `tag:host`; session guest/user tags on Matchmaker JSON; Host Agent never `--exit-node`. Phase 19: Firecracker binary fetch to user cache (not invoked) |
 
 Do not treat a passing pytest/cargo suite as GATE-FC/WHPX/PRO.
 

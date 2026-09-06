@@ -1,11 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import { isTauriRuntime, previewCapabilities, previewConfig, previewHardware } from "./preview";
+import {
+  isTauriRuntime,
+  previewCapabilities,
+  previewConfig,
+  previewHardware,
+  previewHypervisor,
+} from "./preview";
 import type {
   AgentStatus,
   HardwareSnapshot,
   HostCapabilities,
   HostRegistration,
+  HypervisorStatus,
   SharingConfig,
   SharingPresence,
 } from "./types";
@@ -47,6 +54,14 @@ export function getHostCapabilities(): Promise<HostCapabilities> {
   }
 
   return invoke<HostCapabilities>("get_host_capabilities");
+}
+
+export function getHypervisorStatus(): Promise<HypervisorStatus> {
+  if (IS_PREVIEW) {
+    return Promise.resolve(previewHypervisor);
+  }
+
+  return invoke<HypervisorStatus>("get_hypervisor_status");
 }
 
 export function loadSharingConfig(): Promise<SharingConfig> {

@@ -32,6 +32,9 @@ sha2 = "0.10"
 ed25519-dalek = "2.2"
 hex = "0.4"
 base64 = "0.22"
+# Firecracker GitHub releases are gzipped tarballs; tests also build tiny .tgz fixtures.
+flate2 = "1"
+tar = "0.4"
 
 # NVML only ships for Windows and Linux, so the GPU probe falls back to
 # "no GPU detected" everywhere else.

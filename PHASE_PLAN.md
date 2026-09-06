@@ -42,7 +42,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 18: pytest 161, cargo test 143, vitest 31.
+  Counts after phase 19: pytest 161, cargo test 159, vitest 31.
 
 ## Contracts to keep stable
 
@@ -456,6 +456,18 @@ close GATE-FC / GATE-WHPX. Do not change `HostSelector.select` or occupancy
 indexes.
 
 **Exit:** Tests cover fetch/log on injected paths; no real boot; suites green.
+
+Done as a **software contract** (2026-09-06). Linux Standard locates or fetches
+Firecracker into a user cache (`~/.cache/dcl-host-agent/hypervisors` or
+`HOST_AGENT_HYPERVISOR_CACHE`) from a documented GitHub release URL, SHA-256
+verified, never executed. Windows Standard logs **would fetch QEMU** (silent
+install is **19b**). macOS skips with a logged reason. Tests inject a fetcher,
+`file://`, or loopback httptest; non-loopback HTTP is refused under `cfg(test)`
+unless `HOST_AGENT_HYPERVISOR_NETWORK=1`. GATE-* stay OPEN. See
+`docs/phase-logs/phase-19-hypervisor-fetch.md`.
+
+**19b (not this session):** Windows QEMU silent install with checksum. Phase 19
+only records “would fetch QEMU” plus tests.
 
 ### Phase 20 — Guest image fetch/verify (extend `image.rs`)
 

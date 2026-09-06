@@ -5,6 +5,7 @@ import {
   getConfigFilePath,
   getHardwareInfo,
   getHostCapabilities,
+  getHypervisorStatus,
   IS_PREVIEW,
   loadHostRegistration,
   loadSharingConfig,
@@ -24,6 +25,7 @@ import {
   type HardwareSnapshot,
   type HostCapabilities,
   type HostRegistration,
+  type HypervisorStatus,
   type SharingConfig,
 } from "./types";
 
@@ -32,6 +34,7 @@ type SaveState = { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { k
 export default function App() {
   const [hardware, setHardware] = useState<HardwareSnapshot | null>(null);
   const [capabilities, setCapabilities] = useState<HostCapabilities | null>(null);
+  const [hypervisor, setHypervisor] = useState<HypervisorStatus | null>(null);
   const [config, setConfig] = useState<SharingConfig | null>(null);
   const [savedConfig, setSavedConfig] = useState<SharingConfig | null>(null);
   const [configPath, setConfigPath] = useState("");
@@ -47,18 +50,20 @@ export default function App() {
     Promise.all([
       getHardwareInfo(),
       getHostCapabilities(),
+      getHypervisorStatus(),
       loadSharingConfig(),
       getConfigFilePath(),
       loadHostRegistration(),
       getAgentStatus(),
     ])
-      .then(([detected, hostCapabilities, stored, path, storedRegistration, agentStatus]) => {
+      .then(([detected, hostCapabilities, hypervisorStatus, stored, path, storedRegistration, agentStatus]) => {
         if (!active) {
           return;
         }
 
         setHardware(detected);
         setCapabilities(hostCapabilities);
+        setHypervisor(hypervisorStatus);
         setConfig(stored);
         setSavedConfig(stored);
         setConfigPath(path);
@@ -191,7 +196,7 @@ export default function App() {
     );
   }
 
-  if (!hardware || !config || !capabilities) {
+  if (!hardware || !config || !capabilities || !hypervisor) {
     return (
       <main className="app">
         <div className="panel">
@@ -305,7 +310,7 @@ export default function App() {
         </div>
       </section>
 
-      <CapabilityPanel capabilities={capabilities} />
+      <CapabilityPanel capabilities={capabilities} hypervisor={hypervisor} />
 
       <section className="panel reveal" data-reveal={2}>
         <h2>What you share</h2>

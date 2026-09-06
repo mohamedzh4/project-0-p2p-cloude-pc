@@ -8,7 +8,7 @@
  */
 
 import { BYTES_PER_GIB } from "./format";
-import type { HardwareSnapshot, HostCapabilities, SharingConfig } from "./types";
+import type { HardwareSnapshot, HostCapabilities, HypervisorStatus, SharingConfig } from "./types";
 
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -56,6 +56,16 @@ export const previewCapabilities: HostCapabilities = {
       "This PC can host Pro sessions when you dedicate a GPU. That GPU is exclusive for the session — not a concurrent slice like CPU or RAM.",
   },
   summary: "This Linux PC can host Standard and Pro sessions.",
+};
+
+/** Sample Linux host that already has Firecracker in the user cache (no live fetch). */
+export const previewHypervisor: HypervisorStatus = {
+  action: "skippedPresent",
+  hypervisor: "firecracker",
+  version: "v1.16.1",
+  path: "/home/host/.cache/dcl-host-agent/hypervisors/firecracker/v1.16.1/firecracker",
+  log: "skipped because present; firecracker v1.16.1 at /home/host/.cache/dcl-host-agent/hypervisors/firecracker/v1.16.1/firecracker (sha256 fixture)",
+  hypervisorInvoked: false,
 };
 
 export const previewConfig: SharingConfig = {

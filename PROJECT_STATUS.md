@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-06, after phase 18 capability probe
+# Project Status — last updated: 2026-09-06, after phase 19 hypervisor fetch
 
 ## Done
 
@@ -15,7 +15,7 @@
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
   keypairs, guest rclone argv). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–18 on local `main` (not pushed):
+- Execution phases 1–19 on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -35,12 +35,18 @@
     OS and never `tailscale up`s as the guest. When locators are complete it
     returns `guestRclone` argv (`--s3-env-auth`). Pro HTTP 200 adds `streamer:
     sunshine`, stub `sunshineUrl`, and a Moonlight host hint (`gpuExclusive`
-    true). Standard stays `streamer: kasm`. **Phase 18:** `host_capabilities.rs`
+    true).     Standard stays `streamer: kasm`. **Phase 18:** `host_capabilities.rs`
     probes OS, Linux `/dev/kvm` r/w (path-injectable), Windows WHPX/Hyper-V as
     a stub enum on non-Windows, GPU list + second-display heuristic (iGPU or
     2+ GPUs), and Linux IOMMU sysfs (unknown off Linux). The window shows
     Standard/Pro **offered** in plain language and never asks which backend.
-    **143/143** `cargo test --lib` (2026-09-06).
+    **Phase 19:** `hypervisor.rs` locates or fetches Firecracker on Linux
+    Standard (documented GitHub v1.16.1 tarball + published SHA-256) into a
+    user cache; checksum mismatch fails fast and does not install; the binary
+    is never executed. Windows Standard logs **would fetch QEMU** (19b silent
+    install). macOS skips with a logged reason. Tests inject a fetcher /
+    `file://` / loopback httptest (no live GitHub in CI). **159/159**
+    `cargo test --lib` (2026-09-06).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
     `sessions_one_active_per_host` / `sessions_one_active_per_user`;
@@ -87,15 +93,16 @@
 
 ## In Progress
 
-- None. Numbered software phases 1–18 are on local `main`. Hardware gates are
-  **OPEN — pending real-hardware verification**. Next numbered phase is 19
-  (hypervisor binary fetch + log). Do not mark gates closed.
+- None. Numbered software phases 1–19 are on local `main`. Hardware gates are
+  **OPEN — pending real-hardware verification**. Next numbered phase is 20
+  (guest image fetch/verify). Do not mark gates closed. Windows QEMU silent
+  install is leftover **19b**, not a substitute for 20.
 
 ## Up Next
 
-**Phase 19 — Automated hypervisor binary fetch + log** (`PHASE_PLAN.md`).
+**Phase 20 — Guest image fetch/verify** (`PHASE_PLAN.md`).
 Do not invoke Firecracker/QEMU. Do not create `gate-*-result.md`. Do not
-invent live URLs. Leftover paper (not a substitute for 19):
+invent live URLs. Leftover paper (not a substitute for 20):
 
 1. Pairwise mesh ACLs — Headscale 0.26 file policy cannot mint
    `tag:session-<uuid>` owners; every `tag:user` may still reach every
@@ -103,6 +110,7 @@ invent live URLs. Leftover paper (not a substitute for 19):
 2. Live guest Tailscale/rclone — join/mount plans exist; no guest image
    in-repo to execute them. “Saved as of HH:MM” still needs that image.
 3. FR13 latency ranking waits on a measured value — do not fake `latency_ms`.
+4. **19b** Windows QEMU silent install — phase 19 only logs would-fetch.
 
 ## Known Risks / Open Items
 
@@ -116,7 +124,7 @@ invent live URLs. Leftover paper (not a substitute for 19):
   `POST`/`GET /v1/storage`. Phase 16–17 kept the locators-only contract.
   An unused `0007_host_latency_ms` draft from a parallel agent was **not**
   applied.
-- Local `main` is ahead of `origin/main` (planning + phases 1–18). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–19). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
@@ -180,14 +188,16 @@ invent live URLs. Leftover paper (not a substitute for 19):
 
 ## Notes for next agent/session
 
-- Execution **phase 18 is done** (capability probe). Hardware gates stay
-  **OPEN — pending real-hardware verification** — see
+- Execution **phase 19 is done** (hypervisor binary fetch + log). Hardware
+  gates stay **OPEN — pending real-hardware verification** — see
   `docs/phase-logs/phase-gates-operator-pass.md` (historical PASS + retraction)
-  and `docs/phase-logs/phase-18-capability-probe.md`. Next is **phase 19**.
+  and `docs/phase-logs/phase-19-hypervisor-fetch.md`. Next is **phase 20**.
   Read `PHASE_PLAN.md` and this file. Do not start Storj. Do not invent lab
   output, a live Kasm URL, or `latency_ms`. Do not treat renterd compose-up as
   a live desktop. Do not weaken HostSelector, occupancy indexes, GPU
   exclusivity copy, OS-conditional stubs, or CSP. Do not mark gates closed.
+  Do not fetch Firecracker from `cargo test` (injected fetcher / file:// /
+  httptest). Windows QEMU silent install is **19b**.
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.
