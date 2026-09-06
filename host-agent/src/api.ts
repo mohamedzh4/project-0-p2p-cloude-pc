@@ -11,6 +11,7 @@ import {
 } from "./preview";
 import type {
   AgentStatus,
+  GpuBindStatus,
   GuestImageStatus,
   HardwareSnapshot,
   HostCapabilities,
@@ -146,6 +147,73 @@ export function buildLaunchConfig(config: SharingConfig, labTier: string): Promi
   }
 
   return invoke<LaunchConfig>("build_launch_config", { config, labTier });
+}
+
+function previewPlanGpuBind(config: SharingConfig): GpuBindStatus {
+  if (!config.shareGpu || previewHardware.gpus.length === 0) {
+    return {
+      action: "refused",
+      backend: null,
+      gpuId: null,
+      pciAddress: null,
+      previousDriver: null,
+      targetDriver: null,
+      steps: [],
+      bound: false,
+      rolledBack: false,
+      exclusive: false,
+      log: "a Pro GPU bind needs you to dedicate a GPU (shareGpu); that GPU is exclusive for the session, not a concurrent slice",
+      hypervisorInvoked: false,
+    };
+  }
+
+  const id =
+    config.sharedGpuId && previewHardware.gpus.some((gpu) => gpu.id === config.sharedGpuId)
+      ? config.sharedGpuId
+      : previewHardware.gpus[0]?.id;
+  if (!id) {
+    return {
+      action: "refused",
+      backend: null,
+      gpuId: null,
+      pciAddress: null,
+      previousDriver: null,
+      targetDriver: null,
+      steps: [],
+      bound: false,
+      rolledBack: false,
+      exclusive: false,
+      log: "a Pro session needs a dedicated GPU id (sharedGpuId); GPU assignment is exclusive for the session, not a concurrent slice",
+      hypervisorInvoked: false,
+    };
+  }
+
+  const pciAddress = id === "GPU-TEST-3060" ? "0000:02:00.0" : "0000:01:00.0";
+  return {
+    action: "planned",
+    backend: "qemu-vfio",
+    gpuId: id,
+    pciAddress,
+    previousDriver: "nvidia",
+    targetDriver: "vfio-pci",
+    steps: [
+      { action: "unbind", driver: "nvidia", device: pciAddress },
+      { action: "bind", driver: "vfio-pci", device: pciAddress },
+    ],
+    bound: false,
+    rolledBack: false,
+    exclusive: true,
+    log: `plan: unbind GPU ${id} from nvidia then bind vfio-pci at ${pciAddress}. GPU ${id} is assigned exclusively to the guest for this Pro session; the host loses that GPU until the session ends. CPU and RAM remain a concurrent slice. Not applied. Hypervisor not invoked.`,
+    hypervisorInvoked: false,
+  };
+}
+
+export function planGpuBind(config: SharingConfig): Promise<GpuBindStatus> {
+  if (IS_PREVIEW) {
+    return Promise.resolve(previewPlanGpuBind(config));
+  }
+
+  return invoke<GpuBindStatus>("plan_gpu_bind", { config });
 }
 
 export function loadSharingConfig(): Promise<SharingConfig> {

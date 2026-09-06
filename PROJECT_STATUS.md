@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-06, after phase 21 launch config
+# Project Status — last updated: 2026-09-06, after phase 22 VFIO/DDA bind
 
 ## Done
 
@@ -15,7 +15,7 @@
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
   keypairs, guest rclone argv). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–21 on local `main` (not pushed):
+- Execution phases 1–22 on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -60,7 +60,16 @@
     assignment. Pro includes `{ id, exclusive: true }` when `shareGpu` is on.
     Kernel/rootfs paths come from the phase-20 cache when present. Below
     2 vCPU / 4 GiB is a plain-language error (phase 23 owns full UX). macOS
-    is still unsupported. Never invokes a hypervisor. **193/193**
+    is still unsupported. Never invokes a hypervisor. **Phase 22:**
+    `gpu_bind.rs` plans exclusive Pro GPU assignment. Linux is vfio-pci
+    (unbind host driver → bind vfio-pci) with injectable sysfs/driver paths
+    and rollback to the previous driver on apply failure. PCI addresses come
+    from sysfs (not `lspci`). Missing IOMMU or a second display path refuses
+    before any write. Windows logs **would assign DDA/GPU-P** and never
+    spawns PowerShell (live apply is leftover **22b**). Firecracker is never
+    used for Pro. The window shows the plan and does not bind a live GPU.
+    GPU exclusivity copy is unchanged. Tests use a mock sysfs tree (no root,
+    no real GPU). **208/208**
     `cargo test --lib` (2026-09-06).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
@@ -108,17 +117,18 @@
 
 ## In Progress
 
-- None. Numbered software phases 1–21 are on local `main`. Hardware gates are
-  **OPEN — pending real-hardware verification**. Next numbered phase is 22
-  (VFIO/DDA bind with rollback). Do not mark gates closed. Windows QEMU silent
-  install is leftover **19b**, not a substitute for 22.
+- None. Numbered software phases 1–22 are on local `main`. Hardware gates are
+  **OPEN — pending real-hardware verification**. Next numbered phase is 23
+  (insufficient-resource rejection UX). Do not mark gates closed. Windows QEMU
+  silent install is leftover **19b**. Live Hyper-V DDA/GPU-P apply is leftover
+  **22b**.
 
 ## Up Next
 
-**Phase 22 — VFIO/DDA bind with rollback** (`PHASE_PLAN.md`). Do not invoke
-Firecracker/QEMU. Do not use Firecracker for Pro. Do not create
+**Phase 23 — Insufficient-resource rejection UX** (`PHASE_PLAN.md`). Do not
+invoke Firecracker/QEMU. Do not use Firecracker for Pro. Do not create
 `gate-*-result.md`. Do not invent live URLs. Leftover paper (not a substitute
-for 22):
+for 23):
 
 1. Pairwise mesh ACLs — Headscale 0.26 file policy cannot mint
    `tag:session-<uuid>` owners; every `tag:user` may still reach every
@@ -128,7 +138,7 @@ for 22):
    boot. “Saved as of HH:MM” still needs that image.
 3. FR13 latency ranking waits on a measured value — do not fake `latency_ms`.
 4. **19b** Windows QEMU silent install — phase 19 only logs would-fetch.
-5. Phase 23 — insufficient-resource rejection UX (thin Err exists in phase 21).
+5. **22b** live Hyper-V DDA / GPU-P apply — phase 22 only logs would-assign.
 
 ## Known Risks / Open Items
 
@@ -142,7 +152,7 @@ for 22):
   `POST`/`GET /v1/storage`. Phase 16–17 kept the locators-only contract.
   An unused `0007_host_latency_ms` draft from a parallel agent was **not**
   applied.
-- Local `main` is ahead of `origin/main` (planning + phases 1–21). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–22). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
@@ -171,12 +181,14 @@ for 22):
   **not** cleared when Matchmaker interrupts — there is no teardown HTTP port
   on the agent. Resume after pause can still show in-session if a guest already
   left.
-- Provisioner is stubs only. Launch config is JSON only (no boot). Image
+- Provisioner is stubs only. Launch config is JSON only (no boot). GPU bind is
+  a plan (Linux apply on mock sysfs only; Windows would-assign). Image
   fetch+verify is the software contract (small fixture bytes in tests; no
   multi-GB disk in-repo). On macOS, a real Host Agent `POST /v1/provision` is
   400 (`UnsupportedHostOs`) even with a valid signature; Matchmaker then keeps
-  the seeded locator. Guest-image ensure and launch-config generation on this
-  Mac skip / fail as unsupported (Firecracker images are not fetched).
+  the seeded locator. Guest-image ensure, launch-config generation, and GPU
+  bind on this Mac skip / fail as unsupported (Firecracker images are not
+  fetched; VFIO is not applied).
 - Intent text stays in the harness. It is not persisted and is not on the
   session JSON. Keyword mapping is a smallest-slice heuristic (office/code →
   Standard; GPU/game/3D/training → Pro).
@@ -210,17 +222,18 @@ for 22):
 
 ## Notes for next agent/session
 
-- Execution **phase 21 is done** (launch config from sliders + exclusive GPU
-  id). Hardware gates stay **OPEN — pending real-hardware verification** — see
+- Execution **phase 22 is done** (VFIO/DDA bind with rollback on mocks). Hardware
+  gates stay **OPEN — pending real-hardware verification** — see
   `docs/phase-logs/phase-gates-operator-pass.md` (historical PASS + retraction)
-  and `docs/phase-logs/phase-21-launch-config.md`. Next is **phase 22**.
+  and `docs/phase-logs/phase-22-vfio-bind.md`. Next is **phase 23**.
   Read `PHASE_PLAN.md` and this file. Do not start Storj. Do not invent lab
   output, a live Kasm URL, or `latency_ms`. Do not treat renterd compose-up as
   a live desktop. Do not weaken HostSelector, occupancy indexes, GPU
   exclusivity copy, OS-conditional stubs, or CSP. Do not mark gates closed.
   Do not fetch Firecracker or a guest disk from `cargo test` (injected fetcher /
   file:// / httptest). Do not boot a VM. Do not use Firecracker for Pro.
-  Windows QEMU silent install is **19b**.
+  Do not bind live `/sys` from tests. Windows QEMU silent install is **19b**.
+  Live Hyper-V DDA/GPU-P apply is **22b** (do not spawn PowerShell in 23).
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.
@@ -238,6 +251,10 @@ for 22):
   `memoryMib`, `kernelPath`, `rootfsPath`, optional `gpu: { id, exclusive }`,
   `hypervisorInvoked: false`. Standard omits `gpu`. Below 2 vCPU / 4 GiB is
   `Err`. Phase 23 owns the Host Agent rejection UX.
+- GPU bind: `host_agent_lib::gpu_bind::assign` / `report` take injectable
+  `PciSysfs` paths. Linux Pro plans vfio-pci and can apply on a mock tree with
+  rollback. Windows is `WouldAssign` (no PowerShell). UI command is plan-only
+  (`apply: false`). Never Firecracker.
 - Mesh: Matchmaker holds `HEADSCALE_API_KEY`; the agent never does. Host join
   uses `HEADSCALE_LOGIN_SERVER` from agent env plus a minted preauth key tagged
   `tag:host`. Session JSON `mesh` holds guest/user keys. Unit tests mock

@@ -112,6 +112,30 @@ export interface LaunchConfig {
   hypervisorInvoked: boolean;
 }
 
+export type GpuBindAction = "planned" | "bound" | "wouldAssign" | "skipped" | "refused";
+
+export interface BindStep {
+  action: string;
+  driver: string;
+  device: string;
+}
+
+/** Pro GPU assignment plan. Never a live VFIO/DDA apply from the window. */
+export interface GpuBindStatus {
+  action: GpuBindAction;
+  backend: string | null;
+  gpuId: string | null;
+  pciAddress: string | null;
+  previousDriver: string | null;
+  targetDriver: string | null;
+  steps: BindStep[];
+  bound: boolean;
+  rolledBack: boolean;
+  exclusive: boolean;
+  log: string;
+  hypervisorInvoked: boolean;
+}
+
 export interface SharingConfig {
   version: number;
   sharingEnabled: boolean;

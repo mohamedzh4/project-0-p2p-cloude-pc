@@ -42,7 +42,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 21: pytest 161, cargo test 193, vitest 31.
+  Counts after phase 22: pytest 161, cargo test 208, vitest 31.
 
 ## Contracts to keep stable
 
@@ -541,6 +541,19 @@ output. Do not use Firecracker for Pro. Do not change `HostSelector`.
 
 **Exit:** Tests cover bind + rollback on mocks; no live VFIO required on this
 Mac.
+
+Done as a **software contract** (2026-09-06). Linux Pro plans vfio-pci bind
+(unbind host driver → bind vfio-pci) from injectable sysfs/driver paths so
+tests never touch real devices. Apply rolls back to the previous driver on
+failure. Missing IOMMU or a second display path refuses before any write.
+PCI addresses are resolved from sysfs (UUID / BDF), not `lspci`. Windows
+Pro logs **would assign DDA/GPU-P** and never spawns PowerShell (live
+assignment is leftover **22b**). Firecracker is never used for Pro. GPU
+exclusivity copy stays at config time. GATE-PRO stays OPEN. See
+`docs/phase-logs/phase-22-vfio-bind.md`.
+
+**22b (not this session):** live Hyper-V DDA / GPU-P apply via PowerShell,
+with a hang-safe timeout. Phase 22 only records the plan/log.
 
 ### Phase 23 — Insufficient-resource rejection UX + tests
 

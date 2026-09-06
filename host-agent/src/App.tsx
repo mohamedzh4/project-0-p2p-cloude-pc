@@ -11,6 +11,7 @@ import {
   IS_PREVIEW,
   loadHostRegistration,
   loadSharingConfig,
+  planGpuBind,
   previewSetInSession,
   registerDeclaredCaps,
   saveSharingConfig,
@@ -29,6 +30,7 @@ import {
   type HostCapabilities,
   type HostRegistration,
   type HypervisorStatus,
+  type GpuBindStatus,
   type LaunchConfig,
   type SharingConfig,
 } from "./types";
@@ -44,6 +46,7 @@ export default function App() {
   const [standardLaunchError, setStandardLaunchError] = useState<string | null>(null);
   const [proLaunch, setProLaunch] = useState<LaunchConfig | null>(null);
   const [proLaunchError, setProLaunchError] = useState<string | null>(null);
+  const [gpuBind, setGpuBind] = useState<GpuBindStatus | null>(null);
   const [config, setConfig] = useState<SharingConfig | null>(null);
   const [savedConfig, setSavedConfig] = useState<SharingConfig | null>(null);
   const [configPath, setConfigPath] = useState("");
@@ -99,8 +102,11 @@ export default function App() {
 
     let active = true;
 
-    Promise.allSettled([buildLaunchConfig(config, "standard"), buildLaunchConfig(config, "pro")]).then(
-      ([standard, pro]) => {
+    Promise.allSettled([
+      buildLaunchConfig(config, "standard"),
+      buildLaunchConfig(config, "pro"),
+      planGpuBind(config),
+    ]).then(([standard, pro, bind]) => {
         if (!active) {
           return;
         }
@@ -121,6 +127,12 @@ export default function App() {
         } else {
           setProLaunch(null);
           setProLaunchError(pro.reason instanceof Error ? pro.reason.message : String(pro.reason));
+        }
+
+        if (bind.status === "fulfilled") {
+          setGpuBind(bind.value);
+        } else {
+          setGpuBind(null);
         }
       },
     );
@@ -367,6 +379,7 @@ export default function App() {
         standardLaunchError={standardLaunchError}
         proLaunch={proLaunch}
         proLaunchError={proLaunchError}
+        gpuBind={gpuBind}
       />
 
       <section className="panel reveal" data-reveal={2}>

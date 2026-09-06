@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::agent_status::AgentStatus;
 use crate::config;
+use crate::gpu_bind::{self, GpuBindStatus, PciSysfs, SysfsBindOps};
 use crate::host_capabilities::HostCapabilities;
 use crate::hypervisor::HypervisorStatus;
 use crate::identity::{self, HostRegistration};
@@ -57,6 +58,23 @@ pub fn build_launch_config(
         guest_image: Some(&state.guest_image),
     })
     .map_err(|error| error.to_string())
+}
+
+/// Plan Pro GPU assignment from the probe + sliders. Never binds live sysfs
+/// and never invokes a hypervisor. Windows is log-only (22b).
+#[tauri::command]
+pub fn plan_gpu_bind(state: State<'_, AgentState>, config: SharingConfig) -> GpuBindStatus {
+    gpu_bind::report(
+        gpu_bind::BindRequest {
+            os: HostOs::current(),
+            capabilities: &state.capabilities,
+            share_gpu: config.share_gpu,
+            shared_gpu_id: config.shared_gpu_id.as_deref(),
+            sysfs: &PciSysfs::live(),
+            apply: false,
+        },
+        &SysfsBindOps,
+    )
 }
 
 #[tauri::command]

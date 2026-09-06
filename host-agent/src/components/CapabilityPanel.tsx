@@ -1,5 +1,11 @@
 import { HardwareCard } from "./HardwareCard";
-import type { GuestImageStatus, HostCapabilities, HypervisorStatus, LaunchConfig } from "../types";
+import type {
+  GpuBindStatus,
+  GuestImageStatus,
+  HostCapabilities,
+  HypervisorStatus,
+  LaunchConfig,
+} from "../types";
 
 interface CapabilityPanelProps {
   capabilities: HostCapabilities;
@@ -9,6 +15,7 @@ interface CapabilityPanelProps {
   standardLaunchError: string | null;
   proLaunch: LaunchConfig | null;
   proLaunchError: string | null;
+  gpuBind: GpuBindStatus | null;
 }
 
 function hypervisorHeadline(status: HypervisorStatus): { value: string; empty: boolean } {
@@ -66,6 +73,27 @@ function launchHeadline(config: LaunchConfig | null, error: string | null): { va
   };
 }
 
+function gpuBindHeadline(status: GpuBindStatus | null): { value: string; empty: boolean } {
+  if (!status) {
+    return { value: "Planning…", empty: true };
+  }
+  switch (status.action) {
+    case "planned":
+      return {
+        value: status.pciAddress ? `VFIO plan · ${status.pciAddress}` : "VFIO plan",
+        empty: false,
+      };
+    case "bound":
+      return { value: "Bound to vfio-pci", empty: false };
+    case "wouldAssign":
+      return { value: "Would assign DDA/GPU-P", empty: true };
+    case "skipped":
+      return { value: "Not planned", empty: true };
+    case "refused":
+      return { value: "Not eligible", empty: true };
+  }
+}
+
 function launchDetail(config: LaunchConfig | null, error: string | null): string {
   if (error) {
     return error;
@@ -88,11 +116,13 @@ export function CapabilityPanel({
   standardLaunchError,
   proLaunch,
   proLaunchError,
+  gpuBind,
 }: CapabilityPanelProps) {
   const headline = hypervisorHeadline(hypervisor);
   const imageHeadline = guestImageHeadline(guestImage);
   const standard = launchHeadline(standardLaunch, standardLaunchError);
   const pro = launchHeadline(proLaunch, proLaunchError);
+  const bind = gpuBindHeadline(gpuBind);
 
   return (
     <section className="panel reveal" data-reveal={1}>
@@ -135,6 +165,12 @@ export function CapabilityPanel({
           detail={launchDetail(proLaunch, proLaunchError)}
           empty={pro.empty}
         />
+        <HardwareCard
+          title="Pro GPU assignment"
+          value={bind.value}
+          detail={gpuBind?.log ?? "GPU assignment is planned from the dedicated GPU id. It does not bind a live device from this window."}
+          empty={bind.empty}
+        />
       </div>
       <p className="hint">
         {capabilities.secondDisplayPath
@@ -144,7 +180,8 @@ export function CapabilityPanel({
       <p className="hint">
         The agent locates or fetches the hypervisor and signed guest image for this OS after the
         probe, then maps your CPU/RAM sliders (and a dedicated GPU, when you opt in) into a launch
-        document. It does not boot a guest, and this window does not download anything.
+        document and a VFIO / DDA plan. It computes PCI addresses itself — you do not run lspci.
+        It does not boot a guest or bind a live GPU from this window.
       </p>
     </section>
   );
