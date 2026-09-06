@@ -8,7 +8,7 @@
  */
 
 import { BYTES_PER_GIB } from "./format";
-import type { HardwareSnapshot, HostCapabilities, SharingConfig } from "./types";
+import type { HardwareSnapshot, HostCapabilities, HypervisorStatus, GuestImageStatus, SharingConfig } from "./types";
 
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -56,6 +56,27 @@ export const previewCapabilities: HostCapabilities = {
       "This PC can host Pro sessions when you dedicate a GPU. That GPU is exclusive for the session — not a concurrent slice like CPU or RAM.",
   },
   summary: "This Linux PC can host Standard and Pro sessions.",
+};
+
+/** Sample Linux host that already has Firecracker in the user cache (no live fetch). */
+export const previewHypervisor: HypervisorStatus = {
+  action: "skippedPresent",
+  hypervisor: "firecracker",
+  version: "v1.16.1",
+  path: "/home/host/.cache/dcl-host-agent/hypervisors/firecracker/v1.16.1/firecracker",
+  log: "skipped because present; firecracker v1.16.1 at /home/host/.cache/dcl-host-agent/hypervisors/firecracker/v1.16.1/firecracker (sha256 fixture)",
+  hypervisorInvoked: false,
+};
+
+/** Sample Linux host that already has the signed Standard image (no live fetch). */
+export const previewGuestImage: GuestImageStatus = {
+  action: "skippedPresent",
+  labTier: "standard",
+  backend: "firecracker",
+  path: "/home/host/.cache/dcl-host-agent/images/standard/rootfs.img",
+  digest: "6ed707af13eb04a928001996ae5fc7a49ab405e73534caacf86ad65c51bab8fe",
+  log: "skipped because present; standard Firecracker guest image at /home/host/.cache/dcl-host-agent/images/standard/rootfs.img (sha256 6ed707af13eb04a928001996ae5fc7a49ab405e73534caacf86ad65c51bab8fe)",
+  imageBooted: false,
 };
 
 export const previewConfig: SharingConfig = {

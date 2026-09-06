@@ -51,6 +51,97 @@ export interface HostCapabilities {
   summary: string;
 }
 
+export interface EligibilityReport {
+  standard: LabOffer;
+  pro: LabOffer;
+  summary: string;
+}
+
+export type HypervisorAction =
+  | "skippedPresent"
+  | "fetched"
+  | "skippedOs"
+  | "wouldFetch"
+  | "refused"
+  | "checksumMismatch"
+  | "fetchFailed";
+
+export type HypervisorName = "firecracker" | "qemu" | "none";
+
+/** Locate/fetch log for the OS hypervisor binary. Never invoked. */
+export interface HypervisorStatus {
+  action: HypervisorAction;
+  hypervisor: HypervisorName;
+  version: string | null;
+  path: string | null;
+  log: string;
+  hypervisorInvoked: boolean;
+}
+
+export type GuestImageAction =
+  | "skippedPresent"
+  | "fetched"
+  | "skippedOs"
+  | "wouldFetch"
+  | "refused"
+  | "rejected"
+  | "fetchFailed";
+
+export type GuestImageBackend = "firecracker" | "qemu" | "none";
+
+/** Locate/fetch log for the signed guest image. Never booted. */
+export interface GuestImageStatus {
+  action: GuestImageAction;
+  labTier: string | null;
+  backend: GuestImageBackend;
+  path: string | null;
+  digest: string | null;
+  log: string;
+  imageBooted: boolean;
+}
+
+export type LaunchBackend = "firecracker" | "qemu-whpx" | "qemu-vfio" | "hyperv-gpu";
+
+/** Generated hypervisor document. Never a running VM. */
+export interface LaunchConfig {
+  backend: LaunchBackend;
+  labTier: "standard" | "pro";
+  vcpuCount: number;
+  memoryMib: number;
+  kernelPath: string | null;
+  rootfsPath: string | null;
+  /** Present only for Pro when a GPU is dedicated. Omitted on Standard. */
+  gpu?: {
+    id: string;
+    exclusive: boolean;
+  };
+  hypervisorInvoked: boolean;
+}
+
+export type GpuBindAction = "planned" | "bound" | "wouldAssign" | "skipped" | "refused";
+
+export interface BindStep {
+  action: string;
+  driver: string;
+  device: string;
+}
+
+/** Pro GPU assignment plan. Never a live VFIO/DDA apply from the window. */
+export interface GpuBindStatus {
+  action: GpuBindAction;
+  backend: string | null;
+  gpuId: string | null;
+  pciAddress: string | null;
+  previousDriver: string | null;
+  targetDriver: string | null;
+  steps: BindStep[];
+  bound: boolean;
+  rolledBack: boolean;
+  exclusive: boolean;
+  log: string;
+  hypervisorInvoked: boolean;
+}
+
 export interface SharingConfig {
   version: number;
   sharingEnabled: boolean;

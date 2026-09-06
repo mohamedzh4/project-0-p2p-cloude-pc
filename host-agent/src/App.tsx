@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  buildLaunchConfig,
+  evaluateHostingOffers,
   getAgentStatus,
   getConfigFilePath,
+  getGuestImageStatus,
   getHardwareInfo,
   getHostCapabilities,
+  getHypervisorStatus,
   IS_PREVIEW,
   loadHostRegistration,
   loadSharingConfig,
+  planGpuBind,
   previewSetInSession,
   registerDeclaredCaps,
   saveSharingConfig,
@@ -21,9 +26,14 @@ import { BYTES_PER_GIB, formatCores, formatGib, formatGpuLabel } from "./format"
 import {
   presenceLabel,
   type AgentStatus,
+  type EligibilityReport,
+  type GuestImageStatus,
   type HardwareSnapshot,
   type HostCapabilities,
   type HostRegistration,
+  type HypervisorStatus,
+  type GpuBindStatus,
+  type LaunchConfig,
   type SharingConfig,
 } from "./types";
 
@@ -32,6 +42,14 @@ type SaveState = { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { k
 export default function App() {
   const [hardware, setHardware] = useState<HardwareSnapshot | null>(null);
   const [capabilities, setCapabilities] = useState<HostCapabilities | null>(null);
+  const [hypervisor, setHypervisor] = useState<HypervisorStatus | null>(null);
+  const [guestImage, setGuestImage] = useState<GuestImageStatus | null>(null);
+  const [standardLaunch, setStandardLaunch] = useState<LaunchConfig | null>(null);
+  const [standardLaunchError, setStandardLaunchError] = useState<string | null>(null);
+  const [proLaunch, setProLaunch] = useState<LaunchConfig | null>(null);
+  const [proLaunchError, setProLaunchError] = useState<string | null>(null);
+  const [gpuBind, setGpuBind] = useState<GpuBindStatus | null>(null);
+  const [offers, setOffers] = useState<EligibilityReport | null>(null);
   const [config, setConfig] = useState<SharingConfig | null>(null);
   const [savedConfig, setSavedConfig] = useState<SharingConfig | null>(null);
   const [configPath, setConfigPath] = useState("");
@@ -47,18 +65,22 @@ export default function App() {
     Promise.all([
       getHardwareInfo(),
       getHostCapabilities(),
+      getHypervisorStatus(),
+      getGuestImageStatus(),
       loadSharingConfig(),
       getConfigFilePath(),
       loadHostRegistration(),
       getAgentStatus(),
     ])
-      .then(([detected, hostCapabilities, stored, path, storedRegistration, agentStatus]) => {
+      .then(([detected, hostCapabilities, hypervisorStatus, guestImageStatus, stored, path, storedRegistration, agentStatus]) => {
         if (!active) {
           return;
         }
 
         setHardware(detected);
         setCapabilities(hostCapabilities);
+        setHypervisor(hypervisorStatus);
+        setGuestImage(guestImageStatus);
         setConfig(stored);
         setSavedConfig(stored);
         setConfigPath(path);
@@ -75,6 +97,58 @@ export default function App() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!config) {
+      return;
+    }
+
+    let active = true;
+
+    Promise.allSettled([
+      buildLaunchConfig(config, "standard"),
+      buildLaunchConfig(config, "pro"),
+      planGpuBind(config),
+      evaluateHostingOffers(config),
+    ]).then(([standard, pro, bind, hosting]) => {
+        if (!active) {
+          return;
+        }
+
+        if (standard.status === "fulfilled") {
+          setStandardLaunch(standard.value);
+          setStandardLaunchError(null);
+        } else {
+          setStandardLaunch(null);
+          setStandardLaunchError(
+            standard.reason instanceof Error ? standard.reason.message : String(standard.reason),
+          );
+        }
+
+        if (pro.status === "fulfilled") {
+          setProLaunch(pro.value);
+          setProLaunchError(null);
+        } else {
+          setProLaunch(null);
+          setProLaunchError(pro.reason instanceof Error ? pro.reason.message : String(pro.reason));
+        }
+
+        if (bind.status === "fulfilled") {
+          setGpuBind(bind.value);
+        } else {
+          setGpuBind(null);
+        }
+
+        if (hosting.status === "fulfilled") {
+          setOffers(hosting.value);
+        }
+      },
+    );
+
+    return () => {
+      active = false;
+    };
+  }, [config]);
 
   useEffect(() => {
     let active = true;
@@ -191,7 +265,7 @@ export default function App() {
     );
   }
 
-  if (!hardware || !config || !capabilities) {
+  if (!hardware || !config || !capabilities || !hypervisor || !guestImage) {
     return (
       <main className="app">
         <div className="panel">
@@ -305,7 +379,17 @@ export default function App() {
         </div>
       </section>
 
-      <CapabilityPanel capabilities={capabilities} />
+      <CapabilityPanel
+        capabilities={capabilities}
+        hypervisor={hypervisor}
+        guestImage={guestImage}
+        standardLaunch={standardLaunch}
+        standardLaunchError={standardLaunchError}
+        proLaunch={proLaunch}
+        proLaunchError={proLaunchError}
+        gpuBind={gpuBind}
+        offers={offers}
+      />
 
       <section className="panel reveal" data-reveal={2}>
         <h2>What you share</h2>
@@ -328,7 +412,7 @@ export default function App() {
           min={0}
           max={hardware.cpu.logicalCores}
           value={config.sharedLogicalCores}
-          hint="Leave at least one core for your own work."
+          hint="Leave at least one core for your own work. A session needs at least 2 vCPU — below that, Standard is not offered."
           onChange={(value) => update({ sharedLogicalCores: value })}
         />
 
@@ -340,7 +424,7 @@ export default function App() {
           max={maxMemoryGib}
           value={sharedMemoryGib}
           disabled={maxMemoryGib === 0}
-          hint="Reserved while a session is running, so keep enough for your own applications."
+          hint="Reserved while a session is running, so keep enough for your own applications. A session needs at least 4 GiB — below that, Standard is not offered."
           onChange={(value) => update({ sharedMemoryBytes: value * BYTES_PER_GIB })}
         />
 

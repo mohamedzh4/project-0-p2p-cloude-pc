@@ -8,11 +8,17 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::agent_status::AgentStatus;
 use crate::config;
+use crate::eligibility::{self, EligibilityReport, EligibilityRequest};
+use crate::gpu_bind::{self, GpuBindStatus, PciSysfs, SysfsBindOps};
 use crate::host_capabilities::HostCapabilities;
+use crate::hypervisor::HypervisorStatus;
 use crate::identity::{self, HostRegistration};
+use crate::image::GuestImageStatus;
+use crate::launch::{self, LaunchConfig};
 use crate::matchmaker::{self, UreqTransport};
 use crate::mesh::{self, ProcessJoinRunner};
 use crate::models::{HardwareSnapshot, SharingConfig};
+use crate::provision::{HostOs, LabTier};
 use crate::AgentState;
 
 #[tauri::command]
@@ -23,6 +29,85 @@ pub fn get_hardware_info(state: State<'_, AgentState>) -> HardwareSnapshot {
 #[tauri::command]
 pub fn get_host_capabilities(state: State<'_, AgentState>) -> HostCapabilities {
     state.capabilities.clone()
+}
+
+#[tauri::command]
+pub fn get_hypervisor_status(state: State<'_, AgentState>) -> HypervisorStatus {
+    state.hypervisor.clone()
+}
+
+#[tauri::command]
+pub fn get_guest_image_status(state: State<'_, AgentState>) -> GuestImageStatus {
+    state.guest_image.clone()
+}
+
+/// Map the webview's sliders (re-clamped) to a launch document. Never boots.
+#[tauri::command]
+pub fn build_launch_config(
+    state: State<'_, AgentState>,
+    config: SharingConfig,
+    lab_tier: String,
+) -> Result<LaunchConfig, String> {
+    let lab_tier = LabTier::parse(&lab_tier).map_err(|error| error.to_string())?;
+    let cache = crate::image::resolve_image_cache_dir(|key| std::env::var(key).ok());
+    let spare_disk_bytes = crate::disk_space::available_bytes(&cache);
+    launch::build(launch::LaunchRequest {
+        os: HostOs::current(),
+        lab_tier,
+        hardware: &state.hardware,
+        sharing: &config,
+        image_cache_dir: Some(cache.as_path()),
+        guest_image: Some(&state.guest_image),
+        capabilities: Some(&state.capabilities),
+        spare_disk_bytes,
+    })
+    .map_err(|error| error.to_string())
+}
+
+/// Combined Standard/Pro offer from the probe, sliders, spare disk, and VFIO
+/// plan. A blocked tier is not offered. Never boots.
+#[tauri::command]
+pub fn evaluate_hosting_offers(
+    state: State<'_, AgentState>,
+    config: SharingConfig,
+) -> EligibilityReport {
+    let cache = crate::image::resolve_image_cache_dir(|key| std::env::var(key).ok());
+    let spare_disk_bytes = crate::disk_space::available_bytes(&cache);
+    let gpu_bind = gpu_bind::report(
+        gpu_bind::BindRequest {
+            os: HostOs::current(),
+            capabilities: &state.capabilities,
+            share_gpu: config.share_gpu,
+            shared_gpu_id: config.shared_gpu_id.as_deref(),
+            sysfs: &PciSysfs::live(),
+            apply: false,
+        },
+        &SysfsBindOps,
+    );
+    eligibility::evaluate(EligibilityRequest {
+        capabilities: &state.capabilities,
+        hardware: &state.hardware,
+        sharing: &config,
+        spare_disk_bytes,
+        gpu_bind: Some(&gpu_bind),
+    })
+}
+
+/// Plan Pro GPU assignment from the probe + sliders. Never binds live sysfs
+/// and never invokes a hypervisor. Windows is log-only (22b).
+#[tauri::command]
+pub fn plan_gpu_bind(state: State<'_, AgentState>, config: SharingConfig) -> GpuBindStatus {
+    gpu_bind::report(
+        gpu_bind::BindRequest {
+            os: HostOs::current(),
+            capabilities: &state.capabilities,
+            share_gpu: config.share_gpu,
+            shared_gpu_id: config.shared_gpu_id.as_deref(),
+            sysfs: &PciSysfs::live(),
+            apply: false,
+        },
+        &SysfsBindOps,
+    )
 }
 
 #[tauri::command]

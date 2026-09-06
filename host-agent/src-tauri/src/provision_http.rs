@@ -11,7 +11,10 @@ use thiserror::Error;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::agent_status::Occupancy;
+use crate::eligibility::{self, EligibilityRequest};
+use crate::host_capabilities::HostCapabilities;
 use crate::image::{trust_from_env, verify_image, ImageError, ImageManifest, ImageTrust};
+use crate::models::{HardwareSnapshot, SharingConfig};
 use crate::provision::{plan, HostOs, LabTier, ProvisionError, ProvisionPlan, ProvisionRequest};
 use crate::storage::GuestRcloneMount;
 
@@ -41,6 +44,18 @@ pub enum PlanHttpError {
     Provision(#[from] ProvisionError),
     #[error(transparent)]
     Image(#[from] ImageError),
+    #[error("{0}")]
+    NotOffered(String),
+}
+
+/// Probe + spare CPU/RAM/disk used to refuse a stub provision instead of
+/// half-planning an unoffered tier. Owned so the listener thread can hold it.
+#[derive(Debug, Clone)]
+pub struct ProvisionGate {
+    pub capabilities: HostCapabilities,
+    pub hardware: HardwareSnapshot,
+    pub sharing: Option<SharingConfig>,
+    pub spare_disk_bytes: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -163,15 +178,20 @@ where
 }
 
 /// Verify the advertised image, then select a stub backend. Never boots on
-/// digest or signature mismatch — including this stub path.
+/// digest or signature mismatch — including this stub path. When `gate` is
+/// set, an unoffered tier is 400 with a plain-language reason (no stub URL).
 pub fn plan_http(
     os: HostOs,
     request: &ProvisionHttpRequest,
     trust: &ImageTrust,
+    gate: Option<&ProvisionGate>,
 ) -> Result<ProvisionHttpResponse, PlanHttpError> {
     let advertised = ImageManifest::parse(&request.image_digest, &request.image_signature)?;
     verify_image(trust, &advertised, None)?;
     let lab_tier = LabTier::parse(&request.lab_tier)?;
+    if let Some(gate) = gate {
+        refuse_unoffered_tier(lab_tier, request, gate)?;
+    }
     // Locators are for a guest image. This stub never rclone-mounts on the
     // volunteer host OS and never `tailscale up`s guestMesh (architecture §8/§9).
     let guest_rclone = guest_rclone_from_request(request);
@@ -184,6 +204,36 @@ pub fn plan_http(
         },
     )?;
     Ok(http_response_from_plan(&planned, guest_rclone))
+}
+
+fn refuse_unoffered_tier(
+    lab_tier: LabTier,
+    request: &ProvisionHttpRequest,
+    gate: &ProvisionGate,
+) -> Result<(), PlanHttpError> {
+    let sharing = gate.sharing.clone().unwrap_or_else(|| SharingConfig {
+        version: crate::models::CONFIG_VERSION,
+        sharing_enabled: true,
+        shared_logical_cores: gate.hardware.cpu.logical_cores,
+        shared_memory_bytes: gate.hardware.memory.total_bytes,
+        share_gpu: request
+            .shared_gpu_id
+            .as_deref()
+            .is_some_and(|id| !id.is_empty()),
+        shared_gpu_id: request.shared_gpu_id.clone(),
+    });
+    let report = eligibility::evaluate(EligibilityRequest {
+        capabilities: &gate.capabilities,
+        hardware: &gate.hardware,
+        sharing: &sharing,
+        spare_disk_bytes: gate.spare_disk_bytes,
+        gpu_bind: None,
+    });
+    let offer = eligibility::offer_for_tier(&report, lab_tier);
+    if !offer.offered {
+        return Err(PlanHttpError::NotOffered(offer.reason.clone()));
+    }
+    Ok(())
 }
 
 fn ignore_guest_mesh_on_host(hint: Option<&GuestMeshHint>) {
@@ -257,6 +307,29 @@ pub fn respond(
     os: HostOs,
     image_trust: &ImageTrust,
 ) -> HttpProvisionOutput {
+    respond_with_gate(
+        method,
+        path,
+        authorization,
+        body,
+        expected_token,
+        os,
+        image_trust,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn respond_with_gate(
+    method: &str,
+    path: &str,
+    authorization: Option<&str>,
+    body: &[u8],
+    expected_token: &str,
+    os: HostOs,
+    image_trust: &ImageTrust,
+    gate: Option<&ProvisionGate>,
+) -> HttpProvisionOutput {
     let path = path.split('?').next().unwrap_or(path);
     if !method.eq_ignore_ascii_case("POST") {
         return text(405, "method not allowed");
@@ -276,7 +349,7 @@ pub fn respond(
         Err(_) => return text(400, "invalid provision request"),
     };
 
-    match plan_http(os, &parsed, image_trust) {
+    match plan_http(os, &parsed, image_trust, gate) {
         Ok(planned) => {
             let json = serde_json::to_string(&planned).unwrap_or_else(|_| {
                 "{\"connectionUrl\":\"\",\"hypervisorInvoked\":false,\"gpuExclusive\":false,\"streamer\":\"kasm\"}"
@@ -304,7 +377,32 @@ pub fn respond_and_track(
     occupancy: &Occupancy,
     image_trust: &ImageTrust,
 ) -> HttpProvisionOutput {
-    let output = respond(
+    respond_and_track_with_gate(
+        method,
+        path,
+        authorization,
+        body,
+        expected_token,
+        os,
+        occupancy,
+        image_trust,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn respond_and_track_with_gate(
+    method: &str,
+    path: &str,
+    authorization: Option<&str>,
+    body: &[u8],
+    expected_token: &str,
+    os: HostOs,
+    occupancy: &Occupancy,
+    image_trust: &ImageTrust,
+    gate: Option<&ProvisionGate>,
+) -> HttpProvisionOutput {
+    let output = respond_with_gate(
         method,
         path,
         authorization,
@@ -312,6 +410,7 @@ pub fn respond_and_track(
         expected_token,
         os,
         image_trust,
+        gate,
     );
     if output.status == 200 {
         occupancy.mark_in_session();
@@ -323,13 +422,21 @@ pub fn serve(
     config: &ListenConfig,
     os: HostOs,
     occupancy: &Occupancy,
+    gate: Option<ProvisionGate>,
 ) -> Result<(), ProvisionListenError> {
     let server = Server::http(&config.addr).map_err(|error| ProvisionListenError::Bind {
         addr: config.addr.clone(),
         detail: error.to_string(),
     })?;
     for request in server.incoming_requests() {
-        let _ = dispatch(request, &config.token, os, occupancy, &config.image_trust);
+        let _ = dispatch(
+            request,
+            &config.token,
+            os,
+            occupancy,
+            &config.image_trust,
+            gate.as_ref(),
+        );
     }
     Ok(())
 }
@@ -340,6 +447,7 @@ fn dispatch(
     os: HostOs,
     occupancy: &Occupancy,
     image_trust: &ImageTrust,
+    gate: Option<&ProvisionGate>,
 ) -> std::io::Result<()> {
     let method = method_name(request.method());
     let url = request.url().to_string();
@@ -350,7 +458,7 @@ fn dispatch(
         .take(BODY_MAX as u64 + 1)
         .read_to_end(&mut body);
 
-    let output = respond_and_track(
+    let output = respond_and_track_with_gate(
         &method,
         &url,
         authorization.as_deref(),
@@ -359,6 +467,7 @@ fn dispatch(
         os,
         occupancy,
         image_trust,
+        gate,
     );
     let mut response =
         Response::from_string(output.body).with_status_code(StatusCode(output.status));
@@ -748,7 +857,15 @@ mod tests {
         thread::spawn(move || {
             let occupancy = Occupancy::new();
             let request = server.recv().unwrap();
-            dispatch(request, TOKEN, HostOs::Linux, &occupancy, &trust_for_server).unwrap();
+            dispatch(
+                request,
+                TOKEN,
+                HostOs::Linux,
+                &occupancy,
+                &trust_for_server,
+                None,
+            )
+            .unwrap();
         });
 
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -940,5 +1057,137 @@ mod tests {
         assert!(!production.contains("S3_SECRET_KEY"));
         assert!(!production.contains("S3_ACCESS_KEY"));
         assert!(!production.contains("preauthKey"));
+    }
+
+    fn linux_kvm_gate() -> ProvisionGate {
+        use crate::host_capabilities::{
+            evaluate, EvaluateInput, IommuStatus, KvmAccess, WhpxCapability,
+        };
+        use crate::models::BYTES_PER_GIB;
+        use crate::test_support::{nvidia_gpu, nvidia_gpu_with, snapshot};
+
+        let gpus = [
+            nvidia_gpu(),
+            nvidia_gpu_with("NVIDIA GeForce RTX 3060", "GPU-TEST-3060", 12),
+        ];
+        ProvisionGate {
+            capabilities: evaluate(EvaluateInput {
+                os: HostOs::Linux,
+                kvm: KvmAccess::PresentReadWrite,
+                whpx: WhpxCapability::NotApplicable,
+                iommu: IommuStatus::Present,
+                gpus: &gpus,
+            }),
+            hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
+            sharing: None,
+            spare_disk_bytes: Some(64 * BYTES_PER_GIB),
+        }
+    }
+
+    fn linux_no_kvm_gate() -> ProvisionGate {
+        use crate::host_capabilities::{
+            evaluate, EvaluateInput, IommuStatus, KvmAccess, WhpxCapability,
+        };
+        use crate::models::BYTES_PER_GIB;
+        use crate::test_support::{nvidia_gpu, nvidia_gpu_with, snapshot};
+
+        let gpus = [
+            nvidia_gpu(),
+            nvidia_gpu_with("NVIDIA GeForce RTX 3060", "GPU-TEST-3060", 12),
+        ];
+        ProvisionGate {
+            capabilities: evaluate(EvaluateInput {
+                os: HostOs::Linux,
+                kvm: KvmAccess::Missing,
+                whpx: WhpxCapability::NotApplicable,
+                iommu: IommuStatus::Present,
+                gpus: &gpus,
+            }),
+            hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
+            sharing: None,
+            spare_disk_bytes: Some(64 * BYTES_PER_GIB),
+        }
+    }
+
+    #[test]
+    fn gated_linux_without_kvm_refuses_without_a_stub_url_or_occupancy() {
+        let (trust, body) = signed_standard();
+        let occupancy = Occupancy::new();
+        let gate = linux_no_kvm_gate();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("hardware virtualization"));
+        assert!(!output.body.contains("connectionUrl"));
+        assert!(!occupancy.is_in_session());
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert!(body.get("connectionUrl").is_none());
+        assert_eq!(
+            body["detail"].as_str().unwrap().contains("Firecracker"),
+            false
+        );
+    }
+
+    #[test]
+    fn gated_insufficient_ram_is_a_clean_rejection() {
+        use crate::models::{BYTES_PER_GIB, CONFIG_VERSION};
+
+        let (trust, body) = signed_standard();
+        let mut gate = linux_kvm_gate();
+        gate.sharing = Some(SharingConfig {
+            version: CONFIG_VERSION,
+            sharing_enabled: true,
+            shared_logical_cores: 4,
+            shared_memory_bytes: 2 * BYTES_PER_GIB,
+            share_gpu: false,
+            shared_gpu_id: None,
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("needs at least 4 GiB"));
+        assert!(!occupancy.is_in_session());
+    }
+
+    #[test]
+    fn gated_capable_linux_still_returns_the_stub_without_invoking() {
+        let (trust, body) = signed_standard();
+        let gate = linux_kvm_gate();
+        let output = respond_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(body["hypervisorInvoked"], false);
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/firecracker")
+        );
     }
 }

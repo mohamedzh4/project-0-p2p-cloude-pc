@@ -1,11 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import { isTauriRuntime, previewCapabilities, previewConfig, previewHardware } from "./preview";
+import { BYTES_PER_GIB } from "./format";
+import {
+  isTauriRuntime,
+  previewCapabilities,
+  previewConfig,
+  previewGuestImage,
+  previewHardware,
+  previewHypervisor,
+} from "./preview";
 import type {
   AgentStatus,
+  EligibilityReport,
+  GpuBindStatus,
+  GuestImageStatus,
   HardwareSnapshot,
   HostCapabilities,
   HostRegistration,
+  HypervisorStatus,
+  LaunchConfig,
   SharingConfig,
   SharingPresence,
 } from "./types";
@@ -47,6 +60,229 @@ export function getHostCapabilities(): Promise<HostCapabilities> {
   }
 
   return invoke<HostCapabilities>("get_host_capabilities");
+}
+
+export function getHypervisorStatus(): Promise<HypervisorStatus> {
+  if (IS_PREVIEW) {
+    return Promise.resolve(previewHypervisor);
+  }
+
+  return invoke<HypervisorStatus>("get_hypervisor_status");
+}
+
+export function getGuestImageStatus(): Promise<GuestImageStatus> {
+  if (IS_PREVIEW) {
+    return Promise.resolve(previewGuestImage);
+  }
+
+  return invoke<GuestImageStatus>("get_guest_image_status");
+}
+
+const BYTES_PER_MIB = 1024 * 1024;
+const MIN_VCPU = 2;
+const MIN_MEMORY_BYTES = 4 * BYTES_PER_GIB;
+
+function formatBytesPlain(bytes: number): string {
+  if (bytes >= BYTES_PER_GIB && bytes % BYTES_PER_GIB === 0) {
+    return `${bytes / BYTES_PER_GIB} GiB`;
+  }
+  return `${bytes / BYTES_PER_MIB} MiB`;
+}
+
+function previewResourceReason(config: SharingConfig): string | null {
+  const cores = Math.min(config.sharedLogicalCores, previewHardware.cpu.logicalCores);
+  const memoryBytes = Math.min(config.sharedMemoryBytes, previewHardware.memory.totalBytes);
+  if (cores < MIN_VCPU) {
+    return `this PC would lend ${cores} vCPU, but a session needs at least ${MIN_VCPU} vCPU`;
+  }
+  if (memoryBytes < MIN_MEMORY_BYTES) {
+    return `this PC would lend ${formatBytesPlain(memoryBytes)} of RAM, but a session needs at least 4 GiB`;
+  }
+  return null;
+}
+
+/** Preview-only mirror of `eligibility::evaluate` for the sample Linux host. */
+function previewEvaluateHostingOffers(config: SharingConfig): EligibilityReport {
+  const resource = previewResourceReason(config);
+  if (resource) {
+    return {
+      standard: { offered: false, reason: resource },
+      pro: {
+        offered: false,
+        reason: "Pro sessions are not available until this PC can host Standard sessions.",
+      },
+      summary:
+        "This Linux PC cannot host Standard or Pro sessions with the current CPU, RAM, or disk share.",
+    };
+  }
+
+  const standard = previewCapabilities.standard;
+  let pro = previewCapabilities.pro;
+  if (config.shareGpu) {
+    const bind = previewPlanGpuBind(config);
+    if (bind.action === "refused") {
+      pro = { offered: false, reason: bind.log };
+    }
+  }
+
+  return {
+    standard,
+    pro,
+    summary:
+      standard.offered && pro.offered
+        ? "This Linux PC can host Standard and Pro sessions."
+        : standard.offered
+          ? "This Linux PC can host Standard sessions. Pro is not available."
+          : "This Linux PC cannot host Standard or Pro sessions yet.",
+  };
+}
+
+export function evaluateHostingOffers(config: SharingConfig): Promise<EligibilityReport> {
+  if (IS_PREVIEW) {
+    return Promise.resolve(previewEvaluateHostingOffers(config));
+  }
+
+  return invoke<EligibilityReport>("evaluate_hosting_offers", { config });
+}
+
+/** Preview-only mirror of `launch::build` for the sample Linux host. Rust is the source of truth. */
+function previewBuildLaunchConfig(config: SharingConfig, labTier: string): LaunchConfig {
+  const cores = Math.min(config.sharedLogicalCores, previewHardware.cpu.logicalCores);
+  const memoryBytes = Math.min(config.sharedMemoryBytes, previewHardware.memory.totalBytes);
+  const offers = previewEvaluateHostingOffers(config);
+  const offer = labTier === "pro" ? offers.pro : offers.standard;
+  if (!offer.offered) {
+    throw new Error(offer.reason);
+  }
+  if (cores < MIN_VCPU) {
+    throw new Error(`this PC would lend ${cores} vCPU, but a session needs at least ${MIN_VCPU} vCPU`);
+  }
+  if (memoryBytes < MIN_MEMORY_BYTES) {
+    throw new Error(
+      `this PC would lend ${memoryBytes / BYTES_PER_GIB} GiB of RAM, but a session needs at least 4 GiB`,
+    );
+  }
+
+  if (labTier === "standard") {
+    return {
+      backend: "firecracker",
+      labTier: "standard",
+      vcpuCount: cores,
+      memoryMib: memoryBytes / BYTES_PER_MIB,
+      kernelPath: null,
+      rootfsPath: previewGuestImage.path,
+      hypervisorInvoked: false,
+    };
+  }
+
+  if (labTier === "pro") {
+    const shareGpu = config.shareGpu && previewHardware.gpus.length > 0;
+    if (!shareGpu) {
+      throw new Error(
+        "a Pro session needs you to dedicate a GPU (shareGpu); that GPU is exclusive for the session, not a concurrent slice",
+      );
+    }
+    const id =
+      config.sharedGpuId && previewHardware.gpus.some((gpu) => gpu.id === config.sharedGpuId)
+        ? config.sharedGpuId
+        : previewHardware.gpus[0]?.id;
+    if (!id) {
+      throw new Error(
+        "a Pro session needs a dedicated GPU id (sharedGpuId); GPU assignment is exclusive for the session, not a concurrent slice",
+      );
+    }
+    return {
+      backend: "qemu-vfio",
+      labTier: "pro",
+      vcpuCount: cores,
+      memoryMib: memoryBytes / BYTES_PER_MIB,
+      kernelPath: null,
+      rootfsPath: null,
+      gpu: { id, exclusive: true },
+      hypervisorInvoked: false,
+    };
+  }
+
+  throw new Error(`unknown lab tier ${JSON.stringify(labTier)}; expected "standard" or "pro"`);
+}
+
+export function buildLaunchConfig(config: SharingConfig, labTier: string): Promise<LaunchConfig> {
+  if (IS_PREVIEW) {
+    try {
+      return Promise.resolve(previewBuildLaunchConfig(config, labTier));
+    } catch (error: unknown) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  return invoke<LaunchConfig>("build_launch_config", { config, labTier });
+}
+
+function previewPlanGpuBind(config: SharingConfig): GpuBindStatus {
+  if (!config.shareGpu || previewHardware.gpus.length === 0) {
+    return {
+      action: "refused",
+      backend: null,
+      gpuId: null,
+      pciAddress: null,
+      previousDriver: null,
+      targetDriver: null,
+      steps: [],
+      bound: false,
+      rolledBack: false,
+      exclusive: false,
+      log: "a Pro GPU bind needs you to dedicate a GPU (shareGpu); that GPU is exclusive for the session, not a concurrent slice",
+      hypervisorInvoked: false,
+    };
+  }
+
+  const id =
+    config.sharedGpuId && previewHardware.gpus.some((gpu) => gpu.id === config.sharedGpuId)
+      ? config.sharedGpuId
+      : previewHardware.gpus[0]?.id;
+  if (!id) {
+    return {
+      action: "refused",
+      backend: null,
+      gpuId: null,
+      pciAddress: null,
+      previousDriver: null,
+      targetDriver: null,
+      steps: [],
+      bound: false,
+      rolledBack: false,
+      exclusive: false,
+      log: "a Pro session needs a dedicated GPU id (sharedGpuId); GPU assignment is exclusive for the session, not a concurrent slice",
+      hypervisorInvoked: false,
+    };
+  }
+
+  const pciAddress = id === "GPU-TEST-3060" ? "0000:02:00.0" : "0000:01:00.0";
+  return {
+    action: "planned",
+    backend: "qemu-vfio",
+    gpuId: id,
+    pciAddress,
+    previousDriver: "nvidia",
+    targetDriver: "vfio-pci",
+    steps: [
+      { action: "unbind", driver: "nvidia", device: pciAddress },
+      { action: "bind", driver: "vfio-pci", device: pciAddress },
+    ],
+    bound: false,
+    rolledBack: false,
+    exclusive: true,
+    log: `plan: unbind GPU ${id} from nvidia then bind vfio-pci at ${pciAddress}. GPU ${id} is assigned exclusively to the guest for this Pro session; the host loses that GPU until the session ends. CPU and RAM remain a concurrent slice. Not applied. Hypervisor not invoked.`,
+    hypervisorInvoked: false,
+  };
+}
+
+export function planGpuBind(config: SharingConfig): Promise<GpuBindStatus> {
+  if (IS_PREVIEW) {
+    return Promise.resolve(previewPlanGpuBind(config));
+  }
+
+  return invoke<GpuBindStatus>("plan_gpu_bind", { config });
 }
 
 export function loadSharingConfig(): Promise<SharingConfig> {
