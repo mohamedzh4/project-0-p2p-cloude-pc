@@ -1,14 +1,22 @@
-//! Pro GPU assignment with rollback (phase 22 + phase 25 / leftover 22b).
+//! Pro GPU assignment with rollback (phase 22 + phase 25 / leftover 22b +
+//! phase 29 Linux Pro apply).
 //!
-//! Linux: plan and optionally apply a vfio-pci bind. Sysfs and driver control
-//! paths are injectable so tests never touch real devices. On apply failure the
-//! previous host driver is restored.
+//! Linux: plan and optionally apply a vfio-pci bind against injectable sysfs.
+//! Production [`POST /v1/provision`](crate::provision_http) for Linux Pro
+//! sets [`BindRequest::apply`] true and writes the kernel vfio-pci sysfs
+//! contract (`driver_override`, host `unbind`, vfio-pci `new_id`, vfio-pci
+//! `bind`). The Host Agent window always passes [`WINDOW_GPU_BIND_APPLY`]
+//! (false) so opening settings does not steal the GPU. Tests inject a temp
+//! tree; [`cfg(test)`] refuses live `/sys`. On apply failure the previous
+//! host driver is restored.
 //!
 //! Windows: plan Hyper-V Discrete Device Assignment (DDA) or exclusive GPU-P.
 //! Apply runs documented PowerShell/CIM cmdlets through [`HyperVGpuOps`].
 //! Production uses [`ProcessHyperVGpuOps`] (hang-safe timeout). Tests inject a
 //! fake runner and never spawn PowerShell. On apply failure, completed steps
-//! are undone so the host is not left with a half-assigned GPU.
+//! are undone so the host is not left with a half-assigned GPU. Windows apply
+//! from the provision path is a later phase; this module still does not run
+//! it from the window.
 //!
 //! Firecracker has no PCI passthrough — Pro never uses it. The Host Agent
 //! computes the PCI address from sysfs; the volunteer does not run `lspci`.
@@ -28,6 +36,16 @@ use crate::provision::{
 };
 
 pub const VFIO_PCI: &str = "vfio-pci";
+
+/// The settings window and eligibility card never write bind/unbind/new_id.
+/// Opening the agent must not steal the volunteer GPU.
+pub const WINDOW_GPU_BIND_APPLY: bool = false;
+
+/// Matchmaker / Host Agent `POST /v1/provision` applies Linux vfio-pci when
+/// the capability probe offered Pro. Windows Hyper-V stays plan-only here.
+pub fn linux_pro_provision_should_apply(os: HostOs, lab_tier: LabTier, pro_offered: bool) -> bool {
+    os == HostOs::Linux && lab_tier == LabTier::Pro && pro_offered
+}
 
 /// Injectable sysfs / driver layout. Production uses [`PciSysfs::live`] (`/`).
 /// Tests pass a temp tree so CI never needs root or a real GPU.
@@ -71,7 +89,12 @@ impl PciSysfs {
 }
 
 /// Writes to injectable bind / unbind / new_id files.
-pub trait PciBindOps {
+///
+/// Kernel ABI (vfio.rst / sysfs-bus-pci): write the BDF
+/// (`DDDD:BB:DD.F`) to `unbind`/`bind`, and `vendor device` hex to
+/// vfio-pci `new_id`. [`Send`] + [`Sync`] so the provision listener can hold
+/// the ops across threads.
+pub trait PciBindOps: Send + Sync {
     fn write_unbind(&self, unbind_path: &Path, bdf: &str) -> Result<(), GpuBindError>;
     fn write_bind(&self, bind_path: &Path, bdf: &str) -> Result<(), GpuBindError>;
     fn write_new_id(
@@ -82,8 +105,9 @@ pub trait PciBindOps {
     ) -> Result<(), GpuBindError>;
 }
 
-/// Default ops: append to the given sysfs control files. Tests pass a temp
-/// tree; production would pass `/sys/bus/pci/drivers/.../{bind,unbind,new_id}`.
+/// Default ops: write the kernel sysfs control files (not an append log).
+/// Tests pass a temp tree; production passes
+/// `/sys/bus/pci/drivers/.../{bind,unbind,new_id}`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SysfsBindOps;
 
@@ -262,7 +286,9 @@ pub struct BindRequest<'a> {
     pub shared_gpu_id: Option<&'a str>,
     pub sysfs: &'a PciSysfs,
     /// When true, Linux writes the planned bind and Windows runs Hyper-V
-    /// assignment (both roll back on failure). Always false from the Host Agent UI.
+    /// assignment (both roll back on failure). The Host Agent window always
+    /// passes [`WINDOW_GPU_BIND_APPLY`] (`false`). Linux Pro provision passes
+    /// `true`.
     pub apply: bool,
     /// Windows apply path. Plan-only (`apply: false`) does not invoke it, so
     /// the window never spawns PowerShell. Tests pass a fake runner.
@@ -517,8 +543,10 @@ pub fn plan_linux_vfio(gpu_id: &str, sysfs: &PciSysfs) -> Result<GpuBindPlan, Gp
     })
 }
 
-/// Apply a Linux VFIO plan against injectable driver paths. Rolls back to the
-/// previous driver if bind fails. Never a partial bind on ineligible plans —
+/// Apply a Linux VFIO plan against injectable driver paths. Sequence matches
+/// kernel vfio.rst + PCI `new_id` (driver_override, host unbind, vfio-pci
+/// `new_id` as `vendor device`, vfio-pci bind). Rolls back to the previous
+/// driver if a mid-step fails. Never a partial bind on ineligible plans —
 /// callers must run eligibility first.
 pub fn apply_linux_vfio(
     plan: &GpuBindPlan,
@@ -1546,9 +1574,11 @@ fn read_trimmed(path: &Path) -> Option<String> {
 }
 
 fn append_sysfs(path: &Path, line: &str) -> Result<(), GpuBindError> {
+    // Kernel sysfs bind/unbind/new_id are write-once commands. O_APPEND and
+    // O_CREAT are not the documented ABI and can fail on live /sys (no seek,
+    // cannot create). Mock trees create the files first.
     let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
+        .write(true)
         .open(path)
         .map_err(|error| GpuBindError::Io(error.to_string()))?;
     writeln!(file, "{line}").map_err(|error| GpuBindError::Io(error.to_string()))
@@ -1577,6 +1607,54 @@ fn restore_driver_link(device_dir: &Path, driver_dir: &Path) {
             .unwrap_or_default();
         let _ = fs::write(&link, format!("{name}\n"));
     }
+}
+
+#[cfg(test)]
+pub(crate) const TEST_GPU_ID: &str = "GPU-TEST-4070";
+#[cfg(test)]
+pub(crate) const TEST_GPU_BDF: &str = "0000:01:00.0";
+
+/// Mock PCI/sysfs tree for crate tests (provision HTTP + gpu_bind). Never `/sys`.
+#[cfg(test)]
+pub(crate) fn mock_linux_vfio_sysfs() -> (tempfile::TempDir, PciSysfs) {
+    mock_linux_vfio_sysfs_with_iommu(true)
+}
+
+#[cfg(test)]
+pub(crate) fn mock_linux_vfio_sysfs_with_iommu(with_iommu_group: bool) -> (tempfile::TempDir, PciSysfs) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let device = root.join("sys/bus/pci/devices").join(TEST_GPU_BDF);
+    fs::create_dir_all(&device).unwrap();
+    fs::write(device.join("vendor"), b"0x10de\n").unwrap();
+    fs::write(device.join("device"), b"0x2786\n").unwrap();
+    fs::write(device.join("dcl_gpu_id"), format!("{TEST_GPU_ID}\n")).unwrap();
+    if with_iommu_group {
+        fs::create_dir_all(device.join("iommu_group")).unwrap();
+        fs::create_dir_all(root.join("sys/kernel/iommu_groups/1")).unwrap();
+    }
+
+    let nvidia = root.join("sys/bus/pci/drivers/nvidia");
+    let vfio = root.join("sys/bus/pci/drivers").join(VFIO_PCI);
+    fs::create_dir_all(&nvidia).unwrap();
+    fs::create_dir_all(&vfio).unwrap();
+    fs::write(nvidia.join("unbind"), b"").unwrap();
+    fs::write(nvidia.join("bind"), b"").unwrap();
+    fs::write(vfio.join("unbind"), b"").unwrap();
+    fs::write(vfio.join("bind"), b"").unwrap();
+    fs::write(vfio.join("new_id"), b"").unwrap();
+    restore_driver_link(&device, &nvidia);
+
+    let nvidia_proc = root.join("proc/driver/nvidia/gpus").join(TEST_GPU_BDF);
+    fs::create_dir_all(&nvidia_proc).unwrap();
+    fs::write(
+        nvidia_proc.join("information"),
+        format!("Model:           NVIDIA GeForce RTX 4070\nGPU UUID:        {TEST_GPU_ID}\n"),
+    )
+    .unwrap();
+
+    let sysfs = PciSysfs::from_root(root);
+    (dir, sysfs)
 }
 
 #[cfg(test)]
@@ -1856,39 +1934,7 @@ mod tests {
     }
 
     fn mock_gpu_tree(with_iommu_group: bool) -> (TempDir, PciSysfs) {
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        let device = root.join("sys/bus/pci/devices").join(BDF);
-        fs::create_dir_all(&device).unwrap();
-        fs::write(device.join("vendor"), b"0x10de\n").unwrap();
-        fs::write(device.join("device"), b"0x2786\n").unwrap();
-        fs::write(device.join("dcl_gpu_id"), format!("{GPU_ID}\n")).unwrap();
-        if with_iommu_group {
-            fs::create_dir_all(device.join("iommu_group")).unwrap();
-            fs::create_dir_all(root.join("sys/kernel/iommu_groups/1")).unwrap();
-        }
-
-        let nvidia = root.join("sys/bus/pci/drivers/nvidia");
-        let vfio = root.join("sys/bus/pci/drivers").join(VFIO_PCI);
-        fs::create_dir_all(&nvidia).unwrap();
-        fs::create_dir_all(&vfio).unwrap();
-        fs::write(nvidia.join("unbind"), b"").unwrap();
-        fs::write(nvidia.join("bind"), b"").unwrap();
-        fs::write(vfio.join("unbind"), b"").unwrap();
-        fs::write(vfio.join("bind"), b"").unwrap();
-        fs::write(vfio.join("new_id"), b"").unwrap();
-        restore_driver_link(&device, &nvidia);
-
-        let nvidia_proc = root.join("proc/driver/nvidia/gpus").join(BDF);
-        fs::create_dir_all(&nvidia_proc).unwrap();
-        fs::write(
-            nvidia_proc.join("information"),
-            format!("Model:           NVIDIA GeForce RTX 4070\nGPU UUID:        {GPU_ID}\n"),
-        )
-        .unwrap();
-
-        let sysfs = PciSysfs::from_root(root);
-        (dir, sysfs)
+        mock_linux_vfio_sysfs_with_iommu(with_iommu_group)
     }
 
     fn request<'a>(
@@ -2403,5 +2449,81 @@ mod tests {
         assert_eq!(control_lines(&unbind), vec![BDF]);
         assert_eq!(control_lines(&bind), vec![BDF]);
         assert_eq!(control_lines(&new_id), vec!["10de 2786"]);
+    }
+
+    #[test]
+    fn window_apply_is_false_linux_pro_provision_apply_is_true_when_offered() {
+        assert!(!WINDOW_GPU_BIND_APPLY);
+        assert!(linux_pro_provision_should_apply(
+            HostOs::Linux,
+            LabTier::Pro,
+            true
+        ));
+        assert!(
+            !linux_pro_provision_should_apply(HostOs::Linux, LabTier::Pro, false),
+            "must not apply when the probe did not offer Pro"
+        );
+        assert!(!linux_pro_provision_should_apply(
+            HostOs::Linux,
+            LabTier::Standard,
+            true
+        ));
+        assert!(!linux_pro_provision_should_apply(
+            HostOs::Windows,
+            LabTier::Pro,
+            true
+        ));
+        assert!(!linux_pro_provision_should_apply(
+            HostOs::MacOs,
+            LabTier::Pro,
+            true
+        ));
+        let source = include_str!("commands.rs");
+        assert!(
+            source.contains("WINDOW_GPU_BIND_APPLY"),
+            "the window command must stay plan-only"
+        );
+        assert!(
+            !source.contains("apply: true"),
+            "the window must never pass apply: true"
+        );
+    }
+
+    #[test]
+    fn given_linux_pro_probe_apply_true_issues_unbind_new_id_and_bind() {
+        let caps = linux_pro_caps();
+        assert!(caps.pro.offered);
+        assert!(caps.second_display_path);
+        assert_eq!(caps.iommu, IommuStatus::Present);
+        assert!(linux_pro_provision_should_apply(
+            HostOs::Linux,
+            LabTier::Pro,
+            caps.pro.offered
+        ));
+
+        let (_dir, sysfs) = mock_gpu_tree(true);
+        let status = assign(
+            request(HostOs::Linux, &caps, &sysfs, true, true),
+            &SysfsBindOps,
+        )
+        .unwrap();
+
+        assert_eq!(status.action, GpuBindAction::Bound);
+        assert!(status.bound);
+        assert!(status.exclusive);
+        assert!(!status.hypervisor_invoked);
+        assert_eq!(
+            control_lines(&sysfs.driver_dir("nvidia").join("unbind")),
+            vec![BDF]
+        );
+        assert_eq!(
+            control_lines(&sysfs.vfio_pci.join("new_id")),
+            vec!["10de 2786"]
+        );
+        assert_eq!(control_lines(&sysfs.vfio_pci.join("bind")), vec![BDF]);
+        assert_eq!(
+            read_current_driver(&sysfs.device_dir(BDF)).as_deref(),
+            Some(VFIO_PCI)
+        );
     }
 }

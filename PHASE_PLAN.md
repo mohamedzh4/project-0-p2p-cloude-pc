@@ -39,7 +39,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 28: pytest 162, cargo test 288, vitest 31, guest-images
+  Counts after phase 29: pytest 162, cargo test 296, vitest 31, guest-images
   unittest 12.
 
 ## Contracts to keep stable
@@ -91,7 +91,7 @@ Host Agent Matchmaker calls belong in **Rust**, not `fetch` from the webview
 (CSP allows no remote origins).
 
 Host Agent provisioner (stubs, phase 5–6; Linux Standard invoke, phase 27;
-Windows Standard invoke, phase 28):
+Windows Standard invoke, phase 28; Linux Pro VFIO apply, phase 29):
 `host_agent_lib::plan_provision(os, request) -> Result<ProvisionPlan,
 ProvisionError>` in `host-agent/src-tauri/src/provision.rs`. Linux Standard →
 Firecracker, Windows Standard → QEMU+WHPX, Linux Pro → QEMU+VFIO, Windows Pro
@@ -112,7 +112,12 @@ a fake success. Response is
 Pro `streamer` is `sunshine` (stub origin `https://provision.invalid`). Linux
 Standard locator stays `https://provision.invalid/firecracker` even after
 invoke. Windows Standard locator stays `https://provision.invalid/qemu-whpx`.
-Body includes `labTier`, optional `sharedGpuId`, `imageDigest`,
+Linux Pro locator stays `https://provision.invalid/qemu-vfio` after VFIO bind.
+On Linux Pro, when the probe offers the tier and `ProvisionGate.vfio` is set,
+`gpu_bind.rs` applies vfio-pci against injectable sysfs (production: live
+`/sys`; `cfg(test)` refuses live `/sys`) with rollback. The Host Agent window
+stays `apply: false`. Windows Pro Hyper-V apply from provision is a later
+phase. Body includes `labTier`, optional `sharedGpuId`, `imageDigest`,
 `imageSignature`. Missing or mismatched image metadata is 400 (no stub boot).
 Listen requires `IMAGE_SIGNING_PUBLIC_KEY` and `IMAGE_LOCAL_DIGEST` (fail
 fast). Matchmaker session booking, after `HostSelector.select` and occupancy
@@ -134,10 +139,10 @@ iframe it in early phases.
 | Cahier | This plan |
 | --- | --- |
 | 0 Manual compute pipeline | Hardware: three honest lines in `PROJECT_STATUS.md`. Not yet run on physical hardware. Guest disks: `guest-images/` |
-| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs) through 28 (Linux Firecracker InstanceStart + Windows QEMU `-accel whpx`; locators still `.invalid`). Live desktop is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid`) |
+| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs) through 29 (Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply; locators still `.invalid`). Live desktop is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid`) |
 | 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
 | 3 Pro/Gamer + latency | Execution phase 16 software (Sunshine locators). Pro-GPU implemented in code, not yet run on physical hardware; no live stream in-repo |
-| 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv; 26 Packer guest images; 27 Firecracker InstanceStart (no TAP); 28 QEMU `-accel whpx` (no live Kasm). Live desktop / pairwise ACLs still paper |
+| 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv; 26 Packer guest images; 27 Firecracker InstanceStart (no TAP); 28 QEMU `-accel whpx` (no live Kasm); 29 Linux Pro VFIO bind apply (window still plan-only). Live desktop / pairwise ACLs still paper |
 
 ## Execution phases
 
@@ -264,7 +269,7 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | After 45s Matchmaker treats skip as silence (interrupts). No pause field |
 | FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Later telemetry |
 | FR13 match on tier, latency, reliability | Partial: tier fit + declared caps; latency/reliability not measured | Do not fake `latency_ms` |
-| FR14 provision, heartbeat, auto teardown | Partial: mock provision + Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + 45s stale for new books and occupied teardown; locators still `.invalid` | Real VMs on metal and a live desktop URL are still not in this repo |
+| FR14 provision, heartbeat, auto teardown | Partial: mock provision + Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply + 45s stale for new books and occupied teardown; locators still `.invalid` | Real VMs on metal and a live desktop URL are still not in this repo |
 | FR15 re-match on host disconnect | Implemented: `interrupted` + one `HostSelector.select`; 409 if none | Same renterd bucket follows the user; no Storj |
 | FR16 meter usage / payouts | Metering + ledger; payouts deferred | Phase 11 metering done; no Stripe |
 
@@ -720,8 +725,37 @@ WHPX quick start (`-accel whpx -M pc` / aarch64 `-M virt`). Locator stays
 Not yet run on physical hardware. See
 `docs/phase-logs/phase-28-qemu-whpx-invoke.md`.
 
-**Next:** live VFIO bind apply (Linux Pro) pointing at real sysfs while
-keeping rollback. Still not a fake live Kasm URL or the web loop.
+### Phase 29 — Linux Pro VFIO bind apply (real sysfs)
+
+**Why next:** Phase 22 could write bind/unbind/new_id on a mock tree, but the
+window always passed `apply: false` and provision never applied. GATE-PRO
+still needs the documented vfio-pci sysfs writes on the real apply path.
+
+**Do:** When the capability probe offers Linux Pro (IOMMU + GPU eligible) and
+Matchmaker POSTs Pro provision, apply the existing VFIO plan against
+injectable sysfs (production: live `/sys`) with rollback. Keep the window
+plan-only. Do not attach the GPU to a QEMU boot. Keep placeholder locators.
+
+**Do not:** Hyper-V DDA apply-from-provision, live Kasm/Sunshine locators,
+the web loop, or a Firecracker/QEMU rewrite.
+
+**Exit:** HTTP Linux Pro provision with a VFIO gate issues the sysfs
+sequence; window stays `apply: false`; `cfg(test)` refuses live `/sys`;
+rollback tests stay green.
+
+Done as a **software contract** (2026-09-07). Linux Pro
+`POST /v1/provision` applies vfio-pci (`driver_override`, host unbind,
+`new_id` `vendor device`, vfio-pci bind) when `ProvisionGate.vfio` is set.
+The window (`plan_gpu_bind` / eligibility) stays `WINDOW_GPU_BIND_APPLY`
+false. Tests inject a mock tree; live `/sys` is refused under `cfg(test)`.
+Mid-step failure rolls back to the previous driver. Locator stays
+`https://provision.invalid/qemu-vfio`. QEMU is not spawned with VFIO
+attached. Windows Pro Hyper-V apply from provision is still later. Not yet
+run on physical hardware. See
+`docs/phase-logs/phase-29-linux-vfio-apply.md`.
+
+**Next:** Hyper-V DDA/GPU-P **apply from the provision path** (not plan-only
+window), then locators, then web. Still not a fake live Kasm URL.
 
 ## Handoff template
 

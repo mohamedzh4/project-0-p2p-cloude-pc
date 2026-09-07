@@ -3,8 +3,9 @@
 //! self-hosted Headscale from Rust. Linux Standard provision starts Firecracker
 //! when the probe offers it and the binary, kernel, and verified rootfs are
 //! present. Windows Standard provision starts QEMU with `-accel whpx` when the
-//! probe offers it and the binary plus a verified disk are present. Pro stays
-//! stubs. Tray status and immediate pause live in
+//! probe offers it and the binary plus a verified disk are present. Linux Pro
+//! provision applies vfio-pci bind when the probe offers Pro (window stays
+//! plan-only). Tray status and immediate pause live in
 //! Rust; the webview does not call the Matchmaker.
 
 mod agent_status;
@@ -172,6 +173,14 @@ fn spawn_provision_listener(app: &tauri::App) {
                     } else {
                         None
                     };
+                    let vfio = if os == HostOs::Linux && capabilities.pro.offered {
+                        Some(provision_http::VfioBind {
+                            sysfs: crate::gpu_bind::PciSysfs::live(),
+                            ops: std::sync::Arc::new(crate::gpu_bind::SysfsBindOps),
+                        })
+                    } else {
+                        None
+                    };
                     let gate = provision_http::ProvisionGate {
                         capabilities,
                         hardware,
@@ -179,6 +188,7 @@ fn spawn_provision_listener(app: &tauri::App) {
                         spare_disk_bytes: crate::disk_space::available_bytes(&cache),
                         firecracker,
                         qemu,
+                        vfio,
                     };
                     if let Err(error) = provision_http::serve(
                         &config,

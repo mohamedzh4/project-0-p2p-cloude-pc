@@ -3,9 +3,11 @@
 //! Linux Standard then starts Firecracker when the probe offered it and the
 //! binary, kernel, and verified rootfs are present. Windows Standard then
 //! starts QEMU with `-accel whpx` when the probe offered it and the binary
-//! plus a verified disk are present. Pro stays stubs. The Matchmaker POSTs
-//! here after host selection. The webview must not `fetch` this URL (CSP
-//! allows no remote origins).
+//! plus a verified disk are present. Linux Pro then applies vfio-pci bind
+//! against injectable (production: live) sysfs when the probe offered Pro;
+//! the window stays plan-only. Windows Pro Hyper-V apply is a later phase.
+//! The Matchmaker POSTs here after host selection. The webview must not
+//! `fetch` this URL (CSP allows no remote origins).
 
 use std::io::Read;
 use std::net::SocketAddr;
@@ -19,6 +21,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use crate::agent_status::Occupancy;
 use crate::eligibility::{self, EligibilityRequest};
 use crate::firecracker::{self, FirecrackerError, FirecrackerRuntime};
+use crate::gpu_bind::{self, GpuBindError, PciBindOps, PciSysfs};
 use crate::qemu::{self, QemuError, QemuRuntime};
 use crate::host_capabilities::HostCapabilities;
 use crate::image::{
@@ -63,6 +66,8 @@ pub enum PlanHttpError {
     Firecracker(#[from] FirecrackerError),
     #[error("{0}")]
     Qemu(#[from] QemuError),
+    #[error("{0}")]
+    GpuBind(#[from] GpuBindError),
 }
 
 /// Probe + spare CPU/RAM/disk used to refuse a stub provision instead of
@@ -77,6 +82,10 @@ pub struct ProvisionGate {
     pub firecracker: Option<FirecrackerBoot>,
     /// When set on Windows Standard, QEMU `-accel whpx` runs (or provision fails).
     pub qemu: Option<QemuBoot>,
+    /// When set on Linux Pro, vfio-pci apply runs against this sysfs (or provision fails).
+    /// Tests inject a mock tree. Production uses [`PciSysfs::live`]. The window
+    /// never sets this — it stays [`gpu_bind::WINDOW_GPU_BIND_APPLY`].
+    pub vfio: Option<VfioBind>,
 }
 
 /// Inputs for a real Firecracker invoke. Tests inject [`FirecrackerRuntime`].
@@ -121,6 +130,22 @@ impl std::fmt::Debug for QemuBoot {
             .field("guest_image", &self.guest_image)
             .field("arch", &self.arch)
             .field("runtime", &"QemuRuntime")
+            .finish()
+    }
+}
+
+/// Inputs for a real Linux vfio-pci apply. Tests inject [`PciSysfs`] + ops.
+#[derive(Clone)]
+pub struct VfioBind {
+    pub sysfs: PciSysfs,
+    pub ops: Arc<dyn PciBindOps>,
+}
+
+impl std::fmt::Debug for VfioBind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VfioBind")
+            .field("sysfs", &self.sysfs)
+            .field("ops", &"PciBindOps")
             .finish()
     }
 }
@@ -248,7 +273,8 @@ where
 /// Linux Standard with [`ProvisionGate::firecracker`] starts Firecracker
 /// (InstanceStart) or fails clearly. Windows Standard with
 /// [`ProvisionGate::qemu`] starts QEMU `-accel whpx` or fails clearly.
-/// Digest mismatch never boots.
+/// Linux Pro with [`ProvisionGate::vfio`] applies vfio-pci or fails clearly.
+/// Digest mismatch never boots. The window does not call this with apply.
 pub fn plan_http(
     os: HostOs,
     request: &ProvisionHttpRequest,
@@ -282,6 +308,15 @@ pub fn plan_http(
         if let Some(boot) = gate.and_then(|gate| gate.qemu.as_ref()) {
             let gate = gate.expect("qemu boot requires a gate");
             planned = invoke_windows_standard(os, request, gate, boot, planned)?;
+        }
+    }
+    let pro_offered = gate
+        .map(|gate| gate.capabilities.pro.offered)
+        .unwrap_or(false);
+    if gpu_bind::linux_pro_provision_should_apply(os, lab_tier, pro_offered) {
+        if let Some(vfio) = gate.and_then(|gate| gate.vfio.as_ref()) {
+            let gate = gate.expect("vfio bind requires a gate");
+            apply_linux_pro_vfio(os, request, gate, vfio)?;
         }
     }
     Ok(http_response_from_plan(&planned, guest_rclone))
@@ -361,6 +396,40 @@ fn invoke_windows_standard(
     )?;
     planned.hypervisor_invoked = true;
     Ok(planned)
+}
+
+fn apply_linux_pro_vfio(
+    os: HostOs,
+    request: &ProvisionHttpRequest,
+    gate: &ProvisionGate,
+    vfio: &VfioBind,
+) -> Result<(), PlanHttpError> {
+    let sharing = sharing_for_gate(gate, request);
+    let gpu_id = request
+        .shared_gpu_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .or(sharing.shared_gpu_id.as_deref().filter(|id| !id.is_empty()));
+    let status = gpu_bind::assign(
+        gpu_bind::BindRequest {
+            os,
+            capabilities: &gate.capabilities,
+            share_gpu: gpu_id.is_some(),
+            shared_gpu_id: gpu_id,
+            sysfs: &vfio.sysfs,
+            apply: true,
+            hyperv: None,
+            hyperv_vm_name: None,
+        },
+        vfio.ops.as_ref(),
+    )?;
+    if !status.bound || !status.exclusive {
+        return Err(PlanHttpError::NotOffered(format!(
+            "Pro GPU bind did not complete exclusively: {}",
+            status.log
+        )));
+    }
+    Ok(())
 }
 
 fn refuse_unoffered_tier(
@@ -1245,6 +1314,7 @@ mod tests {
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             firecracker: None,
             qemu: None,
+            vfio: None,
         }
     }
 
@@ -1272,6 +1342,7 @@ mod tests {
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             firecracker: None,
             qemu: None,
+            vfio: None,
         }
     }
 
@@ -1537,6 +1608,7 @@ mod tests {
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             firecracker: None,
             qemu: None,
+            vfio: None,
         }
     }
 
@@ -1753,5 +1825,262 @@ mod tests {
         assert_eq!(output.status, 400);
         assert!(recorder.spawn_calls().is_empty());
         assert!(!output.body.contains("connectionUrl"));
+    }
+
+    struct FailVfioBind {
+        inner: crate::gpu_bind::SysfsBindOps,
+        binds: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FailVfioBind {
+        fn new() -> Self {
+            Self {
+                inner: crate::gpu_bind::SysfsBindOps,
+                binds: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl PciBindOps for FailVfioBind {
+        fn write_unbind(
+            &self,
+            unbind_path: &std::path::Path,
+            bdf: &str,
+        ) -> Result<(), GpuBindError> {
+            self.inner.write_unbind(unbind_path, bdf)
+        }
+
+        fn write_bind(&self, bind_path: &std::path::Path, bdf: &str) -> Result<(), GpuBindError> {
+            self.binds
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if bind_path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .is_some_and(|name| name == crate::gpu_bind::VFIO_PCI)
+            {
+                return Err(GpuBindError::Io("injected vfio-pci bind failure".into()));
+            }
+            self.inner.write_bind(bind_path, bdf)
+        }
+
+        fn write_new_id(
+            &self,
+            new_id_path: &std::path::Path,
+            vendor: &str,
+            device: &str,
+        ) -> Result<(), GpuBindError> {
+            self.inner.write_new_id(new_id_path, vendor, device)
+        }
+    }
+
+    fn vfio_control_lines(path: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn linux_pro_with_vfio_gate_applies_bind_and_keeps_the_placeholder_locator() {
+        use std::sync::Arc;
+
+        let (trust, body) = signed_pro();
+        let (_tree, sysfs) = crate::gpu_bind::mock_linux_vfio_sysfs();
+        let mut gate = linux_kvm_gate();
+        assert!(gate.capabilities.pro.offered);
+        gate.vfio = Some(VfioBind {
+            sysfs: sysfs.clone(),
+            ops: Arc::new(crate::gpu_bind::SysfsBindOps),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-vfio")
+        );
+        assert_eq!(body["hypervisorInvoked"], false);
+        assert_eq!(body["gpuExclusive"], true);
+        assert_eq!(body["streamer"], "sunshine");
+        assert_eq!(body["sunshineUrl"], STUB_SUNSHINE_URL);
+        assert!(occupancy.is_in_session());
+        assert_eq!(
+            vfio_control_lines(&sysfs.driver_dir("nvidia").join("unbind")),
+            vec![crate::gpu_bind::TEST_GPU_BDF]
+        );
+        assert_eq!(
+            vfio_control_lines(&sysfs.vfio_pci.join("new_id")),
+            vec!["10de 2786"]
+        );
+        assert_eq!(
+            vfio_control_lines(&sysfs.vfio_pci.join("bind")),
+            vec![crate::gpu_bind::TEST_GPU_BDF]
+        );
+    }
+
+    #[test]
+    fn linux_pro_vfio_mid_step_failure_is_400_rolls_back_and_does_not_occupy() {
+        use std::sync::Arc;
+
+        let (trust, body) = signed_pro();
+        let (_tree, sysfs) = crate::gpu_bind::mock_linux_vfio_sysfs();
+        let mut gate = linux_kvm_gate();
+        gate.vfio = Some(VfioBind {
+            sysfs: sysfs.clone(),
+            ops: Arc::new(FailVfioBind::new()),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("restored"));
+        assert!(!output.body.contains("connectionUrl"));
+        assert!(!occupancy.is_in_session());
+        assert_eq!(
+            vfio_control_lines(&sysfs.driver_dir("nvidia").join("bind")),
+            vec![crate::gpu_bind::TEST_GPU_BDF],
+            "rollback must rebind nvidia"
+        );
+        assert!(
+            vfio_control_lines(&sysfs.vfio_pci.join("bind")).is_empty(),
+            "failed vfio bind must not leave a bind record"
+        );
+    }
+
+    #[test]
+    fn linux_pro_vfio_gate_with_live_sysfs_is_refused_in_tests() {
+        use std::sync::Arc;
+
+        let (trust, body) = signed_pro();
+        let mut gate = linux_kvm_gate();
+        gate.vfio = Some(VfioBind {
+            sysfs: crate::gpu_bind::PciSysfs::live(),
+            ops: Arc::new(crate::gpu_bind::SysfsBindOps),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("must not bind live sysfs"));
+        assert!(!occupancy.is_in_session());
+    }
+
+    #[test]
+    fn linux_pro_gated_without_vfio_inputs_stays_stub() {
+        let (trust, body) = signed_pro();
+        let gate = linux_kvm_gate();
+        assert!(gate.vfio.is_none());
+        let output = respond_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(body["hypervisorInvoked"], false);
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-vfio")
+        );
+        assert_eq!(body["gpuExclusive"], true);
+    }
+
+    #[test]
+    fn linux_standard_ignores_vfio_gate() {
+        use std::sync::Arc;
+
+        let (trust, body) = signed_standard();
+        let (_tree, sysfs) = crate::gpu_bind::mock_linux_vfio_sysfs();
+        let mut gate = linux_kvm_gate();
+        gate.vfio = Some(VfioBind {
+            sysfs: sysfs.clone(),
+            ops: Arc::new(crate::gpu_bind::SysfsBindOps),
+        });
+        let output = respond_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/firecracker")
+        );
+        assert!(vfio_control_lines(&sysfs.driver_dir("nvidia").join("unbind")).is_empty());
+        assert!(vfio_control_lines(&sysfs.vfio_pci.join("bind")).is_empty());
+    }
+
+    #[test]
+    fn windows_pro_ignores_vfio_gate() {
+        use std::sync::Arc;
+
+        let (trust, body) = signed_pro();
+        let (_tree, sysfs) = crate::gpu_bind::mock_linux_vfio_sysfs();
+        let mut gate = windows_whpx_gate();
+        gate.vfio = Some(VfioBind {
+            sysfs: sysfs.clone(),
+            ops: Arc::new(crate::gpu_bind::SysfsBindOps),
+        });
+        let output = respond_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/hyperv-gpu")
+        );
+        assert_eq!(body["gpuExclusive"], true);
+        assert!(vfio_control_lines(&sysfs.driver_dir("nvidia").join("unbind")).is_empty());
     }
 }

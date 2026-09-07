@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-07, after phase 28 QEMU WHPX invoke
+# Project Status — last updated: 2026-09-07, after phase 29 Linux Pro VFIO apply
 
 ## Hardware (this Mac cannot host)
 
@@ -21,7 +21,7 @@ Never write “confirmed working” until a human reports a live session on meta
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
   keypairs, guest rclone argv). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–28 on local `main` (not pushed):
+- Execution phases 1–29 on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -36,10 +36,14 @@ Never write “confirmed working” until a human reports a live session on meta
     the fetched Weilnetz `qemu-system-*.exe` with qemu.org `-accel whpx`
     (`qemu.rs`; no TCG, no Hyper-V Standard boot). `plan()` still never
     invokes. Locators stay `https://provision.invalid/firecracker` and
-    `https://provision.invalid/qemu-whpx`. Missing kernel/binary/rootfs/WHPX
-    is 400, not a fake success. macOS/Linux/Pro do not spawn QEMU; macOS/
+    `https://provision.invalid/qemu-whpx`. **Phase 29:** Linux Pro HTTP
+    provision applies vfio-pci against injectable sysfs (production: live
+    `/sys`; `cfg(test)` refuses live `/sys`) with rollback. The window stays
+    `apply: false`. Locator stays `https://provision.invalid/qemu-vfio`. QEMU
+    is not spawned with VFIO attached. Missing kernel/binary/rootfs/WHPX/VFIO
+    mid-step is 400, not a fake success. macOS/Linux/Pro do not spawn QEMU; macOS/
     Windows/Pro do not spawn Firecracker. Tests inject a fake process (no
-    `/dev/kvm`, no WHPX). **Before** a stub
+    `/dev/kvm`, no WHPX) and a mock PCI tree (no live `/sys`). **Before** a stub
     boot, `image.rs` verifies Ed25519 over the SHA-256 digest against
     `IMAGE_SIGNING_PUBLIC_KEY` and `IMAGE_LOCAL_DIGEST` (required when the
     provision listener is on). After register, if `HEADSCALE_LOGIN_SERVER` is
@@ -83,7 +87,8 @@ Never write “confirmed working” until a human reports a live session on meta
     2 vCPU / 4 GiB is a plain-language error (phase 23 owns full UX). macOS
     is still unsupported. The JSON document still has
     `hypervisorInvoked: false`; live invoke is `firecracker.rs` / `qemu.rs` on
-    the HTTP port. **Phase 22:**
+    the HTTP port. Linux Pro VFIO apply is `gpu_bind.rs` on the HTTP port (not
+    the window). **Phase 22:**
     `gpu_bind.rs` plans exclusive Pro GPU assignment. Linux is vfio-pci
     (unbind host driver → bind vfio-pci) with injectable sysfs/driver paths
     and rollback to the previous driver on apply failure. PCI addresses come
@@ -96,7 +101,8 @@ Never write “confirmed working” until a human reports a live session on meta
     `powershell.exe -NoProfile -NonInteractive` with a 30s kill. Tests inject
     a fake runner and never spawn PowerShell. Mid-step failure rolls back
     (Mount + Enable-PnpDevice, or Remove-VMGpuPartitionAdapter). The window
-    is plan-only (`apply: false`). Firecracker is never used for Pro. GPU
+    is plan-only (`apply: false`). **Phase 29** applies Linux VFIO from
+    Matchmaker provision (`apply: true` on that path only). Firecracker is never used for Pro. GPU
     exclusivity copy is unchanged. Tests use a mock sysfs tree / fake Hyper-V
     runner (no root, no real GPU). **Phase 23:** `eligibility.rs` combines the
     probe, the
@@ -117,7 +123,8 @@ Never write “confirmed working” until a human reports a live session on meta
     private key from `IMAGE_SIGNING_PRIVATE_KEY` only; never committed.
     **266/266** `cargo test --lib` (counts in the phase-27 handoff).
     **Phase 28:** Windows QEMU `-accel whpx` + Windows Standard image
-    fetch/verify. **288/288** `cargo test --lib` (this phase).
+    fetch/verify. **Phase 29:** Linux Pro VFIO bind apply from provision.
+    **296/296** `cargo test --lib` (this phase).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
     `sessions_one_active_per_host` / `sessions_one_active_per_user`;
@@ -173,14 +180,14 @@ Never write “confirmed working” until a human reports a live session on meta
 
 ## In Progress
 
-- None. Numbered software phases 1–28 are on local `main`. Hardware is
+- None. Numbered software phases 1–29 are on local `main`. Hardware is
   implemented in code, not yet run on physical hardware.
 
 ## Up Next
 
-**Live VFIO bind apply (Linux Pro)** pointing at real sysfs while keeping
-rollback (from the remaining stub list). Do not start a fake live Kasm URL
-or the full web loop in that session unless the human says so.
+**Hyper-V DDA/GPU-P apply from the provision path** (not plan-only window),
+then locators, then web. Do not start a fake live Kasm URL or the full web
+loop in that session unless the human says so.
 
 Leftover paper (not this next phase):
 
@@ -190,9 +197,10 @@ Leftover paper (not this next phase):
 2. Live guest Tailscale/rclone — join/mount plans exist; the Packer image
    installs the clients; they still need a booted guest with a network.
 3. FR13 latency ranking waits on a measured value — do not fake `latency_ms`.
-4. Live VFIO sysfs from the window, Hyper-V DDA apply-from-window, TAP/net
-   so Kasm is reachable, jailer, and a later locator phase that can kill
-   `SEED_HOST_KASM_URL` without inventing a URL.
+4. Hyper-V DDA apply-from-provision, TAP/net so Kasm/Sunshine is reachable,
+   jailer, QEMU VFIO attach after bind, and a later locator phase that can
+   kill `SEED_HOST_KASM_URL` without inventing a URL. The Host Agent window
+   stays plan-only for GPU bind.
 
 ## Known Risks / Open Items
 
@@ -206,7 +214,7 @@ Leftover paper (not this next phase):
   `POST`/`GET /v1/storage`. Phase 16–17 kept the locators-only contract.
   An unused `0007_host_latency_ms` draft from a parallel agent was **not**
   applied.
-- Local `main` is ahead of `origin/main` (planning + phases 1–28). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–29). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
@@ -239,12 +247,15 @@ Leftover paper (not this next phase):
   **not** cleared when Matchmaker interrupts — there is no teardown HTTP port
   on the agent. Resume after pause can still show in-session if a guest already
   left. A successful Firecracker InstanceStart or QEMU `-accel whpx` spawn
-  also leaves the child detached with no teardown port.
+  also leaves the child detached with no teardown port. A successful Linux Pro
+  VFIO bind leaves the GPU on vfio-pci with no unbind teardown port.
 - Linux Standard HTTP provision can InstanceStart. Windows Standard HTTP
-  provision can spawn QEMU `-accel whpx`. `plan()` stays a stub.
-  Launch-config JSON still has `hypervisorInvoked: false`. GPU bind is a plan
-  from the window (Linux apply on mock sysfs; Windows apply on an injected
-  Hyper-V runner). Image fetch+verify is the software contract (small fixture
+  provision can spawn QEMU `-accel whpx`. Linux Pro HTTP provision can apply
+  vfio-pci. `plan()` stays a stub.
+  Launch-config JSON still has `hypervisorInvoked: false`. GPU bind: window
+  is plan-only; Linux Pro provision apply uses injectable/live sysfs with
+  rollback (tests refuse live `/sys`). Windows apply remains on an injected
+  Hyper-V runner (provision apply later). Image fetch+verify is the software contract (small fixture
   bytes in tests), including Windows Standard. Combined eligibility (phase 23)
   refuses a blocked tier in the window and on the live provision listener. On
   macOS, a real Host Agent `POST /v1/provision` is 400 (unsupported OS / not
@@ -256,7 +267,9 @@ Leftover paper (not this next phase):
   and (later) TAP/net — InstanceStart alone does not yield a Kasm URL. Metal
   QEMU+WHPX still needs the Windows Hypervisor Platform feature, elevation
   for the NSIS install (UAC), a real verified disk, and (later) guest net —
-  `-accel whpx` alone does not yield a Kasm URL.
+  `-accel whpx` alone does not yield a Kasm URL. Metal VFIO still needs IOMMU,
+  `vfio-pci`, a GPU in a group, and a second display path — bind alone does
+  not yield a Sunshine URL.
 - Intent text stays in the harness. It is not persisted and is not on the
   session JSON. Keyword mapping is a smallest-slice heuristic (office/code →
   Standard; GPU/game/3D/training → Pro).
@@ -291,11 +304,11 @@ Leftover paper (not this next phase):
 
 ## Notes for next agent/session
 
-- Execution **phase 28 is done** (Windows Standard QEMU `-accel whpx` on the
-  HTTP port; locator still `.invalid`). Hardware lines above are **not**
-  “confirmed working”. Next numbered work is **live VFIO bind apply (Linux
-  Pro)** on real sysfs with rollback. Do not start Storj. Do not invent lab
-  output, a live Kasm URL, or `latency_ms`. Do not treat renterd compose-up
+- Execution **phase 29 is done** (Linux Pro vfio-pci apply on Matchmaker
+  `POST /v1/provision`; window still plan-only; locator still `.invalid`).
+  Hardware lines above are **not** “confirmed working”. Next numbered work is
+  **Hyper-V DDA/GPU-P apply from the provision path**, then locators, then web.
+  Do not start Storj. Do not invent lab output, a live Kasm URL, or `latency_ms`. Do not treat renterd compose-up
   as a live desktop. Do not weaken HostSelector, occupancy indexes, GPU
   exclusivity copy, OS-conditional backends, or CSP. Do not fetch Firecracker,
   QEMU, or a guest disk from `cargo test` (injected fetcher / installer /
@@ -303,7 +316,8 @@ Leftover paper (not this next phase):
   (inject `FirecrackerRuntime` / `QemuRuntime`). Do not use Firecracker for
   Pro. Do not bind live `/sys` from tests. Do not spawn live PowerShell from
   tests (inject `HyperVGpuOps`). Do not commit Packer output, PEMs, or Kasm
-  passwords. Do not `Start-VM` as a Standard boot fallback.
+  passwords. Do not `Start-VM` as a Standard boot fallback. Do not surprise-bind
+  from the settings window.
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.
@@ -329,10 +343,13 @@ Leftover paper (not this next phase):
   Live QEMU+WHPX invoke is `qemu::boot_from_launch`.
 - GPU bind: `host_agent_lib::gpu_bind::assign` / `report` take injectable
   `PciSysfs` paths and optional `HyperVGpuOps`. Linux Pro plans vfio-pci and
-  can apply on a mock tree with rollback. Windows Pro plans DDA from the
-  window; apply prefers DDA then exclusive GPU-P through the runner, with
-  rollback. UI command is plan-only (`apply: false`). Never Firecracker. A
-  refused plan with shareGpu on blocks the Pro offer.
+  applies from Matchmaker provision (`apply: true`) against injectable sysfs
+  (production live `/sys`; tests refuse live `/sys`) with rollback. Windows
+  Pro plans DDA from the window; apply prefers DDA then exclusive GPU-P
+  through the runner, with rollback (provision apply later). UI command is
+  plan-only (`WINDOW_GPU_BIND_APPLY` / `apply: false`). Never Firecracker. A
+  refused plan with shareGpu on blocks the Pro offer. Live Linux Pro VFIO
+  apply is `provision_http` when `ProvisionGate.vfio` is set.
 - Mesh: Matchmaker holds `HEADSCALE_API_KEY`; the agent never does. Host join
   uses `HEADSCALE_LOGIN_SERVER` from agent env plus a minted preauth key tagged
   `tag:host`. Session JSON `mesh` holds guest/user keys. Unit tests mock

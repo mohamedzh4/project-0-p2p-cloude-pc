@@ -127,7 +127,7 @@ export interface BindStep {
   device: string;
 }
 
-/** Pro GPU assignment plan. Never a live VFIO/DDA/GPU-P apply from the window. */
+/** Pro GPU assignment plan from the window. Never a live VFIO/DDA/GPU-P apply from the window — Linux Pro bind runs on Matchmaker provision. */
 export interface GpuBindStatus {
   action: GpuBindAction;
   backend: string | null;

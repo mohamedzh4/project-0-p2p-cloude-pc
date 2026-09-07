@@ -6,7 +6,9 @@ Packer + QEMU **build** of the disks Host Agent already knows how to
 still `https://provision.invalid/firecracker` (no TAP/net, no live Kasm).
 Windows Standard Host Agent can spawn QEMU `-accel whpx` (phase 28) when the
 verified disk is present; the locator is still
-`https://provision.invalid/qemu-whpx`.
+`https://provision.invalid/qemu-whpx`. Linux Pro Host Agent can apply vfio-pci
+bind on provision (phase 29); the locator is still
+`https://provision.invalid/qemu-vfio` (no QEMU VFIO attach, no live Sunshine).
 
 | Tier | Streamer in the guest | Disk |
 | --- | --- | --- |
