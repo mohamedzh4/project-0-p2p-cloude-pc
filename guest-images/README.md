@@ -9,6 +9,9 @@ verified disk is present; the locator is still
 `https://provision.invalid/qemu-whpx`. Linux Pro Host Agent can apply vfio-pci
 bind on provision (phase 29); the locator is still
 `https://provision.invalid/qemu-vfio` (no QEMU VFIO attach, no live Sunshine).
+Windows Pro Host Agent can apply Hyper-V DDA/GPU-P on provision (phase 30);
+the locator is still `https://provision.invalid/hyperv-gpu` (no `Start-VM`,
+no live Sunshine).
 
 | Tier | Streamer in the guest | Disk |
 | --- | --- | --- |

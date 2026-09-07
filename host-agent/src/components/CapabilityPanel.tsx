@@ -188,7 +188,7 @@ export function CapabilityPanel({
         <HardwareCard
           title="Pro GPU assignment"
           value={bind.value}
-          detail={gpuBind?.log ?? "GPU assignment is planned in this window. Linux Pro bind applies on Matchmaker provision, not when you open settings."}
+          detail={gpuBind?.log ?? "GPU assignment is planned in this window. Linux Pro vfio-pci and Windows Pro Hyper-V DDA/GPU-P apply on Matchmaker provision, not when you open settings."}
           empty={bind.empty}
         />
       </div>
@@ -213,8 +213,8 @@ export function CapabilityPanel({
         The agent locates or fetches the hypervisor and signed guest image for this OS after the
         probe, then maps your CPU/RAM sliders (and a dedicated GPU, when you opt in) into a launch
         document and a VFIO / DDA / GPU-P plan. It computes PCI addresses itself — you do not run lspci.
-        This window does not bind a live GPU. Linux Pro vfio-pci apply runs when Matchmaker POSTs
-        provision (with rollback). Windows Hyper-V DDA/GPU-P apply from provision is a later phase.
+        This window does not bind a live GPU. Linux Pro vfio-pci and Windows Pro
+        Hyper-V DDA/GPU-P apply run when Matchmaker POSTs provision (with rollback).
         Standard needs at least 2 vCPU,
         4 GiB RAM, and 50 GiB spare disk.
       </p>

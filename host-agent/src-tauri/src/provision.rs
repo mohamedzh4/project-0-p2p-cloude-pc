@@ -286,7 +286,8 @@ impl Provisioner for StubProvisioner {
 /// Never starts Firecracker, QEMU, Kasm, Sunshine, or VFIO. Linux Standard
 /// invoke lives in [`crate::firecracker`] via the provision HTTP port.
 /// Windows Standard invoke lives in [`crate::qemu`]. Linux Pro vfio-pci apply
-/// lives in [`crate::gpu_bind`] via the same HTTP port (not `plan()`).
+/// and Windows Pro Hyper-V DDA/GPU-P apply live in [`crate::gpu_bind`] via
+/// the same HTTP port (not `plan()`).
 pub fn plan(os: HostOs, request: &ProvisionRequest) -> Result<ProvisionPlan, ProvisionError> {
     StubProvisioner::select(os, request.lab_tier)?.plan(request)
 }

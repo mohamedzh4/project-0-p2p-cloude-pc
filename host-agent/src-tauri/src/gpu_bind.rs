@@ -1,5 +1,5 @@
 //! Pro GPU assignment with rollback (phase 22 + phase 25 / leftover 22b +
-//! phase 29 Linux Pro apply).
+//! phase 29 Linux Pro apply + phase 30 Windows Pro Hyper-V apply).
 //!
 //! Linux: plan and optionally apply a vfio-pci bind against injectable sysfs.
 //! Production [`POST /v1/provision`](crate::provision_http) for Linux Pro
@@ -12,19 +12,21 @@
 //!
 //! Windows: plan Hyper-V Discrete Device Assignment (DDA) or exclusive GPU-P.
 //! Apply runs documented PowerShell/CIM cmdlets through [`HyperVGpuOps`].
-//! Production uses [`ProcessHyperVGpuOps`] (hang-safe timeout). Tests inject a
-//! fake runner and never spawn PowerShell. On apply failure, completed steps
-//! are undone so the host is not left with a half-assigned GPU. Windows apply
-//! from the provision path is a later phase; this module still does not run
-//! it from the window.
+//! Production [`POST /v1/provision`](crate::provision_http) for Windows Pro
+//! sets [`BindRequest::apply`] true and uses [`ProcessHyperVGpuOps`]
+//! (hang-safe timeout). Tests inject a fake runner and never spawn
+//! PowerShell. On apply failure, completed steps are undone so the host is
+//! not left with a half-assigned GPU. The window still does not run it.
 //!
 //! Firecracker has no PCI passthrough — Pro never uses it. The Host Agent
 //! computes the PCI address from sysfs; the volunteer does not run `lspci`.
-//! Nothing here boots a guest. GATE-PRO stays open.
+//! Nothing here boots a guest (`Start-VM` is not used). GATE-PRO stays open.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -42,9 +44,16 @@ pub const VFIO_PCI: &str = "vfio-pci";
 pub const WINDOW_GPU_BIND_APPLY: bool = false;
 
 /// Matchmaker / Host Agent `POST /v1/provision` applies Linux vfio-pci when
-/// the capability probe offered Pro. Windows Hyper-V stays plan-only here.
+/// the capability probe offered Pro.
 pub fn linux_pro_provision_should_apply(os: HostOs, lab_tier: LabTier, pro_offered: bool) -> bool {
     os == HostOs::Linux && lab_tier == LabTier::Pro && pro_offered
+}
+
+/// Matchmaker / Host Agent `POST /v1/provision` applies Hyper-V DDA (preferred)
+/// or exclusive GPU-P when the capability probe offered Pro. The window stays
+/// [`WINDOW_GPU_BIND_APPLY`].
+pub fn windows_pro_provision_should_apply(os: HostOs, lab_tier: LabTier, pro_offered: bool) -> bool {
+    os == HostOs::Windows && lab_tier == LabTier::Pro && pro_offered
 }
 
 /// Injectable sysfs / driver layout. Production uses [`PciSysfs::live`] (`/`).
@@ -237,8 +246,9 @@ pub enum HyperVMethod {
 }
 
 /// Injectable Hyper-V / PnP runner. Production spawns PowerShell; tests record
-/// cmdlets and never touch a live hypervisor.
-pub trait HyperVGpuOps {
+/// cmdlets and never touch a live hypervisor. [`Send`] + [`Sync`] so the
+/// provision listener can hold the ops across threads.
+pub trait HyperVGpuOps: Send + Sync {
     fn probe_device(&self, gpu_id: &str) -> Result<HyperVDeviceProbe, GpuBindError>;
     fn invoke(&self, cmdlet: &HyperVCmdlet) -> Result<String, GpuBindError>;
     fn is_live(&self) -> bool {
@@ -287,11 +297,12 @@ pub struct BindRequest<'a> {
     pub sysfs: &'a PciSysfs,
     /// When true, Linux writes the planned bind and Windows runs Hyper-V
     /// assignment (both roll back on failure). The Host Agent window always
-    /// passes [`WINDOW_GPU_BIND_APPLY`] (`false`). Linux Pro provision passes
-    /// `true`.
+    /// passes [`WINDOW_GPU_BIND_APPLY`] (`false`). Linux Pro and Windows Pro
+    /// provision pass `true`.
     pub apply: bool,
     /// Windows apply path. Plan-only (`apply: false`) does not invoke it, so
     /// the window never spawns PowerShell. Tests pass a fake runner.
+    /// Production provision uses [`ProcessHyperVGpuOps`].
     pub hyperv: Option<&'a dyn HyperVGpuOps>,
     /// Hyper-V VM that receives the device. Default [`DEFAULT_HYPERV_VM`].
     /// The VM is not created or started here.
@@ -1658,6 +1669,159 @@ pub(crate) fn mock_linux_vfio_sysfs_with_iommu(with_iommu_group: bool) -> (tempf
 }
 
 #[cfg(test)]
+pub(crate) const TEST_HYPERV_LOCATION_PATH: &str = "PCIROOT(0)#PCI(0100)#PCI(0000)";
+#[cfg(test)]
+pub(crate) const TEST_HYPERV_INSTANCE_ID: &str =
+    r"PCI\VEN_10DE&DEV_2786&SUBSYS_0000&REV_A1\4&1234&0&0000";
+#[cfg(test)]
+pub(crate) const TEST_HYPERV_PARTITION_NAME: &str =
+    r"\\?\PCI#VEN_10DE&DEV_2786&SUBSYS_0000&REV_A1#4&1234&0&0000#{064092b3-625e-43bf-9eb5-dc845897dd59}";
+
+/// Fake Hyper-V runner for crate tests. Never `powershell.exe`.
+#[cfg(test)]
+pub(crate) struct RecordingHyperV {
+    probe: HyperVDeviceProbe,
+    fail_on: Option<&'static str>,
+    log: Mutex<Vec<String>>,
+    pnp_disabled: Mutex<bool>,
+    dismounted: Mutex<bool>,
+    assigned: Mutex<bool>,
+    partition_assigned: Mutex<bool>,
+}
+
+#[cfg(test)]
+impl RecordingHyperV {
+    pub(crate) fn dda() -> Self {
+        Self::new(HyperVDeviceProbe {
+            instance_id: TEST_HYPERV_INSTANCE_ID.to_string(),
+            location_path: Some(TEST_HYPERV_LOCATION_PATH.to_string()),
+            dda_assignable: true,
+            partitionable: false,
+            partitionable_name: None,
+            valid_partition_counts: Vec::new(),
+            partition_count: 0,
+        })
+    }
+
+    pub(crate) fn gpu_p() -> Self {
+        Self::new(HyperVDeviceProbe {
+            instance_id: TEST_HYPERV_INSTANCE_ID.to_string(),
+            location_path: None,
+            dda_assignable: false,
+            partitionable: true,
+            partitionable_name: Some(TEST_HYPERV_PARTITION_NAME.to_string()),
+            valid_partition_counts: vec![1, 2, 4],
+            partition_count: 4,
+        })
+    }
+
+    fn new(probe: HyperVDeviceProbe) -> Self {
+        Self {
+            probe,
+            fail_on: None,
+            log: Mutex::new(Vec::new()),
+            pnp_disabled: Mutex::new(false),
+            dismounted: Mutex::new(false),
+            assigned: Mutex::new(false),
+            partition_assigned: Mutex::new(false),
+        }
+    }
+
+    pub(crate) fn fail_on(mut self, cmdlet: &'static str) -> Self {
+        self.fail_on = Some(cmdlet);
+        self
+    }
+
+    pub(crate) fn names(&self) -> Vec<String> {
+        self.log.lock().expect("hyperv log").clone()
+    }
+
+    pub(crate) fn leftover_assigned(&self) -> bool {
+        *self.assigned.lock().expect("assigned")
+            || *self.dismounted.lock().expect("dismounted")
+            || *self.pnp_disabled.lock().expect("pnp")
+            || *self.partition_assigned.lock().expect("partition")
+    }
+
+    pub(crate) fn dda_assigned(&self) -> bool {
+        *self.assigned.lock().expect("assigned")
+    }
+
+    pub(crate) fn gpu_p_assigned(&self) -> bool {
+        *self.partition_assigned.lock().expect("partition")
+    }
+}
+
+#[cfg(test)]
+impl HyperVGpuOps for RecordingHyperV {
+    fn probe_device(&self, gpu_id: &str) -> Result<HyperVDeviceProbe, GpuBindError> {
+        if gpu_id != TEST_GPU_ID {
+            return Err(GpuBindError::GpuNotFound {
+                gpu_id: gpu_id.to_string(),
+            });
+        }
+        Ok(self.probe.clone())
+    }
+
+    fn invoke(&self, cmdlet: &HyperVCmdlet) -> Result<String, GpuBindError> {
+        self.log
+            .lock()
+            .expect("hyperv log")
+            .push(cmdlet.name().to_string());
+        if self.fail_on == Some(cmdlet.name()) {
+            return Err(GpuBindError::Io(format!(
+                "injected {} failure",
+                cmdlet.name()
+            )));
+        }
+        match cmdlet {
+            HyperVCmdlet::DisablePnpDevice { .. } => {
+                *self.pnp_disabled.lock().expect("pnp") = true;
+            }
+            HyperVCmdlet::EnablePnpDevice { .. } => {
+                *self.pnp_disabled.lock().expect("pnp") = false;
+            }
+            HyperVCmdlet::DismountHostAssignable { .. } => {
+                *self.dismounted.lock().expect("dismounted") = true;
+            }
+            HyperVCmdlet::MountHostAssignable { .. } => {
+                *self.dismounted.lock().expect("dismounted") = false;
+            }
+            HyperVCmdlet::AddVmAssignable { .. } => {
+                *self.assigned.lock().expect("assigned") = true;
+            }
+            HyperVCmdlet::RemoveVmAssignable { .. } => {
+                *self.assigned.lock().expect("assigned") = false;
+            }
+            HyperVCmdlet::VerifyVmAssignable { .. } => {
+                if !*self.assigned.lock().expect("assigned") {
+                    return Err(GpuBindError::Io(
+                        "Get-VMAssignableDevice returned no device; not assigned".into(),
+                    ));
+                }
+                return Ok(TEST_HYPERV_LOCATION_PATH.to_string());
+            }
+            HyperVCmdlet::AddGpuPartitionAdapter { .. } => {
+                *self.partition_assigned.lock().expect("partition") = true;
+            }
+            HyperVCmdlet::RemoveGpuPartitionAdapter { .. } => {
+                *self.partition_assigned.lock().expect("partition") = false;
+            }
+            HyperVCmdlet::VerifyGpuPartition { .. } => {
+                if !*self.partition_assigned.lock().expect("partition") {
+                    return Err(GpuBindError::Io(
+                        "Get-VMGpuPartitionAdapter returned no adapter; not assigned".into(),
+                    ));
+                }
+                return Ok(format!("assigned {TEST_HYPERV_PARTITION_NAME}"));
+            }
+            _ => {}
+        }
+        Ok(String::new())
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::host_capabilities::{evaluate, EvaluateInput, KvmAccess, WhpxCapability};
@@ -1665,15 +1829,12 @@ mod tests {
     use crate::provision::Provisioner;
     use crate::test_support::{nvidia_gpu, nvidia_gpu_with};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex;
     use tempfile::TempDir;
 
     const GPU_ID: &str = "GPU-TEST-4070";
     const BDF: &str = "0000:01:00.0";
-    const LOCATION_PATH: &str = "PCIROOT(0)#PCI(0100)#PCI(0000)";
-    const INSTANCE_ID: &str = r"PCI\VEN_10DE&DEV_2786&SUBSYS_0000&REV_A1\4&1234&0&0000";
-    const PARTITION_NAME: &str =
-        r"\\?\PCI#VEN_10DE&DEV_2786&SUBSYS_0000&REV_A1#4&1234&0&0000#{064092b3-625e-43bf-9eb5-dc845897dd59}";
+    const LOCATION_PATH: &str = TEST_HYPERV_LOCATION_PATH;
+    const INSTANCE_ID: &str = TEST_HYPERV_INSTANCE_ID;
 
     struct FailVfioBind {
         inner: SysfsBindOps,
@@ -1713,138 +1874,6 @@ mod tests {
             device: &str,
         ) -> Result<(), GpuBindError> {
             self.inner.write_new_id(new_id_path, vendor, device)
-        }
-    }
-
-    struct RecordingHyperV {
-        probe: HyperVDeviceProbe,
-        fail_on: Option<&'static str>,
-        log: Mutex<Vec<String>>,
-        pnp_disabled: Mutex<bool>,
-        dismounted: Mutex<bool>,
-        assigned: Mutex<bool>,
-        partition_assigned: Mutex<bool>,
-    }
-
-    impl RecordingHyperV {
-        fn dda() -> Self {
-            Self::new(HyperVDeviceProbe {
-                instance_id: INSTANCE_ID.to_string(),
-                location_path: Some(LOCATION_PATH.to_string()),
-                dda_assignable: true,
-                partitionable: false,
-                partitionable_name: None,
-                valid_partition_counts: Vec::new(),
-                partition_count: 0,
-            })
-        }
-
-        fn gpu_p() -> Self {
-            Self::new(HyperVDeviceProbe {
-                instance_id: INSTANCE_ID.to_string(),
-                location_path: None,
-                dda_assignable: false,
-                partitionable: true,
-                partitionable_name: Some(PARTITION_NAME.to_string()),
-                valid_partition_counts: vec![1, 2, 4],
-                partition_count: 4,
-            })
-        }
-
-        fn new(probe: HyperVDeviceProbe) -> Self {
-            Self {
-                probe,
-                fail_on: None,
-                log: Mutex::new(Vec::new()),
-                pnp_disabled: Mutex::new(false),
-                dismounted: Mutex::new(false),
-                assigned: Mutex::new(false),
-                partition_assigned: Mutex::new(false),
-            }
-        }
-
-        fn fail_on(mut self, cmdlet: &'static str) -> Self {
-            self.fail_on = Some(cmdlet);
-            self
-        }
-
-        fn names(&self) -> Vec<String> {
-            self.log.lock().expect("hyperv log").clone()
-        }
-
-        fn leftover_assigned(&self) -> bool {
-            *self.assigned.lock().expect("assigned")
-                || *self.dismounted.lock().expect("dismounted")
-                || *self.pnp_disabled.lock().expect("pnp")
-                || *self.partition_assigned.lock().expect("partition")
-        }
-    }
-
-    impl HyperVGpuOps for RecordingHyperV {
-        fn probe_device(&self, gpu_id: &str) -> Result<HyperVDeviceProbe, GpuBindError> {
-            if gpu_id != GPU_ID {
-                return Err(GpuBindError::GpuNotFound {
-                    gpu_id: gpu_id.to_string(),
-                });
-            }
-            Ok(self.probe.clone())
-        }
-
-        fn invoke(&self, cmdlet: &HyperVCmdlet) -> Result<String, GpuBindError> {
-            self.log
-                .lock()
-                .expect("hyperv log")
-                .push(cmdlet.name().to_string());
-            if self.fail_on == Some(cmdlet.name()) {
-                return Err(GpuBindError::Io(format!(
-                    "injected {} failure",
-                    cmdlet.name()
-                )));
-            }
-            match cmdlet {
-                HyperVCmdlet::DisablePnpDevice { .. } => {
-                    *self.pnp_disabled.lock().expect("pnp") = true;
-                }
-                HyperVCmdlet::EnablePnpDevice { .. } => {
-                    *self.pnp_disabled.lock().expect("pnp") = false;
-                }
-                HyperVCmdlet::DismountHostAssignable { .. } => {
-                    *self.dismounted.lock().expect("dismounted") = true;
-                }
-                HyperVCmdlet::MountHostAssignable { .. } => {
-                    *self.dismounted.lock().expect("dismounted") = false;
-                }
-                HyperVCmdlet::AddVmAssignable { .. } => {
-                    *self.assigned.lock().expect("assigned") = true;
-                }
-                HyperVCmdlet::RemoveVmAssignable { .. } => {
-                    *self.assigned.lock().expect("assigned") = false;
-                }
-                HyperVCmdlet::VerifyVmAssignable { .. } => {
-                    if !*self.assigned.lock().expect("assigned") {
-                        return Err(GpuBindError::Io(
-                            "Get-VMAssignableDevice returned no device; not assigned".into(),
-                        ));
-                    }
-                    return Ok(LOCATION_PATH.to_string());
-                }
-                HyperVCmdlet::AddGpuPartitionAdapter { .. } => {
-                    *self.partition_assigned.lock().expect("partition") = true;
-                }
-                HyperVCmdlet::RemoveGpuPartitionAdapter { .. } => {
-                    *self.partition_assigned.lock().expect("partition") = false;
-                }
-                HyperVCmdlet::VerifyGpuPartition { .. } => {
-                    if !*self.partition_assigned.lock().expect("partition") {
-                        return Err(GpuBindError::Io(
-                            "Get-VMGpuPartitionAdapter returned no adapter; not assigned".into(),
-                        ));
-                    }
-                    return Ok(format!("assigned {PARTITION_NAME}"));
-                }
-                _ => {}
-            }
-            Ok(String::new())
         }
     }
 
@@ -2202,7 +2231,7 @@ mod tests {
             ]
         );
         assert!(
-            *runner.assigned.lock().expect("assigned"),
+            runner.dda_assigned(),
             "success must leave the DDA assignment in place"
         );
     }
@@ -2267,7 +2296,7 @@ mod tests {
                 "Get-VMGpuPartitionAdapter",
             ]
         );
-        assert!(*runner.partition_assigned.lock().expect("partition"));
+        assert!(runner.gpu_p_assigned());
     }
 
     #[test]
@@ -2525,5 +2554,85 @@ mod tests {
             read_current_driver(&sysfs.device_dir(BDF)).as_deref(),
             Some(VFIO_PCI)
         );
+    }
+
+    #[test]
+    fn window_apply_is_false_windows_pro_provision_apply_is_true_when_offered() {
+        assert!(!WINDOW_GPU_BIND_APPLY);
+        assert!(windows_pro_provision_should_apply(
+            HostOs::Windows,
+            LabTier::Pro,
+            true
+        ));
+        assert!(
+            !windows_pro_provision_should_apply(HostOs::Windows, LabTier::Pro, false),
+            "must not apply when the probe did not offer Pro"
+        );
+        assert!(!windows_pro_provision_should_apply(
+            HostOs::Windows,
+            LabTier::Standard,
+            true
+        ));
+        assert!(!windows_pro_provision_should_apply(
+            HostOs::Linux,
+            LabTier::Pro,
+            true
+        ));
+        assert!(!windows_pro_provision_should_apply(
+            HostOs::MacOs,
+            LabTier::Pro,
+            true
+        ));
+        let source = include_str!("commands.rs");
+        assert!(
+            source.contains("WINDOW_GPU_BIND_APPLY"),
+            "the window command must stay plan-only"
+        );
+        assert!(
+            !source.contains("apply: true"),
+            "the window must never pass apply: true"
+        );
+        assert!(
+            source.contains("hyperv: None"),
+            "the window must not spawn PowerShell"
+        );
+    }
+
+    #[test]
+    fn given_windows_pro_probe_apply_true_issues_dda_cmdlets() {
+        let caps = windows_pro_caps();
+        assert!(caps.pro.offered);
+        assert!(caps.second_display_path);
+        assert!(windows_pro_provision_should_apply(
+            HostOs::Windows,
+            LabTier::Pro,
+            caps.pro.offered
+        ));
+
+        let (_dir, sysfs) = mock_gpu_tree(true);
+        let runner = RecordingHyperV::dda();
+        let status = assign(
+            windows_request(&caps, &sysfs, true, Some(&runner)),
+            &SysfsBindOps,
+        )
+        .unwrap();
+
+        assert_eq!(status.action, GpuBindAction::Bound);
+        assert!(status.bound);
+        assert!(status.exclusive);
+        assert!(!status.hypervisor_invoked);
+        assert_eq!(status.target_driver.as_deref(), Some(DDA_TARGET));
+        assert_eq!(
+            runner.names(),
+            vec![
+                "Set-VM",
+                "Disable-PnpDevice",
+                "Dismount-VMHostAssignableDevice",
+                "Add-VMAssignableDevice",
+                "Get-VMAssignableDevice",
+            ]
+        );
+        assert!(runner.dda_assigned());
+        assert!(!status.log.to_ascii_lowercase().contains("start-vm"));
     }
 }

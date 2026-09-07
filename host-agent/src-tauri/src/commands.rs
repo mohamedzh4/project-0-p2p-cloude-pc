@@ -73,8 +73,8 @@ pub fn build_launch_config(
 }
 
 /// Combined Standard/Pro offer from the probe, sliders, spare disk, and VFIO
-/// plan. A blocked tier is not offered. Never boots. Never binds a GPU
-/// (`WINDOW_GPU_BIND_APPLY` is false).
+/// / DDA plan. A blocked tier is not offered. Never boots. Never binds a GPU
+/// (`WINDOW_GPU_BIND_APPLY` is false; `hyperv: None`).
 #[tauri::command]
 pub fn evaluate_hosting_offers(
     state: State<'_, AgentState>,
@@ -105,10 +105,10 @@ pub fn evaluate_hosting_offers(
 }
 
 /// Plan Pro GPU assignment from the probe + sliders. Never binds live sysfs
-/// ([`gpu_bind::WINDOW_GPU_BIND_APPLY`] is false), never spawns PowerShell,
-/// and never invokes a hypervisor. Linux Pro bind apply is Matchmaker
-/// `POST /v1/provision`, not this command. Windows Hyper-V apply from
-/// provision is a later phase.
+/// ([`gpu_bind::WINDOW_GPU_BIND_APPLY`] is false), never spawns PowerShell
+/// (`hyperv: None`), and never invokes a hypervisor. Linux Pro bind apply
+/// and Windows Pro Hyper-V DDA/GPU-P apply are Matchmaker
+/// `POST /v1/provision`, not this command.
 #[tauri::command]
 pub fn plan_gpu_bind(state: State<'_, AgentState>, config: SharingConfig) -> GpuBindStatus {
     gpu_bind::report(

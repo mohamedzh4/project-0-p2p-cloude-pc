@@ -4,10 +4,12 @@
 //! binary, kernel, and verified rootfs are present. Windows Standard then
 //! starts QEMU with `-accel whpx` when the probe offered it and the binary
 //! plus a verified disk are present. Linux Pro then applies vfio-pci bind
-//! against injectable (production: live) sysfs when the probe offered Pro;
-//! the window stays plan-only. Windows Pro Hyper-V apply is a later phase.
-//! The Matchmaker POSTs here after host selection. The webview must not
-//! `fetch` this URL (CSP allows no remote origins).
+//! against injectable (production: live) sysfs when the probe offered Pro.
+//! Windows Pro then applies Hyper-V DDA (preferred) or exclusive GPU-P
+//! through an injectable runner (production: PowerShell) when the probe
+//! offered Pro. The window stays plan-only. The Matchmaker POSTs here after
+//! host selection. The webview must not `fetch` this URL (CSP allows no
+//! remote origins).
 
 use std::io::Read;
 use std::net::SocketAddr;
@@ -21,7 +23,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use crate::agent_status::Occupancy;
 use crate::eligibility::{self, EligibilityRequest};
 use crate::firecracker::{self, FirecrackerError, FirecrackerRuntime};
-use crate::gpu_bind::{self, GpuBindError, PciBindOps, PciSysfs};
+use crate::gpu_bind::{self, GpuBindError, HyperVGpuOps, PciBindOps, PciSysfs};
 use crate::qemu::{self, QemuError, QemuRuntime};
 use crate::host_capabilities::HostCapabilities;
 use crate::image::{
@@ -86,6 +88,11 @@ pub struct ProvisionGate {
     /// Tests inject a mock tree. Production uses [`PciSysfs::live`]. The window
     /// never sets this — it stays [`gpu_bind::WINDOW_GPU_BIND_APPLY`].
     pub vfio: Option<VfioBind>,
+    /// When set on Windows Pro, Hyper-V DDA/GPU-P apply runs through this runner
+    /// (or provision fails). Tests inject a fake [`HyperVGpuOps`]. Production
+    /// uses [`gpu_bind::ProcessHyperVGpuOps`]. The window never sets this — it
+    /// stays [`gpu_bind::WINDOW_GPU_BIND_APPLY`] with `hyperv: None`.
+    pub hyperv: Option<HyperVAssign>,
 }
 
 /// Inputs for a real Firecracker invoke. Tests inject [`FirecrackerRuntime`].
@@ -146,6 +153,23 @@ impl std::fmt::Debug for VfioBind {
         f.debug_struct("VfioBind")
             .field("sysfs", &self.sysfs)
             .field("ops", &"PciBindOps")
+            .finish()
+    }
+}
+
+/// Inputs for a real Windows Hyper-V DDA/GPU-P apply. Tests inject [`HyperVGpuOps`].
+#[derive(Clone)]
+pub struct HyperVAssign {
+    pub ops: Arc<dyn HyperVGpuOps>,
+    /// Default [`gpu_bind::DEFAULT_HYPERV_VM`]. The VM is not created or started.
+    pub vm_name: Option<String>,
+}
+
+impl std::fmt::Debug for HyperVAssign {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HyperVAssign")
+            .field("ops", &"HyperVGpuOps")
+            .field("vm_name", &self.vm_name)
             .finish()
     }
 }
@@ -274,7 +298,8 @@ where
 /// (InstanceStart) or fails clearly. Windows Standard with
 /// [`ProvisionGate::qemu`] starts QEMU `-accel whpx` or fails clearly.
 /// Linux Pro with [`ProvisionGate::vfio`] applies vfio-pci or fails clearly.
-/// Digest mismatch never boots. The window does not call this with apply.
+/// Windows Pro with [`ProvisionGate::hyperv`] applies DDA/GPU-P or fails
+/// clearly. Digest mismatch never boots. The window does not call this with apply.
 pub fn plan_http(
     os: HostOs,
     request: &ProvisionHttpRequest,
@@ -317,6 +342,12 @@ pub fn plan_http(
         if let Some(vfio) = gate.and_then(|gate| gate.vfio.as_ref()) {
             let gate = gate.expect("vfio bind requires a gate");
             apply_linux_pro_vfio(os, request, gate, vfio)?;
+        }
+    }
+    if gpu_bind::windows_pro_provision_should_apply(os, lab_tier, pro_offered) {
+        if let Some(hyperv) = gate.and_then(|gate| gate.hyperv.as_ref()) {
+            let gate = gate.expect("hyperv assign requires a gate");
+            apply_windows_pro_hyperv(os, request, gate, hyperv)?;
         }
     }
     Ok(http_response_from_plan(&planned, guest_rclone))
@@ -426,6 +457,43 @@ fn apply_linux_pro_vfio(
     if !status.bound || !status.exclusive {
         return Err(PlanHttpError::NotOffered(format!(
             "Pro GPU bind did not complete exclusively: {}",
+            status.log
+        )));
+    }
+    Ok(())
+}
+
+fn apply_windows_pro_hyperv(
+    os: HostOs,
+    request: &ProvisionHttpRequest,
+    gate: &ProvisionGate,
+    hyperv: &HyperVAssign,
+) -> Result<(), PlanHttpError> {
+    let sharing = sharing_for_gate(gate, request);
+    let gpu_id = request
+        .shared_gpu_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .or(sharing.shared_gpu_id.as_deref().filter(|id| !id.is_empty()));
+    // Windows DDA/GPU-P does not write sysfs. A non-live dummy path keeps
+    // `cfg(test)` from treating this as a live `/sys` bind.
+    let unused_sysfs = PciSysfs::from_root("/dcl-unused-hyperv-sysfs");
+    let status = gpu_bind::assign(
+        gpu_bind::BindRequest {
+            os,
+            capabilities: &gate.capabilities,
+            share_gpu: gpu_id.is_some(),
+            shared_gpu_id: gpu_id,
+            sysfs: &unused_sysfs,
+            apply: true,
+            hyperv: Some(hyperv.ops.as_ref()),
+            hyperv_vm_name: hyperv.vm_name.as_deref(),
+        },
+        &gpu_bind::SysfsBindOps,
+    )?;
+    if !status.bound || !status.exclusive {
+        return Err(PlanHttpError::NotOffered(format!(
+            "Pro GPU assignment did not complete exclusively: {}",
             status.log
         )));
     }
@@ -1315,6 +1383,7 @@ mod tests {
             firecracker: None,
             qemu: None,
             vfio: None,
+            hyperv: None,
         }
     }
 
@@ -1343,6 +1412,7 @@ mod tests {
             firecracker: None,
             qemu: None,
             vfio: None,
+            hyperv: None,
         }
     }
 
@@ -1609,6 +1679,7 @@ mod tests {
             firecracker: None,
             qemu: None,
             vfio: None,
+            hyperv: None,
         }
     }
 
@@ -2082,5 +2153,253 @@ mod tests {
         );
         assert_eq!(body["gpuExclusive"], true);
         assert!(vfio_control_lines(&sysfs.driver_dir("nvidia").join("unbind")).is_empty());
+    }
+
+    #[test]
+    fn windows_pro_with_hyperv_gate_applies_dda_and_keeps_the_placeholder_locator() {
+        use std::sync::Arc;
+
+        let (trust, body) = signed_pro();
+        let runner = Arc::new(crate::gpu_bind::RecordingHyperV::dda());
+        let mut gate = windows_whpx_gate();
+        assert!(gate.capabilities.pro.offered);
+        gate.hyperv = Some(HyperVAssign {
+            ops: runner.clone(),
+            vm_name: Some(crate::gpu_bind::DEFAULT_HYPERV_VM.to_string()),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/hyperv-gpu")
+        );
+        assert_eq!(body["hypervisorInvoked"], false);
+        assert_eq!(body["gpuExclusive"], true);
+        assert_eq!(body["streamer"], "sunshine");
+        assert_eq!(body["sunshineUrl"], STUB_SUNSHINE_URL);
+        assert!(occupancy.is_in_session());
+        assert_eq!(
+            runner.names(),
+            vec![
+                "Set-VM",
+                "Disable-PnpDevice",
+                "Dismount-VMHostAssignableDevice",
+                "Add-VMAssignableDevice",
+                "Get-VMAssignableDevice",
+            ]
+        );
+        assert!(runner.dda_assigned());
+        assert!(!output.body.to_ascii_lowercase().contains("start-vm"));
+    }
+
+    #[test]
+    fn windows_pro_hyperv_mid_step_failure_is_400_rolls_back_and_does_not_occupy() {
+        use std::sync::Arc;
+
+        let (trust, body) = signed_pro();
+        let runner = Arc::new(
+            crate::gpu_bind::RecordingHyperV::dda().fail_on("Add-VMAssignableDevice"),
+        );
+        let mut gate = windows_whpx_gate();
+        gate.hyperv = Some(HyperVAssign {
+            ops: runner.clone(),
+            vm_name: Some(crate::gpu_bind::DEFAULT_HYPERV_VM.to_string()),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("restored"));
+        assert!(!output.body.contains("connectionUrl"));
+        assert!(!occupancy.is_in_session());
+        let names = runner.names();
+        assert!(names.contains(&"Dismount-VMHostAssignableDevice".to_string()));
+        assert!(names.contains(&"Add-VMAssignableDevice".to_string()));
+        assert!(names.contains(&"Mount-VMHostAssignableDevice".to_string()));
+        assert!(names.contains(&"Enable-PnpDevice".to_string()));
+        assert!(
+            !names.contains(&"Get-VMAssignableDevice".to_string()),
+            "verify must not run after a failed add"
+        );
+        assert!(
+            !runner.leftover_assigned(),
+            "rollback must not leave a half-assigned GPU"
+        );
+    }
+
+    #[test]
+    fn windows_pro_hyperv_gate_with_live_ops_is_refused_in_tests() {
+        use std::sync::Arc;
+
+        let (trust, body) = signed_pro();
+        let mut gate = windows_whpx_gate();
+        gate.hyperv = Some(HyperVAssign {
+            ops: Arc::new(crate::gpu_bind::ProcessHyperVGpuOps::default()),
+            vm_name: Some(crate::gpu_bind::DEFAULT_HYPERV_VM.to_string()),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("must not spawn PowerShell"));
+        assert!(!occupancy.is_in_session());
+    }
+
+    #[test]
+    fn windows_pro_gated_without_hyperv_inputs_stays_stub() {
+        let (trust, body) = signed_pro();
+        let gate = windows_whpx_gate();
+        assert!(gate.hyperv.is_none());
+        let output = respond_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(body["hypervisorInvoked"], false);
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/hyperv-gpu")
+        );
+        assert_eq!(body["gpuExclusive"], true);
+        assert_eq!(body["sunshineUrl"], STUB_SUNSHINE_URL);
+    }
+
+    #[test]
+    fn windows_pro_gpu_p_gate_applies_exclusive_partition() {
+        use std::sync::Arc;
+
+        let (trust, body) = signed_pro();
+        let runner = Arc::new(crate::gpu_bind::RecordingHyperV::gpu_p());
+        let mut gate = windows_whpx_gate();
+        gate.hyperv = Some(HyperVAssign {
+            ops: runner.clone(),
+            vm_name: Some(crate::gpu_bind::DEFAULT_HYPERV_VM.to_string()),
+        });
+        let output = respond_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/hyperv-gpu")
+        );
+        assert_eq!(body["gpuExclusive"], true);
+        assert_eq!(
+            runner.names(),
+            vec![
+                "Set-VMHostPartitionableGpu",
+                "Add-VMGpuPartitionAdapter",
+                "Set-VMGpuPartitionAdapter",
+                "Get-VMGpuPartitionAdapter",
+            ]
+        );
+        assert!(runner.gpu_p_assigned());
+    }
+
+    #[test]
+    fn windows_standard_ignores_hyperv_gate() {
+        use std::sync::Arc;
+
+        let (trust, body) = signed_standard();
+        let runner = Arc::new(crate::gpu_bind::RecordingHyperV::dda());
+        let mut gate = windows_whpx_gate();
+        gate.hyperv = Some(HyperVAssign {
+            ops: runner.clone(),
+            vm_name: Some(crate::gpu_bind::DEFAULT_HYPERV_VM.to_string()),
+        });
+        let output = respond_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-whpx")
+        );
+        assert!(runner.names().is_empty());
+        assert!(!runner.leftover_assigned());
+    }
+
+    #[test]
+    fn linux_pro_ignores_hyperv_gate() {
+        use std::sync::Arc;
+
+        let (trust, body) = signed_pro();
+        let runner = Arc::new(crate::gpu_bind::RecordingHyperV::dda());
+        let mut gate = linux_kvm_gate();
+        gate.hyperv = Some(HyperVAssign {
+            ops: runner.clone(),
+            vm_name: Some(crate::gpu_bind::DEFAULT_HYPERV_VM.to_string()),
+        });
+        let output = respond_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-vfio")
+        );
+        assert!(runner.names().is_empty());
+        assert!(!runner.leftover_assigned());
     }
 }

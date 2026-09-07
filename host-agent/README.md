@@ -2,8 +2,9 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is the Host Agent after execution phase 29 (Linux Standard Firecracker
-invoke + Windows Standard QEMU `-accel whpx` + Linux Pro VFIO bind apply). It does these things and nothing else:
+This is the Host Agent after execution phase 30 (Linux Standard Firecracker
+invoke + Windows Standard QEMU `-accel whpx` + Linux Pro VFIO bind apply +
+Windows Pro Hyper-V DDA/GPU-P apply). It does these things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU, and whether Standard/Pro sessions
    can be offered (OS + KVM / Windows hypervisor / IOMMU / second display
@@ -26,9 +27,12 @@ invoke + Windows Standard QEMU `-accel whpx` + Linux Pro VFIO bind apply). It do
    `POST /v1/provision` starts QEMU with documented `-accel whpx` when the
    probe offers Standard and the binary plus a verified disk are present.
    Linux Pro `POST /v1/provision` applies vfio-pci bind (rollback on
-   failure) when the probe offers Pro. The settings window stays plan-only
-   (`apply: false`) so opening it does not steal the GPU. Windows Pro
-   Hyper-V apply from provision is a later phase.
+   failure) when the probe offers Pro. Windows Pro `POST /v1/provision`
+   applies Hyper-V DDA (preferred) or exclusive GPU-P (rollback on failure)
+   when the probe offers Pro. The settings window stays plan-only
+   (`apply: false`, `hyperv: None`) so opening it does not steal the GPU.
+   The Hyper-V VM `dcl-pro-guest` must already exist and be powered off;
+   this agent does not create or `Start-VM` it.
 7. Optionally listens for `POST /v1/provision` from the Matchmaker
    (`HOST_AGENT_LISTEN_ADDR`). The handler verifies the advertised SHA-256
    digest + Ed25519 signature against `IMAGE_SIGNING_PUBLIC_KEY` and
@@ -36,7 +40,9 @@ invoke + Windows Standard QEMU `-accel whpx` + Linux Pro VFIO bind apply). It do
    boot inputs invokes Firecracker or returns 400 (no fake success). Windows
    Standard with boot inputs invokes QEMU `-accel whpx` or returns 400.
    Linux Pro with VFIO inputs applies vfio-pci or returns 400 (rollback on
-   mid-step failure). The locator stays `https://provision.invalid/{backend}`. Mismatch is 400.
+   mid-step failure). Windows Pro with Hyper-V inputs applies DDA/GPU-P or
+   returns 400 (rollback on mid-step failure; tests never spawn PowerShell).
+   The locator stays `https://provision.invalid/{backend}`. Mismatch is 400.
    Complete storage locators yield `guestRclone` (`--s3-env-auth`); guest-mesh
    hints are accepted and not used for host `tailscale up`. The webview does
    not `fetch` this.
@@ -65,9 +71,9 @@ invoke + Windows Standard QEMU `-accel whpx` + Linux Pro VFIO bind apply). It do
     (injectable sysfs, rollback on apply failure); Windows Hyper-V DDA
     (preferred) or exclusive GPU-P via an injectable PowerShell/CIM runner
     (rollback on apply failure). The volunteer does not run `lspci`.
-    The window does not bind a live GPU. Linux Pro bind applies on
-    Matchmaker `POST /v1/provision` against live `/sys` (tests inject a
-    mock tree and refuse real `/sys`).
+    The window does not bind a live GPU. Linux Pro bind and Windows Pro
+    Hyper-V DDA/GPU-P apply on Matchmaker `POST /v1/provision` (tests inject
+    a mock tree / fake runner and refuse live `/sys` / `powershell.exe`).
 
 13. Combines the capability probe, the 2 vCPU / 4 GiB / 50 GiB floor, and a
     refused VFIO/DDA plan into one Standard/Pro offer. A blocked tier is not
@@ -76,7 +82,8 @@ invoke + Windows Standard QEMU `-accel whpx` + Linux Pro VFIO bind apply). It do
 
 There is no live Kasm or Sunshine session in this repo. Linux Standard can
 `InstanceStart`; Windows Standard can spawn `-accel whpx`; Linux Pro can apply
-vfio-pci from provision; locators stay `.invalid` (no TAP/net). See
+vfio-pci from provision; Windows Pro can apply Hyper-V DDA/GPU-P from
+provision; locators stay `.invalid` (no TAP/net). See
 `../docs/distributed-compute-lab-architecture.md` for where those land.
 
 ## Stack
@@ -126,8 +133,8 @@ host-agent/
     │   ├── launch.rs         clamped sliders → launch-config JSON (document only)
     │   ├── eligibility.rs    probe + CPU/RAM/disk floor + VFIO plan → offered vs blocked
     │   ├── disk_space.rs     spare bytes on the image-cache volume (not a disk inventory)
-    │   ├── gpu_bind.rs       VFIO plan; Linux Pro provision apply + rollback; Windows DDA/GPU-P apply via injectable runner
-    │   ├── provision_http.rs POST /v1/provision → verify image → plan; Linux/Windows Standard may invoke; Linux Pro may VFIO-bind
+    │   ├── gpu_bind.rs       VFIO plan; Linux Pro provision apply + rollback; Windows DDA/GPU-P apply from provision via injectable runner
+    │   ├── provision_http.rs POST /v1/provision → verify image → plan; Linux/Windows Standard may invoke; Linux Pro may VFIO-bind; Windows Pro may Hyper-V-assign
     │   ├── tray.rs           system tray in Rust (no webview tray APIs)
     │   ├── commands.rs       the command surface exposed to the UI
     │   └── lib.rs            app setup and state
@@ -257,7 +264,12 @@ bind round-trip; Linux Standard with boot inputs sets `hypervisorInvoked`
 true and keeps `https://provision.invalid/firecracker`; missing kernel is
 400 (occupancy unset). Windows Standard with boot inputs sets
 `hypervisorInvoked` true and keeps `https://provision.invalid/qemu-whpx`;
-missing QEMU/disk/WHPX is 400. Occupancy marked only on HTTP 200. Image verify: valid signature accepts; tampered bytes reject;
+missing QEMU/disk/WHPX is 400. Linux Pro with VFIO inputs applies bind and
+keeps `https://provision.invalid/qemu-vfio`; mid-step failure is 400 with
+rollback. Windows Pro with Hyper-V inputs applies DDA (preferred) or
+exclusive GPU-P and keeps `https://provision.invalid/hyperv-gpu`; mid-step
+failure is 400 with rollback; tests inject `HyperVGpuOps` and never spawn
+PowerShell. Occupancy marked only on HTTP 200. Image verify: valid signature accepts; tampered bytes reject;
 missing public key / local digest fail fast; HTTP mismatch does not boot.
 Hypervisor fetch: Linux missing → install into cache after SHA-256; present →
 skip; checksum mismatch → fail fast and do not install; macOS skip; Windows
@@ -323,7 +335,11 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   Phase 22 VFIO/DDA bind remains plan-only from the window. Phase 29 applies
   Linux vfio-pci from Matchmaker provision against real sysfs (injectable in
   tests; live `/sys` refused under `cfg(test)`; rollback on mid-step failure).
-  Firecracker is never used for Pro.
+  Phase 30 applies Windows Hyper-V DDA (preferred) or exclusive GPU-P from
+  Matchmaker provision through an injectable runner (production PowerShell;
+  tests refuse live `powershell.exe`; rollback on mid-step failure). The VM
+  `dcl-pro-guest` must already exist and be powered off; this agent does not
+  `Start-VM`. Firecracker is never used for Pro.
   Session guest/user tags live on Matchmaker JSON; this agent still joins as
   `tag:host` and never passes `--advertise-exit-node` or `--exit-node`.
   Complete provision locators return `guestRclone` argv (`--s3-env-auth`).
@@ -338,8 +354,10 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   (leftover **19b**) runs the QEMU NSIS installer with `/S` `/D=`; UAC
   consent is still manual. Phase 25 (leftover **22b**) applies Hyper-V
   DDA/GPU-P through an injectable runner with rollback; live PowerShell is
-  never spawned from tests. On metal, Hyper-V apply still needs an elevated
-  agent, the Hyper-V feature, and an existing VM `dcl-pro-guest`. Phase 26
+  never spawned from tests. Phase 30 runs that apply from
+  `POST /v1/provision` (window still plan-only). On metal, Hyper-V apply
+  still needs an elevated agent, the Hyper-V feature, and an existing VM
+  `dcl-pro-guest`. Phase 26
   Packer pipeline produces signed guest disks. Phase 27 InstanceStarts
   Firecracker on Linux Standard HTTP provision; phase 28 spawns QEMU
   `-accel whpx` on Windows Standard; locators stay `.invalid` (no TAP).

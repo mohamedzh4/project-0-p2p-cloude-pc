@@ -4,7 +4,8 @@
 //! when the probe offers it and the binary, kernel, and verified rootfs are
 //! present. Windows Standard provision starts QEMU with `-accel whpx` when the
 //! probe offers it and the binary plus a verified disk are present. Linux Pro
-//! provision applies vfio-pci bind when the probe offers Pro (window stays
+//! provision applies vfio-pci bind when the probe offers Pro; Windows Pro
+//! provision applies Hyper-V DDA/GPU-P when the probe offers Pro (window stays
 //! plan-only). Tray status and immediate pause live in
 //! Rust; the webview does not call the Matchmaker.
 
@@ -181,6 +182,16 @@ fn spawn_provision_listener(app: &tauri::App) {
                     } else {
                         None
                     };
+                    let hyperv = if os == HostOs::Windows && capabilities.pro.offered {
+                        Some(provision_http::HyperVAssign {
+                            ops: std::sync::Arc::new(
+                                crate::gpu_bind::ProcessHyperVGpuOps::default(),
+                            ),
+                            vm_name: Some(crate::gpu_bind::DEFAULT_HYPERV_VM.to_string()),
+                        })
+                    } else {
+                        None
+                    };
                     let gate = provision_http::ProvisionGate {
                         capabilities,
                         hardware,
@@ -189,6 +200,7 @@ fn spawn_provision_listener(app: &tauri::App) {
                         firecracker,
                         qemu,
                         vfio,
+                        hyperv,
                     };
                     if let Err(error) = provision_http::serve(
                         &config,
