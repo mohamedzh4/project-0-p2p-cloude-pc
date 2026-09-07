@@ -51,6 +51,13 @@ pub fn build_launch_config(
     let lab_tier = LabTier::parse(&lab_tier).map_err(|error| error.to_string())?;
     let cache = crate::image::resolve_image_cache_dir(|key| std::env::var(key).ok());
     let spare_disk_bytes = crate::disk_space::available_bytes(&cache);
+    let kernel_override = std::env::var(crate::firecracker::KERNEL_ENV)
+        .ok()
+        .map(|value| {
+            let trimmed = value.trim().to_string();
+            std::path::PathBuf::from(trimmed)
+        })
+        .filter(|path| !path.as_os_str().is_empty());
     launch::build(launch::LaunchRequest {
         os: HostOs::current(),
         lab_tier,
@@ -60,6 +67,7 @@ pub fn build_launch_config(
         guest_image: Some(&state.guest_image),
         capabilities: Some(&state.capabilities),
         spare_disk_bytes,
+        kernel_override: kernel_override.as_deref(),
     })
     .map_err(|error| error.to_string())
 }

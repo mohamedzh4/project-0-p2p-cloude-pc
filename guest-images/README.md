@@ -1,8 +1,10 @@
 # Guest image pipeline
 
 Packer + QEMU **build** of the disks Host Agent already knows how to
-**fetch and verify**. This does not boot Firecracker, QEMU+WHPX, or a live
-session. Host Agent still returns stub locators (`provision.invalid`).
+**fetch and verify**. Linux Standard Host Agent can `InstanceStart` Firecracker
+(phase 27) when kernel + verified `rootfs.img` are present; the locator is
+still `https://provision.invalid/firecracker` (no TAP/net, no live Kasm).
+Windows QEMU+WHPX boot is still a stub.
 
 | Tier | Streamer in the guest | Disk |
 | --- | --- | --- |
@@ -44,7 +46,8 @@ export IMAGE_SIGNING_PRIVATE_KEY="$HOME/dcl-dev-ed25519.pem"
 
 Kasm's installer needs nested Docker inside the guest (official single-server).
 That is why the cloud image is grown to 64G and the Packer VM is 4 vCPU / 8 GiB
-for the *build*. Host Agent still does not invoke a hypervisor here.
+for the *build*. Host Agent InstanceStart (phase 27) still needs an operator
+`FIRECRACKER_KERNEL` and does not invent a live Kasm URL.
 
 Pro GPU vendor drivers are **not** baked in (the Packer VM has no passthrough
 GPU). Install NVIDIA/AMD drivers on first Pro boot after VFIO/DDA.
@@ -97,7 +100,8 @@ HOST_AGENT_PRO_IMAGE_URL=...
 Copy digest + signature from `env.snippet` into Matchmaker `IMAGE_STANDARD_*` /
 `IMAGE_PRO_*` and Host Agent `IMAGE_SIGNING_PUBLIC_KEY` + `IMAGE_LOCAL_DIGEST`
 (Standard pin). Linux fetch/verify is already implemented. Windows still logs
-**would fetch** (phase 20). Neither path boots.
+**would fetch** (phase 20). Linux Standard can InstanceStart; set
+`FIRECRACKER_KERNEL`. The provision locator stays `.invalid`.
 
 ## Tests (no hardware)
 
@@ -112,7 +116,9 @@ Packer.
 ## Honest limits
 
 - This pipeline has **not** been run on physical hardware in this repo.
-- Host Agent `POST /v1/provision` still returns `https://provision.invalid/...`
+- Host Agent `POST /v1/provision` on Linux Standard may set
+  `hypervisorInvoked: true` after `InstanceStart`. The locator stays
+  `https://provision.invalid/firecracker` (no TAP). Windows/Pro stay stubs
   with `hypervisorInvoked: false`.
 - `SEED_HOST_KASM_URL` remains `https://example.invalid/kasm` until a human
-  boots a guest and has a live URL.
+  boots a guest **and** has a live URL. Phase 27 does not invent one.

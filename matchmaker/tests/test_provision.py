@@ -309,7 +309,7 @@ def test_http_provisioner_treats_agent_errors_as_unavailable() -> None:
     assert result is None
 
 
-def test_http_provisioner_refuses_a_response_that_claims_a_hypervisor() -> None:
+def test_http_provisioner_accepts_invoke_when_locator_is_still_a_placeholder() -> None:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # noqa: A003
             return
@@ -317,6 +317,39 @@ def test_http_provisioner_refuses_a_response_that_claims_a_hypervisor() -> None:
         def do_POST(self) -> None:  # noqa: N802
             payload = json.dumps(
                 {"connectionUrl": PROVISION_URL, "hypervisorInvoked": True}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        provisioner = HttpHostProvisioner(bearer_token="test-host-bootstrap-token")
+        result = provisioner.provision(_host(agent_url=origin), lab_tier="standard")
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert result is not None
+    assert result.connection_url == PROVISION_URL
+
+
+def test_http_provisioner_refuses_a_live_locator_claimed_with_invoke() -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            payload = json.dumps(
+                {
+                    "connectionUrl": "https://kasm.example.com/session",
+                    "hypervisorInvoked": True,
+                }
             ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

@@ -2,7 +2,8 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is the Host Agent after execution phase 25 (Hyper-V DDA/GPU-P apply). It does these things and nothing else:
+This is the Host Agent after execution phase 27 (Linux Standard Firecracker
+invoke). It does these things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU, and whether Standard/Pro sessions
    can be offered (OS + KVM / Windows hypervisor / IOMMU / second display
@@ -16,14 +17,18 @@ This is the Host Agent after execution phase 25 (Hyper-V DDA/GPU-P apply). It do
 5. While local `sharingEnabled` is on and a host id exists, pings
    `POST /v1/hosts/{id}/heartbeat` from Rust every 10 seconds. Pause sharing to
    stop pings immediately (next tick) so the host goes stale in matching.
-6. Selects a **stub** provision target from host OS × lab tier (Linux Standard
+6. Selects a provision target from host OS × lab tier (Linux Standard
    → Firecracker, Windows Standard → QEMU+WHPX, Pro → QEMU+VFIO / Hyper-V GPU).
-   macOS is an explicit unsupported variant. No hypervisor is invoked.
+   macOS is an explicit unsupported variant. `plan()` never invokes a
+   hypervisor. Linux Standard `POST /v1/provision` starts Firecracker when
+   the probe offers Standard and the binary, kernel, and verified rootfs
+   are present (`InstanceStart` over a Unix socket). Windows/Pro stay stubs.
 7. Optionally listens for `POST /v1/provision` from the Matchmaker
    (`HOST_AGENT_LISTEN_ADDR`). The handler verifies the advertised SHA-256
    digest + Ed25519 signature against `IMAGE_SIGNING_PUBLIC_KEY` and
-   `IMAGE_LOCAL_DIGEST`, then calls `plan_provision` and returns
-   `https://provision.invalid/{backend}`. Mismatch is 400 (no stub boot).
+   `IMAGE_LOCAL_DIGEST`, then calls `plan_provision`. Linux Standard with
+   boot inputs invokes Firecracker or returns 400 (no fake success). The
+   locator stays `https://provision.invalid/{backend}`. Mismatch is 400.
    Complete storage locators yield `guestRclone` (`--s3-env-auth`); guest-mesh
    hints are accepted and not used for host `tailscale up`. The webview does
    not `fetch` this.
@@ -43,8 +48,10 @@ This is the Host Agent after execution phase 25 (Hyper-V DDA/GPU-P apply). It do
     Windows Standard fetches the documented Weilnetz NSIS installer, verifies
     SHA-512, and runs it with `/S` and `/D=<cache>` (NSIS Chapter 3). UAC may
     still appear (`qemu.nsi` `RequestExecutionLevel admin`) and cannot be
-    suppressed. macOS skips with a reason. The hypervisor is never executed.
-    The webview does not download it. Tests inject a fake installer.
+    suppressed. macOS skips with a reason. Locate/fetch never execs the
+    binary. Linux Standard provision (item 6) starts Firecracker from
+    `firecracker.rs`. The webview does not download it. Tests inject a fake
+    installer and a fake Firecracker API.
 12. Plans Pro GPU assignment from the dedicated GPU id: Linux vfio-pci
     (injectable sysfs, rollback on apply failure); Windows Hyper-V DDA
     (preferred) or exclusive GPU-P via an injectable PowerShell/CIM runner
@@ -56,7 +63,8 @@ This is the Host Agent after execution phase 25 (Hyper-V DDA/GPU-P apply). It do
     offered (plain-language reason; no launch document; live provision is
     400). GPU exclusivity copy stays when Pro *is* offered.
 
-There is no real Firecracker or QEMU boot. See
+There is no live Kasm or Sunshine session in this repo. Linux Standard can
+`InstanceStart`; the locator stays `.invalid` (no TAP/net). See
 `../docs/distributed-compute-lab-architecture.md` for where those land.
 
 ## Stack
@@ -92,20 +100,21 @@ host-agent/
     │   ├── hardware.rs       CPU + RAM detection
     │   ├── gpu.rs            NVIDIA detection with graceful fallback
     │   ├── host_capabilities.rs  OS + KVM/WHPX/IOMMU/GPU probe (no Tauri; no hypervisor)
-    │   ├── hypervisor.rs     locate/fetch Firecracker (Linux) / QEMU stub (Windows); never invoke
+    │   ├── hypervisor.rs     locate/fetch Firecracker (Linux) / QEMU stub (Windows); never exec here
+    │   ├── firecracker.rs    Linux Standard InstanceStart over Unix API (injected in tests)
     │   ├── config.rs         load/save the sharing config; immediate pause
     │   ├── identity.rs       persisted Matchmaker host id
     │   ├── matchmaker.rs     inventory + heartbeat + earnings GET (clamp, fail-fast env)
     │   ├── mesh.rs           Matchmaker preauth mint + tailscale up from env (no secrets in source; never --exit-node)
     │   ├── storage.rs        Guest rclone argv/plan from locators or env (no S3 secrets, no spawn)
     │   ├── agent_status.rs   paused / idle / in-session (no Tauri types)
-    │   ├── provision.rs      OS-conditional stub backends (peers; no hypervisor)
+    │   ├── provision.rs      OS-conditional stub backends (plan() never invokes)
     │   ├── image.rs          SHA-256 + Ed25519 verify; locate/fetch signed guest image (never boot)
-    │   ├── launch.rs         clamped sliders → launch-config JSON (never boot)
+    │   ├── launch.rs         clamped sliders → launch-config JSON (document only)
     │   ├── eligibility.rs    probe + CPU/RAM/disk floor + VFIO plan → offered vs blocked
     │   ├── disk_space.rs     spare bytes on the image-cache volume (not a disk inventory)
     │   ├── gpu_bind.rs       VFIO plan/apply with rollback; Windows DDA/GPU-P apply via injectable runner
-    │   ├── provision_http.rs POST /v1/provision → verify image → plan + optional guestRclone (Bearer)
+    │   ├── provision_http.rs POST /v1/provision → verify image → plan; Linux Standard may InstanceStart
     │   ├── tray.rs           system tray in Rust (no webview tray APIs)
     │   ├── commands.rs       the command surface exposed to the UI
     │   └── lib.rs            app setup and state
@@ -231,8 +240,9 @@ POST vs PUT once a host id is persisted, heartbeat skip/send paths (including
 pause via `set_sharing_enabled`), token redaction in `Debug`, presence
 (paused beats occupancy), and earnings GET (`credits accrued (not paid out)`).
 Provision HTTP: Linux/Windows stub URLs, 401 without Bearer, macOS rejected,
-bind round-trip with `hypervisorInvoked` false, occupancy marked only on
-HTTP 200. Image verify: valid signature accepts; tampered bytes reject;
+bind round-trip; Linux Standard with boot inputs sets `hypervisorInvoked`
+true and keeps `https://provision.invalid/firecracker`; missing kernel is
+400 (occupancy unset). Occupancy marked only on HTTP 200. Image verify: valid signature accepts; tampered bytes reject;
 missing public key / local digest fail fast; HTTP mismatch does not boot.
 Hypervisor fetch: Linux missing → install into cache after SHA-256; present →
 skip; checksum mismatch → fail fast and do not install; macOS skip; Windows
@@ -301,7 +311,7 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   `tag:host` and never passes `--advertise-exit-node` or `--exit-node`.
   Complete provision locators return `guestRclone` argv (`--s3-env-auth`).
   Hardware is implemented in code, not yet run on physical hardware — still no
-  live hypervisor or stream in this repo. Guest disks: `guest-images/`. Storage
+  live Kasm/Sunshine session in this repo. Guest disks: `guest-images/`. Storage
   is renterd S3, not Storj. On
   macOS, `POST /v1/provision` is 400 (not offered / unsupported OS);
   Matchmaker then keeps the seeded locator. Local in-session occupancy is
@@ -313,7 +323,10 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   DDA/GPU-P through an injectable runner with rollback; live PowerShell is
   never spawned from tests. On metal, Hyper-V apply still needs an elevated
   agent, the Hyper-V feature, and an existing VM `dcl-pro-guest`. Phase 26
-  Packer pipeline produces signed guest disks; this agent still does not boot.
+  Packer pipeline produces signed guest disks. Phase 27 InstanceStarts
+  Firecracker on Linux Standard HTTP provision; the locator stays
+  `.invalid` (no TAP). Next is Windows QEMU `-accel whpx` boot. Operator
+  kernel is `FIRECRACKER_KERNEL` (Packer does not invent vmlinux).
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

@@ -227,8 +227,12 @@ class HttpHostProvisioner:
         if not isinstance(connection_url, str) or not connection_url.strip():
             return None
         if body.get("hypervisorInvoked") is True:
-            # Stubs never invoke a hypervisor. Refuse a live boot claimed here.
-            return None
+            # Phase 27 may InstanceStart on Linux Standard. Keep the locator
+            # only when it is still a placeholder (.invalid). A live Kasm URL
+            # is a later locator phase — do not treat invoke as a confirmed desktop.
+            host = (urlparse(connection_url.strip()).hostname or "").lower()
+            if not host.endswith(".invalid"):
+                return None
 
         token = body.get("connectionToken")
         connection_token = token.strip() if isinstance(token, str) and token.strip() else None

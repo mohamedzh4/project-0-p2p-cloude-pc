@@ -39,7 +39,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 26: pytest 161, cargo test 246, vitest 31, guest-images
+  Counts after phase 27: pytest 162, cargo test 266, vitest 31, guest-images
   unittest 12.
 
 ## Contracts to keep stable
@@ -90,26 +90,34 @@ still load. Matchmaker `hosts` already has `shared_gpu_id`.
 Host Agent Matchmaker calls belong in **Rust**, not `fetch` from the webview
 (CSP allows no remote origins).
 
-Host Agent provisioner (stubs, phase 5–6): `host_agent_lib::plan_provision(os,
-request) -> Result<ProvisionPlan, ProvisionError>` in
-`host-agent/src-tauri/src/provision.rs`. Linux Standard → Firecracker, Windows
-Standard → QEMU+WHPX, Linux Pro → QEMU+VFIO, Windows Pro → Hyper-V GPU; macOS
-is unsupported (not a Firecracker fallback). Pro requires `sharedGpuId` and
-sets `gpuExclusive` plus an exclusivity warning. Never invokes a hypervisor.
-The Host Agent HTTP port is `POST /v1/provision` (`provision_http.rs`); it
-verifies Ed25519 over the SHA-256 digest (`image.rs`) **before** `plan` and
-returns `{ connectionUrl, hypervisorInvoked, gpuExclusive, streamer }` plus
-Pro-only `sunshineUrl` and `moonlight: { host, app }`. Standard `streamer` is
-`kasm`. Pro `streamer` is `sunshine` (stub origin `https://provision.invalid`).
-Body includes `labTier`, optional `sharedGpuId`, `imageDigest`, `imageSignature`.
-Missing or mismatched image metadata is 400 (no stub boot). Listen requires
-`IMAGE_SIGNING_PUBLIC_KEY` and `IMAGE_LOCAL_DIGEST` (fail fast). Matchmaker
-session booking, after `HostSelector.select` and occupancy commit,
-calls a `HostProvisioner` port (`get_host_provisioner()`), not a hypervisor and
-not a concrete selector. Origin: `host.agentUrl`, else optional
+Host Agent provisioner (stubs, phase 5–6; Linux Standard invoke, phase 27):
+`host_agent_lib::plan_provision(os, request) -> Result<ProvisionPlan,
+ProvisionError>` in `host-agent/src-tauri/src/provision.rs`. Linux Standard →
+Firecracker, Windows Standard → QEMU+WHPX, Linux Pro → QEMU+VFIO, Windows Pro
+→ Hyper-V GPU; macOS is unsupported (not a Firecracker fallback). Pro requires
+`sharedGpuId` and sets `gpuExclusive` plus an exclusivity warning. `plan()`
+never invokes a hypervisor. The Host Agent HTTP port is `POST /v1/provision`
+(`provision_http.rs`); it verifies Ed25519 over the SHA-256 digest
+(`image.rs`) **before** `plan`. On Linux Standard, when the probe offers the
+tier and `ProvisionGate.firecracker` is set, `firecracker.rs` starts the
+fetched binary (`--api-sock` + `--enable-pci`) and PUTs boot-source,
+drives/rootfs, machine-config, then `InstanceStart`. Missing kernel/binary/
+rootfs is 400, not a fake success. Response is
+`{ connectionUrl, hypervisorInvoked, gpuExclusive, streamer }` plus Pro-only
+`sunshineUrl` and `moonlight: { host, app }`. Standard `streamer` is `kasm`.
+Pro `streamer` is `sunshine` (stub origin `https://provision.invalid`). Linux
+Standard locator stays `https://provision.invalid/firecracker` even after
+invoke. Body includes `labTier`, optional `sharedGpuId`, `imageDigest`,
+`imageSignature`. Missing or mismatched image metadata is 400 (no stub boot).
+Listen requires `IMAGE_SIGNING_PUBLIC_KEY` and `IMAGE_LOCAL_DIGEST` (fail
+fast). Matchmaker session booking, after `HostSelector.select` and occupancy
+commit, calls a `HostProvisioner` port (`get_host_provisioner()`), not a
+hypervisor and not a concrete selector. Origin: `host.agentUrl`, else optional
 `HOST_AGENT_PROVISION_URL`. If that call is unavailable, the seeded/placeholder
 locator on the host row is kept (`kasmUrl` column; session JSON still splits
-Kasm vs Sunshine by `labTier`). Do not put Firecracker/QEMU/WHPX names in
+Kasm vs Sunshine by `labTier`). `HttpHostProvisioner` keeps
+`hypervisorInvoked: true` only when the locator hostname ends with `.invalid`;
+invoke plus a live URL is dropped. Do not put Firecracker/QEMU/WHPX names in
 `sessions.py`. Provision POSTs the registry digest+signature for the booked
 `labTier`.
 
@@ -121,10 +129,10 @@ iframe it in early phases.
 | Cahier | This plan |
 | --- | --- |
 | 0 Manual compute pipeline | Hardware: three honest lines in `PROJECT_STATUS.md`. Not yet run on physical hardware. Guest disks: `guest-images/` |
-| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs). Live desktop is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid`) |
+| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs) through 27 (Linux Standard InstanceStart; locator still `.invalid`). Live desktop is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid`) |
 | 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
 | 3 Pro/Gamer + latency | Execution phase 16 software (Sunshine locators). Pro-GPU implemented in code, not yet run on physical hardware; no live stream in-repo |
-| 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv; 26 Packer guest images. Live desktop / pairwise ACLs still paper |
+| 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv; 26 Packer guest images; 27 Firecracker InstanceStart (no TAP). Live desktop / pairwise ACLs still paper |
 
 ## Execution phases
 
@@ -653,11 +661,37 @@ Tests cover templates + signing helper without hardware. Suites green.
 
 Done as a **pipeline in-repo** (2026-09-07). Artifacts are gitignored. Linux
 fetch/verify already existed; Windows remains would-fetch. Host Agent still
-does not boot. See `guest-images/README.md` and
+did not boot in this phase. See `guest-images/README.md` and
 `docs/phase-logs/phase-26-guest-image-pipeline.md`.
 
-**Next:** Firecracker real invoke from the phase-21 launch config, using a
-disk this pipeline produced. Still not WHPX boot, live VFIO, or the web loop.
+### Phase 27 — Firecracker real invoke (Linux Standard)
+
+**Why next:** Phase 19 fetched the binary, phase 20/26 the signed disk, phase
+21 the launch JSON — none of those started Firecracker. GATE-FC paper still
+needs `InstanceStart`.
+
+**Do:** After the capability probe offers Linux Standard, and the fetched
+binary plus a verified Standard `rootfs.img` and kernel are present, start
+Firecracker via the documented Unix API (`PUT /boot-source`, `PUT /drives/rootfs`,
+`PUT /machine-config`, `PUT /actions` `InstanceStart`). Use clamped vCPU/RAM.
+Fail clearly if the kernel is missing. Tests must inject a fake binary/API
+(no `/dev/kvm`). Keep the placeholder locator.
+
+**Do not:** QEMU/WHPX boot, live VFIO from the window, Hyper-V DDA
+apply-from-window, a fake live Kasm URL, or the web loop. Do not close
+hardware status. Do not use jailer unless a later phase owns it.
+
+**Exit:** HTTP provision on Linux Standard invokes; argv and API order are
+locked in tests; macOS/Windows/Pro do not spawn; suites green.
+
+Done as a **software contract** (2026-09-07). `firecracker.rs` argv is
+`--api-sock` + `--enable-pci` (v1.16.1). Locator stays
+`https://provision.invalid/firecracker`. Matchmaker accepts invoke only with
+a `.invalid` hostname. Not yet run on physical hardware. See
+`docs/phase-logs/phase-27-firecracker-invoke.md`.
+
+**Next:** Windows QEMU `-accel whpx` boot. Still not live VFIO from the
+window, a fake live Kasm URL, or the web loop.
 
 ## Handoff template
 

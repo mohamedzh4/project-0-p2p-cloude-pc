@@ -37,6 +37,8 @@ pub struct LaunchRequest<'a> {
     /// When set, an unoffered tier (probe or resources) does not emit a config.
     pub capabilities: Option<&'a HostCapabilities>,
     pub spare_disk_bytes: Option<u64>,
+    /// `FIRECRACKER_KERNEL` when that path is a file.
+    pub kernel_override: Option<&'a Path>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -159,6 +161,7 @@ pub fn build(request: LaunchRequest<'_>) -> Result<LaunchConfig, LaunchError> {
         request.lab_tier,
         request.image_cache_dir,
         rootfs_path.as_deref(),
+        request.kernel_override,
     );
 
     let gpu = match plan.shared_gpu_id {
@@ -200,7 +203,11 @@ fn resolve_kernel(
     lab_tier: LabTier,
     cache_dir: Option<&Path>,
     rootfs_path: Option<&str>,
+    kernel_override: Option<&Path>,
 ) -> Option<String> {
+    if let Some(path) = kernel_override.filter(|path| path.is_file()) {
+        return Some(path.to_string_lossy().into_owned());
+    }
     if let Some(path) = existing_file(cache_dir.map(|dir| cached_kernel_path(dir, lab_tier))) {
         return Some(path);
     }
@@ -266,6 +273,7 @@ mod tests {
             guest_image: None,
             capabilities: None,
             spare_disk_bytes: None,
+            kernel_override: None,
         }
     }
 
@@ -534,6 +542,7 @@ mod tests {
             guest_image: Some(&guest),
             capabilities: None,
             spare_disk_bytes: None,
+            kernel_override: None,
         })
         .unwrap();
         let json = serde_json::to_value(&config).unwrap();
@@ -563,6 +572,7 @@ mod tests {
             guest_image: Some(&guest),
             capabilities: None,
             spare_disk_bytes: None,
+            kernel_override: None,
         })
         .unwrap();
 
@@ -589,6 +599,7 @@ mod tests {
             guest_image: None,
             capabilities: None,
             spare_disk_bytes: None,
+            kernel_override: None,
         })
         .unwrap();
         let json = serde_json::to_value(&config).unwrap();
@@ -603,6 +614,31 @@ mod tests {
         );
         assert_eq!(json["rootfsPath"], rootfs.to_str().unwrap());
         assert_eq!(json["kernelPath"], kernel.to_str().unwrap());
+    }
+
+    #[test]
+    fn firecracker_kernel_override_wins_when_the_file_exists() {
+        let hardware = hardware();
+        let sharing = sharing(4, 8 * BYTES_PER_GIB, false, None);
+        let dir = TempDir::new().unwrap();
+        let override_kernel = dir.path().join("from-env-vmlinux");
+        fs::write(&override_kernel, b"env-vmlinux\n").unwrap();
+        let config = build(LaunchRequest {
+            os: HostOs::Linux,
+            lab_tier: LabTier::Standard,
+            hardware: &hardware,
+            sharing: &sharing,
+            image_cache_dir: None,
+            guest_image: None,
+            capabilities: None,
+            spare_disk_bytes: None,
+            kernel_override: Some(override_kernel.as_path()),
+        })
+        .unwrap();
+        assert_eq!(
+            config.kernel_path.as_deref(),
+            Some(override_kernel.to_str().unwrap())
+        );
     }
 
     #[test]
@@ -674,6 +710,7 @@ mod tests {
             guest_image: None,
             capabilities: Some(&caps),
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
+            kernel_override: None,
         })
         .unwrap_err();
 
@@ -699,6 +736,7 @@ mod tests {
             guest_image: None,
             capabilities: Some(&caps),
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
+            kernel_override: None,
         })
         .unwrap_err();
 
@@ -725,6 +763,7 @@ mod tests {
             guest_image: None,
             capabilities: None,
             spare_disk_bytes: Some(10 * BYTES_PER_GIB),
+            kernel_override: None,
         })
         .unwrap_err();
 
@@ -761,6 +800,7 @@ mod tests {
             guest_image: None,
             capabilities: Some(&caps),
             spare_disk_bytes: None,
+            kernel_override: None,
         })
         .unwrap_err();
 

@@ -25,7 +25,8 @@ Everything in this document fits into one of these four planes.
 ## Implemented vs this paper (2026-09-05)
 
 This file is the **target** architecture. Software on local `main` after
-execution phase 26 is the **control-plane MVP with stubs**, plus a Headscale
+execution phase 27 is the **control-plane MVP** plus Linux Standard Firecracker
+**InstanceStart** (locator still `.invalid`; no TAP), a Headscale
 mint+join contract, a default-deny ACL file, session ephemeral guest/user
 tags, a platform exit-node **guest join plan** (not live egress), a **renterd**
 S3 storage contract (not Storj; human decision 2026-09-05), Pro
@@ -35,19 +36,19 @@ cache on Linux; Windows QEMU NSIS silent install with `/S` `/D=` — UAC still
 manual), signed **guest-image**
 locate/fetch (Linux Firecracker/Pro images verified SHA-256+Ed25519 before
 ready; Windows would-fetch; macOS skip), a **launch config** from clamped
-sliders (no boot), a **VFIO/DDA bind plan** (Linux mock-sysfs apply +
+sliders, a **VFIO/DDA bind plan** (Linux mock-sysfs apply +
 rollback; Windows Hyper-V DDA/GPU-P apply via injectable runner + rollback), and **insufficient-resource
 rejection UX** (blocked tiers are not offered). It is not a live lab.
 
 | Paper | In-repo now |
 | --- | --- |
-| Four planes | Control plane (Matchmaker). Compute is OS-conditional **stubs**. Network plane: Headscale mint+join, default-deny ACL file, host `tag:host`, session `tag:guest`/`tag:user`, guest `--exit-node` plan. Storage: renterd S3 locators + guest rclone argv (not Storj); live mount needs a guest image |
-| Standard: Firecracker (Linux) / QEMU+WHPX (Windows) + Kasm in the guest | `plan_provision` + `POST /v1/provision` return `https://provision.invalid/{backend}` unless the Host Agent eligibility gate refuses (phase 23: probe + 2 vCPU/4 GiB/50 GiB floor). Phase 19 locates/fetches the Firecracker **binary** on Linux (SHA-256, user cache, never executed); phase 24 fetches/runs the Windows QEMU NSIS installer (`/S` `/D=`; UAC still manual). Phase 20 locates/fetches the signed **guest image** on Linux (SHA-256 + Ed25519 before ready); Windows logs would-fetch QEMU disk; macOS skips. Phase 21 maps clamped sliders to a **launch config** JSON (vCPU/RAM; GPU omitted on Standard). Phase 26 Packer pipeline builds signed disks (`guest-images/`). No boot. Standard-Linux / Standard-Windows: implemented in code, not yet run on physical hardware. |
+| Four planes | Control plane (Matchmaker). Compute: Linux Standard can InstanceStart Firecracker; Windows Standard and Pro stay **stubs**. Network plane: Headscale mint+join, default-deny ACL file, host `tag:host`, session `tag:guest`/`tag:user`, guest `--exit-node` plan. Storage: renterd S3 locators + guest rclone argv (not Storj); live mount needs a guest network |
+| Standard: Firecracker (Linux) / QEMU+WHPX (Windows) + Kasm in the guest | `plan()` never invokes. Linux Standard `POST /v1/provision` starts Firecracker (`--api-sock`, `--enable-pci`, then PUT boot-source / drives/rootfs / machine-config / `InstanceStart`) when the probe offers Standard and binary + kernel + verified `rootfs.img` are present. Locator stays `https://provision.invalid/firecracker` (no TAP). Eligibility gate (phase 23) still refuses an unoffered tier. Phase 19 locates/fetches the Firecracker **binary** on Linux (SHA-256, user cache; fetch never execs). Phase 24 fetches/runs the Windows QEMU NSIS installer (`/S` `/D=`; UAC still manual). Phase 20 locates/fetches the signed **guest image** on Linux; Windows logs would-fetch. Phase 21 maps clamped sliders to a **launch config** JSON. Phase 26 Packer pipeline builds signed disks (`guest-images/`). Standard-Linux / Standard-Windows: implemented in code, not yet run on physical hardware. |
 | Pro: VFIO / Hyper-V GPU + Sunshine | Stubs require `sharedGpuId` and set `gpuExclusive`. Launch config includes `{ id, exclusive: true }` when `shareGpu` is on. Linux VFIO bind is planned from sysfs (apply + rollback on a mock tree; not live). Windows DDA/GPU-P apply uses an injectable Hyper-V runner with rollback (not live PowerShell in tests; window stays plan-only). Session JSON `streamer: sunshine` + Moonlight hint. Pro-GPU: implemented in code, not yet run on physical hardware; no live stream in-repo |
 | Intent capture, ranking, billing | FR2 harness maps intent → `labTier`; ranking is `RankedHostSelector` (declared CPU/RAM, Pro GPU id); internal `ledger_entries` meter at session end (no payment processor) |
 | Tailscale/Headscale + exit-node egress | Phase 14: self-hosted Headscale compose + Matchmaker preauth mint + Host Agent Rust join. **No Tailscale SaaS.** Phase 14c: default-deny `acl.hujson` + host `tag:host`. Phase 17: ephemeral guest/user tags; guest join plan includes `--exit-node`. Live egress still needs a guest image (§9 items 4–5) |
 | Storj + rclone | **Not used.** Implemented storage is **renterd S3** (human decision 2026-09-05): compose + per-user bucket + guest rclone argv/plan. Live guest mount still needs a guest image |
-| Host Agent tray / mesh / signed images | Tray + pause + presence. Signed image **verify** before stub boot (fixture bytes). Phase 20 **fetch** to user cache + SHA-256/Ed25519 before ready (no CDN; no private key). Phase 21 **launch config** from sliders + exclusive GPU id (JSON only; never invoked). Phase 22 **VFIO/DDA plan** (Linux mock-sysfs bind + rollback; Windows DDA/GPU-P apply on injectable runner; never Firecracker; no live bind from the window). Phase 23 **eligibility**: probe + CPU/RAM/disk floor + refused VFIO plan; blocked tier not offered. Host mesh mint+join tagged `tag:host`; session guest/user tags on Matchmaker JSON; Host Agent never `--exit-node`. Phase 19: Firecracker binary fetch to user cache (not invoked) |
+| Host Agent tray / mesh / signed images | Tray + pause + presence. Signed image **verify** before stub boot (fixture bytes). Phase 20 **fetch** to user cache + SHA-256/Ed25519 before ready (no CDN; no private key). Phase 21 **launch config** from sliders + exclusive GPU id (JSON document). Phase 22 **VFIO/DDA plan** (Linux mock-sysfs bind + rollback; Windows DDA/GPU-P apply on injectable runner; never Firecracker; no live bind from the window). Phase 23 **eligibility**: probe + CPU/RAM/disk floor + refused VFIO plan; blocked tier not offered. Host mesh mint+join tagged `tag:host`; session guest/user tags on Matchmaker JSON; Host Agent never `--exit-node`. Phase 19: Firecracker binary fetch to user cache. Phase 27: Linux Standard `InstanceStart` (`firecracker.rs`; tests inject argv/API; locator still `.invalid`) |
 
 Do not treat a passing pytest/cargo suite as a live session on metal.
 

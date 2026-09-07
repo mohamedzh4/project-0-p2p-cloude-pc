@@ -1,10 +1,14 @@
-//! Inbound provision HTTP port. Calls [`crate::provision::plan`] **after**
-//! image digest+signature verify; never starts a hypervisor. The Matchmaker
-//! POSTs here after host selection. The webview must not `fetch` this URL
-//! (CSP allows no remote origins).
+//! Inbound provision HTTP port. Verifies the signed image digest
+//! ([`crate::image::verify_image`]) **before** calling [`crate::provision::plan`].
+//! Linux Standard then starts Firecracker when the probe offered it and the
+//! binary, kernel, and verified rootfs are present. Other backends stay stubs.
+//! The Matchmaker POSTs here after host selection. The webview must not `fetch`
+//! this URL (CSP allows no remote origins).
 
 use std::io::Read;
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -12,8 +16,12 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::agent_status::Occupancy;
 use crate::eligibility::{self, EligibilityRequest};
+use crate::firecracker::{self, FirecrackerError, FirecrackerRuntime};
 use crate::host_capabilities::HostCapabilities;
-use crate::image::{trust_from_env, verify_image, ImageError, ImageManifest, ImageTrust};
+use crate::image::{
+    trust_from_env, verify_image, GuestImageStatus, ImageError, ImageManifest, ImageTrust,
+};
+use crate::launch::{self, LaunchError, LaunchRequest};
 use crate::models::{HardwareSnapshot, SharingConfig};
 use crate::provision::{plan, HostOs, LabTier, ProvisionError, ProvisionPlan, ProvisionRequest};
 use crate::storage::GuestRcloneMount;
@@ -46,6 +54,10 @@ pub enum PlanHttpError {
     Image(#[from] ImageError),
     #[error("{0}")]
     NotOffered(String),
+    #[error("{0}")]
+    Launch(#[from] LaunchError),
+    #[error("{0}")]
+    Firecracker(#[from] FirecrackerError),
 }
 
 /// Probe + spare CPU/RAM/disk used to refuse a stub provision instead of
@@ -56,6 +68,32 @@ pub struct ProvisionGate {
     pub hardware: HardwareSnapshot,
     pub sharing: Option<SharingConfig>,
     pub spare_disk_bytes: Option<u64>,
+    /// When set on Linux Standard, InstanceStart runs (or provision fails).
+    pub firecracker: Option<FirecrackerBoot>,
+}
+
+/// Inputs for a real Firecracker invoke. Tests inject [`FirecrackerRuntime`].
+#[derive(Clone)]
+pub struct FirecrackerBoot {
+    pub binary: PathBuf,
+    pub image_cache_dir: PathBuf,
+    pub guest_image: GuestImageStatus,
+    pub kernel_override: Option<PathBuf>,
+    pub arch: String,
+    pub runtime: Arc<dyn FirecrackerRuntime + Send + Sync>,
+}
+
+impl std::fmt::Debug for FirecrackerBoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FirecrackerBoot")
+            .field("binary", &self.binary)
+            .field("image_cache_dir", &self.image_cache_dir)
+            .field("guest_image", &self.guest_image)
+            .field("kernel_override", &self.kernel_override)
+            .field("arch", &self.arch)
+            .field("runtime", &"FirecrackerRuntime")
+            .finish()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -177,9 +215,9 @@ where
     Ok(Some(ListenConfig::new(addr, token, image_trust)))
 }
 
-/// Verify the advertised image, then select a stub backend. Never boots on
-/// digest or signature mismatch — including this stub path. When `gate` is
-/// set, an unoffered tier is 400 with a plain-language reason (no stub URL).
+/// Verify the advertised image, then select the OS-conditional backend.
+/// Linux Standard with [`ProvisionGate::firecracker`] starts Firecracker
+/// (InstanceStart) or fails clearly. Digest mismatch never boots.
 pub fn plan_http(
     os: HostOs,
     request: &ProvisionHttpRequest,
@@ -192,18 +230,68 @@ pub fn plan_http(
     if let Some(gate) = gate {
         refuse_unoffered_tier(lab_tier, request, gate)?;
     }
-    // Locators are for a guest image. This stub never rclone-mounts on the
+    // Locators are for a guest image. This path never rclone-mounts on the
     // volunteer host OS and never `tailscale up`s guestMesh (architecture §8/§9).
     let guest_rclone = guest_rclone_from_request(request);
     ignore_guest_mesh_on_host(request.guest_mesh.as_ref());
-    let planned = plan(
+    let mut planned = plan(
         os,
         &ProvisionRequest {
             lab_tier,
             shared_gpu_id: request.shared_gpu_id.clone(),
         },
     )?;
+    if os == HostOs::Linux && lab_tier == LabTier::Standard {
+        if let Some(boot) = gate.and_then(|gate| gate.firecracker.as_ref()) {
+            let gate = gate.expect("firecracker boot requires a gate");
+            planned = invoke_linux_standard(os, request, gate, boot, planned)?;
+        }
+    }
     Ok(http_response_from_plan(&planned, guest_rclone))
+}
+
+fn invoke_linux_standard(
+    os: HostOs,
+    request: &ProvisionHttpRequest,
+    gate: &ProvisionGate,
+    boot: &FirecrackerBoot,
+    mut planned: ProvisionPlan,
+) -> Result<ProvisionPlan, PlanHttpError> {
+    let sharing = sharing_for_gate(gate, request);
+    let launch = launch::build(LaunchRequest {
+        os,
+        lab_tier: LabTier::Standard,
+        hardware: &gate.hardware,
+        sharing: &sharing,
+        image_cache_dir: Some(boot.image_cache_dir.as_path()),
+        guest_image: Some(&boot.guest_image),
+        capabilities: Some(&gate.capabilities),
+        spare_disk_bytes: gate.spare_disk_bytes,
+        kernel_override: boot.kernel_override.as_deref(),
+    })?;
+    let kernel_env = boot
+        .kernel_override
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned());
+    firecracker::boot_from_launch(
+        os,
+        LabTier::Standard,
+        &gate.capabilities,
+        &launch,
+        &boot.binary,
+        |key| {
+            if key == firecracker::KERNEL_ENV {
+                kernel_env.clone()
+            } else {
+                None
+            }
+        },
+        &boot.image_cache_dir,
+        boot.arch.as_str(),
+        boot.runtime.as_ref(),
+    )?;
+    planned.hypervisor_invoked = true;
+    Ok(planned)
 }
 
 fn refuse_unoffered_tier(
@@ -211,17 +299,7 @@ fn refuse_unoffered_tier(
     request: &ProvisionHttpRequest,
     gate: &ProvisionGate,
 ) -> Result<(), PlanHttpError> {
-    let sharing = gate.sharing.clone().unwrap_or_else(|| SharingConfig {
-        version: crate::models::CONFIG_VERSION,
-        sharing_enabled: true,
-        shared_logical_cores: gate.hardware.cpu.logical_cores,
-        shared_memory_bytes: gate.hardware.memory.total_bytes,
-        share_gpu: request
-            .shared_gpu_id
-            .as_deref()
-            .is_some_and(|id| !id.is_empty()),
-        shared_gpu_id: request.shared_gpu_id.clone(),
-    });
+    let sharing = sharing_for_gate(gate, request);
     let report = eligibility::evaluate(EligibilityRequest {
         capabilities: &gate.capabilities,
         hardware: &gate.hardware,
@@ -234,6 +312,20 @@ fn refuse_unoffered_tier(
         return Err(PlanHttpError::NotOffered(offer.reason.clone()));
     }
     Ok(())
+}
+
+fn sharing_for_gate(gate: &ProvisionGate, request: &ProvisionHttpRequest) -> SharingConfig {
+    gate.sharing.clone().unwrap_or_else(|| SharingConfig {
+        version: crate::models::CONFIG_VERSION,
+        sharing_enabled: true,
+        shared_logical_cores: gate.hardware.cpu.logical_cores,
+        shared_memory_bytes: gate.hardware.memory.total_bytes,
+        share_gpu: request
+            .shared_gpu_id
+            .as_deref()
+            .is_some_and(|id| !id.is_empty()),
+        shared_gpu_id: request.shared_gpu_id.clone(),
+    })
 }
 
 fn ignore_guest_mesh_on_host(hint: Option<&GuestMeshHint>) {
@@ -1054,6 +1146,7 @@ mod tests {
             .expect("provision_http.rs should have a test module");
         assert!(!production.contains("Command::new(\"rclone\")"));
         assert!(!production.contains("Command::new(\"tailscale\")"));
+        assert!(!production.contains("Command::new(\"firecracker\")"));
         assert!(!production.contains("S3_SECRET_KEY"));
         assert!(!production.contains("S3_ACCESS_KEY"));
         assert!(!production.contains("preauthKey"));
@@ -1081,6 +1174,7 @@ mod tests {
             hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
             sharing: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
+            firecracker: None,
         }
     }
 
@@ -1106,6 +1200,7 @@ mod tests {
             hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
             sharing: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
+            firecracker: None,
         }
     }
 
@@ -1189,5 +1284,161 @@ mod tests {
             body["connectionUrl"],
             format!("{STUB_CONNECTION_ORIGIN}/firecracker")
         );
+    }
+
+    fn guest_ready(path: &std::path::Path) -> crate::image::GuestImageStatus {
+        crate::image::GuestImageStatus {
+            action: crate::image::ImageEnsureAction::SkippedPresent,
+            lab_tier: Some("standard".to_string()),
+            backend: crate::image::ImageBackend::Firecracker,
+            path: Some(path.to_string_lossy().into_owned()),
+            digest: None,
+            log: "test".to_string(),
+            image_booted: false,
+        }
+    }
+
+    fn boot_tree() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("bin").join("firecracker");
+        let rootfs = dir.path().join("standard").join("rootfs.img");
+        let kernel = dir.path().join("standard").join("vmlinux");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(rootfs.parent().unwrap()).unwrap();
+        std::fs::write(&binary, b"fake-firecracker").unwrap();
+        std::fs::write(&rootfs, b"fake-rootfs").unwrap();
+        std::fs::write(&kernel, b"fake-vmlinux").unwrap();
+        (dir, binary, rootfs)
+    }
+
+    #[test]
+    fn linux_standard_with_boot_inputs_invokes_and_keeps_the_placeholder_locator() {
+        use crate::firecracker::{RecordingFirecracker, API_PATH_ORDER, API_SOCK_ARG, ENABLE_PCI_ARG};
+        use std::sync::Arc;
+
+        let (trust, body) = signed_standard();
+        let (tree, binary, rootfs) = boot_tree();
+        let recorder = Arc::new(RecordingFirecracker::succeeding());
+        let mut gate = linux_kvm_gate();
+        gate.firecracker = Some(FirecrackerBoot {
+            binary: binary.clone(),
+            image_cache_dir: tree.path().to_path_buf(),
+            guest_image: guest_ready(&rootfs),
+            kernel_override: None,
+            arch: "x86_64".to_string(),
+            runtime: recorder.clone(),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(body["hypervisorInvoked"], true);
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/firecracker")
+        );
+        assert_eq!(body["streamer"], "kasm");
+        assert!(occupancy.is_in_session());
+
+        let spawns = recorder.spawn_calls();
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].0, binary);
+        assert_eq!(spawns[0].1[0], API_SOCK_ARG);
+        assert_eq!(spawns[0].1[2], ENABLE_PCI_ARG);
+        let puts = recorder.put_calls();
+        let paths: Vec<&str> = puts.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(paths, API_PATH_ORDER);
+        let machine: serde_json::Value = serde_json::from_str(&puts[2].1).unwrap();
+        assert_eq!(machine["vcpu_count"], 16);
+        assert_eq!(machine["mem_size_mib"], 32768);
+    }
+
+    #[test]
+    fn linux_standard_boot_without_kernel_is_400_not_a_successful_stub() {
+        use crate::firecracker::RecordingFirecracker;
+        use std::sync::Arc;
+
+        let (trust, body) = signed_standard();
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("bin").join("firecracker");
+        let rootfs = dir.path().join("standard").join("rootfs.img");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(rootfs.parent().unwrap()).unwrap();
+        std::fs::write(&binary, b"fake-firecracker").unwrap();
+        std::fs::write(&rootfs, b"fake-rootfs").unwrap();
+        let recorder = Arc::new(RecordingFirecracker::succeeding());
+        let mut gate = linux_kvm_gate();
+        gate.firecracker = Some(FirecrackerBoot {
+            binary,
+            image_cache_dir: dir.path().to_path_buf(),
+            guest_image: guest_ready(&rootfs),
+            kernel_override: None,
+            arch: "x86_64".to_string(),
+            runtime: recorder.clone(),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("FIRECRACKER_KERNEL"));
+        assert!(!output.body.contains("connectionUrl"));
+        assert!(!occupancy.is_in_session());
+        assert!(recorder.spawn_calls().is_empty());
+    }
+
+    #[test]
+    fn windows_standard_ignores_firecracker_boot_inputs() {
+        use crate::firecracker::RecordingFirecracker;
+        use std::sync::Arc;
+
+        let (trust, body) = signed_standard();
+        let (tree, binary, rootfs) = boot_tree();
+        let recorder = Arc::new(RecordingFirecracker::succeeding());
+        let mut gate = linux_kvm_gate();
+        gate.firecracker = Some(FirecrackerBoot {
+            binary,
+            image_cache_dir: tree.path().to_path_buf(),
+            guest_image: guest_ready(&rootfs),
+            kernel_override: None,
+            arch: "x86_64".to_string(),
+            runtime: recorder.clone(),
+        });
+        let output = respond_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(body["hypervisorInvoked"], false);
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-whpx")
+        );
+        assert!(recorder.spawn_calls().is_empty());
     }
 }

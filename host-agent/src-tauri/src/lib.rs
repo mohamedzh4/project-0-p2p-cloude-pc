@@ -1,14 +1,16 @@
 //! Detect the machine, persist local sharing caps, register those caps with
 //! the Matchmaker from Rust, ping while sharing is on, and optionally join
-//! self-hosted Headscale from Rust. Provisioning is a stub HTTP port that
-//! calls `plan_provision`. Tray status and immediate pause live in Rust; the
-//! webview does not call the Matchmaker.
+//! self-hosted Headscale from Rust. Linux Standard provision starts Firecracker
+//! when the probe offers it and the binary, kernel, and verified rootfs are
+//! present. Other backends stay stubs. Tray status and immediate pause live in
+//! Rust; the webview does not call the Matchmaker.
 
 mod agent_status;
 mod commands;
 mod config;
 mod disk_space;
 mod eligibility;
+mod firecracker;
 mod gpu;
 mod gpu_bind;
 mod hardware;
@@ -60,11 +62,13 @@ pub struct AgentState {
     pub hardware: HardwareSnapshot,
     /// Hosting eligibility from OS + KVM/WHPX/IOMMU/GPU. Never a backend picker.
     pub capabilities: HostCapabilities,
-    /// Locate/fetch result for the OS hypervisor binary. Never invoked.
+    /// Locate/fetch result for the OS hypervisor binary. Linux Standard
+    /// provision may invoke Firecracker; this status is still fetch-only.
     pub hypervisor: HypervisorStatus,
-    /// Locate/fetch result for the signed guest image. Never booted.
+    /// Locate/fetch result for the signed guest image. InstanceStart is not
+    /// a confirmed guest userspace.
     pub guest_image: GuestImageStatus,
-    /// Set when stub provision succeeds. Pause does not clear this; phase 12
+    /// Set when provision HTTP 200 succeeds. Pause does not clear this; phase 12
     /// teardown will.
     pub occupancy: Arc<Occupancy>,
 }
@@ -113,6 +117,10 @@ fn spawn_provision_listener(app: &tauri::App) {
     let occupancy = state.occupancy.clone();
     let capabilities = state.capabilities.clone();
     let hardware = state.hardware.clone();
+    let hypervisor = state.hypervisor.clone();
+    let guest_image = state.guest_image.clone();
+    let os = HostOs::current();
+    let config_dir = app.path().app_config_dir().ok();
     match provision_http::listen_config_from_env(|key| std::env::var(key).ok()) {
         Ok(None) => {}
         Ok(Some(config)) => {
@@ -121,15 +129,40 @@ fn spawn_provision_listener(app: &tauri::App) {
                 .spawn(move || {
                     let cache =
                         crate::image::resolve_image_cache_dir(|key| std::env::var(key).ok());
+                    let sharing = config_dir
+                        .as_ref()
+                        .and_then(|dir| crate::config::load_for_hardware(dir, &hardware).ok());
+                    let firecracker = if os == HostOs::Linux && capabilities.standard.offered {
+                        Some(provision_http::FirecrackerBoot {
+                            binary: hypervisor
+                                .path
+                                .as_deref()
+                                .map(std::path::PathBuf::from)
+                                .unwrap_or_default(),
+                            image_cache_dir: cache.clone(),
+                            guest_image,
+                            kernel_override: std::env::var(crate::firecracker::KERNEL_ENV)
+                                .ok()
+                                .map(std::path::PathBuf::from)
+                                .filter(|path| !path.as_os_str().is_empty()),
+                            arch: std::env::consts::ARCH.to_string(),
+                            runtime: std::sync::Arc::new(
+                                crate::firecracker::ProcessFirecrackerRuntime,
+                            ),
+                        })
+                    } else {
+                        None
+                    };
                     let gate = provision_http::ProvisionGate {
                         capabilities,
                         hardware,
-                        sharing: None,
+                        sharing,
                         spare_disk_bytes: crate::disk_space::available_bytes(&cache),
+                        firecracker,
                     };
                     if let Err(error) = provision_http::serve(
                         &config,
-                        HostOs::current(),
+                        os,
                         occupancy.as_ref(),
                         Some(gate),
                     ) {
