@@ -5,8 +5,7 @@ Matchmaker API (auth, FR2 intent → `labTier`, session book/end, session
 history + credits, locators-only storage, mesh hostname/tags/exit-node). It
 is **not** the product: no payment processor, no Kasm iframe (a live desktop
 would open in a new tab). Seed and mock-provision URLs use the `.invalid`
-TLD. GATE-FC / GATE-WHPX / GATE-PRO are **OPEN — pending real-hardware
-verification** (2026-09-05 operator PASS later retracted).
+TLD. Hardware is implemented in code, not yet run on physical hardware.
 Open desktop stays hidden until a live URL exists (`SEED_HOST_KASM_URL`
 remains `https://example.invalid/kasm`). Preauth keys are not shown.
 

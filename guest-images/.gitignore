@@ -1,0 +1,13 @@
+# Build artifacts (multi-GB disks, ISOs, throwaway SSH keys, guest passwords)
+output/
+cache/
+.packer-ssh/
+packer/output/
+*.qcow2
+*.img
+*.iso
+*credentials*
+*.sig
+*.sha256
+*.manifest.json
+env.snippet

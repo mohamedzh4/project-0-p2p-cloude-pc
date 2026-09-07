@@ -1,21 +1,27 @@
-# Project Status — last updated: 2026-09-06, after phase 25 Hyper-V DDA/GPU-P apply
+# Project Status — last updated: 2026-09-07, after phase 26 guest image pipeline
+
+## Hardware (this Mac cannot host)
+
+Never write “confirmed working” until a human reports a live session on metal.
+
+- Standard-Linux: Implemented in code. Not yet run on physical hardware.
+- Standard-Windows: Implemented in code. Not yet run on physical hardware.
+- Pro-GPU: Implemented in code. Not yet run on physical hardware.
+
+`SEED_HOST_KASM_URL` remains `https://example.invalid/kasm`. Pointers:
+`docs/runbooks/gate-fc.md`, `gate-whpx.md`, `gate-pro.md`. Guest disks:
+`guest-images/README.md`. There is no gate-result template.
 
 ## Done
 
 - Specs: architecture + cahier in `docs/` (OS-conditional Standard Lab, GPU
   exclusivity, four planes). On `main`.
-- Hardware gates **OPEN — pending real-hardware verification**:
-  `docs/runbooks/gate-fc.md`, `docs/runbooks/gate-whpx.md`,
-  `docs/runbooks/gate-pro.md`. A 2026-09-05 operator PASS was later
-  **retracted as unverified** (`docs/phase-logs/phase-gates-operator-pass.md`).
-  No attached `gate-*-result.md` or live session URL. This Mac cannot host.
-  `SEED_HOST_KASM_URL` remains `https://example.invalid/kasm`.
 - Headscale operator runbook: `docs/runbooks/headscale.md` (ACL grants,
   session guest/user mint, platform exit-node guest path).
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
   keypairs, guest rclone argv). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–25 on local `main` (not pushed):
+- Execution phases 1–26 on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -90,8 +96,14 @@
     install (leftover **19b**): detect missing QEMU, fetch the documented
     NSIS installer, checksum, run `/S` `/D=`. Injected installer in tests.
     UAC is not automated. **Phase 25:** leftover **22b** Hyper-V DDA/GPU-P
-    apply + rollback (injectable runner). **246/246**
-    `cargo test --lib` (2026-09-06).
+    apply + rollback (injectable runner). **Phase 26:** Packer + QEMU guest
+    image pipeline in `guest-images/` (Standard = Kasm Workspaces in the
+    guest; Pro = Sunshine in the guest). Operator build emits `rootfs.img` /
+    `rootfs.qcow2` plus `.sha256` / `.sig` / `.manifest.json` using the same
+    Ed25519-over-raw-SHA-256 contract Host Agent already verifies. Dev
+    private key from `IMAGE_SIGNING_PRIVATE_KEY` only; never committed.
+    Host Agent still does not boot. **246/246** `cargo test --lib` plus
+    guest-images unittest (counts in the phase-26 handoff).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
     `sessions_one_active_per_host` / `sessions_one_active_per_user`;
@@ -119,11 +131,11 @@
     does not call renterd). Required env includes `CREDITS_PER_MINUTE`, the
     four `IMAGE_*` pairs, `HEADSCALE_*` (optional `HEADSCALE_EXIT_NODE`,
     default `dcl-platform-exit`), and `S3_ENDPOINT` / `S3_ACCESS_KEY` /
-    `S3_SECRET_KEY` (or `RENTERD_S3_*` aliases). **161/161** pytest
-    (2026-09-06). Session JSON still has no `intent` field. No
-    latency/reliability columns. No Matchmaker pause field. No payment
-    processor. No image CDN / multi-GB download. No live Sia network in unit
-    tests. No live Headscale in unit tests.
+    `S3_SECRET_KEY` (or `RENTERD_S3_*` aliases). **161/161** pytest. Session
+    JSON still has no `intent` field. No latency/reliability columns. No
+    Matchmaker pause field. No payment processor. No image CDN / multi-GB
+    download. No live Sia network in unit tests. No live Headscale in unit
+    tests.
   - Web harness: signup/login, FR2 intent prompt → `labTier`, request/end
     session, session history + credits debited, optional storage locator
     (endpoint/bucket only — not secrets), mesh hostname/tags/exit-node (not
@@ -135,40 +147,50 @@
     `docker-compose.exit-node.yml` (`TS_HOSTNAME: dcl-platform-exit`). renterd
     compose in `renterd/` (image `ghcr.io/siafoundation/renterd:2.9.3`, zen
     testnet, S3 on loopback **8081**). No Tailscale cloud account. No Storj.
+  - Guest image **build** (phase 26): `guest-images/` Packer qemu `disk_image`
+    from the pinned Ubuntu 24.04 cloud image (not in git). Standard provisioner
+    runs Kasm `install.sh --accept-eula --admin-password --user-password`.
+    Pro provisioner `dpkg -i` the official Sunshine Ubuntu 24.04 `.deb` and
+    enables `app-dev.lizardbyte.app.Sunshine`. `scripts/sign_image.py` writes
+    checksum + Ed25519 sidecars. Firecracker `vmlinux` is an extra operator
+    input (`FIRECRACKER_KERNEL`); Packer does not invent one.
 
 ## In Progress
 
-- None. Numbered software phases 1–25 are on local `main`. Hardware gates are
-  **OPEN — pending real-hardware verification**. Do not mark gates closed.
+- None. Numbered software phases 1–26 are on local `main`. Hardware is
+  implemented in code, not yet run on physical hardware.
 
 ## Up Next
 
-Hardware gates on Linux/Windows metal using Host Agent automation (see
-`docs/runbooks/gate-fc.md`, `gate-whpx.md`, `gate-pro.md` — “Using Host Agent
-automation”). Do not invent lab output. Do not create `gate-*-result.md`
-from this Mac. Leftover paper (not numbered phases):
+**Phase 27 — Firecracker real invoke** (likely): boot the phase-26 Standard
+disk with the phase-19 Firecracker binary and the phase-21 launch config.
+Do not start WHPX boot, live VFIO from the window, or the full web loop in
+that session unless the human says so.
+
+Leftover paper (not this next phase):
 
 1. Pairwise mesh ACLs — Headscale 0.26 file policy cannot mint
    `tag:session-<uuid>` owners; every `tag:user` may still reach every
    `tag:guest`.
-2. Live guest Tailscale/rclone — join/mount plans exist; fetch/verify is a
-   software contract (tiny fixtures). No production guest disk in-repo to
-   boot. “Saved as of HH:MM” still needs that image.
+2. Live guest Tailscale/rclone — join/mount plans exist; the Packer image
+   installs the clients; they still need a booted guest.
 3. FR13 latency ranking waits on a measured value — do not fake `latency_ms`.
+4. Windows guest-image fetch is still **would-fetch** (phase 20).
+5. QEMU `-accel whpx` boot and live VFIO sysfs (later than Firecracker invoke).
 
 ## Known Risks / Open Items
 
-- **GATE-FC / GATE-WHPX / GATE-PRO are OPEN — pending real-hardware
-  verification.** A 2026-09-05 operator PASS was later retracted as unverified.
-  No attached GATE result template or live session URL in this repo. This Mac
+- **Standard-Linux / Standard-Windows / Pro-GPU: implemented in code, not
+  yet run on physical hardware.** No live session URL in this repo. This Mac
   still cannot host. `SEED_HOST_KASM_URL` remains `https://example.invalid/kasm`.
-  Do not invent lab output. Do not mark gates closed.
+  Do not invent lab output. Never write “confirmed working” without a human
+  metal report.
 - **Phase 15 race (2026-09-05):** `0a59f68` issued renterd S3 keys on session
   JSON; `9f69179` kept keys in env and locators-only on
   `POST`/`GET /v1/storage`. Phase 16–17 kept the locators-only contract.
   An unused `0007_host_latency_ms` draft from a parallel agent was **not**
   applied.
-- Local `main` is ahead of `origin/main` (planning + phases 1–25). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–26). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
@@ -180,7 +202,8 @@ from this Mac. Leftover paper (not numbered phases):
   Pytest overwrites Headscale and renterd env to `.invalid` so a local `.env`
   cannot point tests at a live instance. Do not commit `.env`, renterd seeds,
   or `renterd/data/`. Copy fixture `IMAGE_*` values from `.env.example` for
-  local stub verify; they are not a production key. Optional
+  local stub verify; they are not a production key. After a real Packer
+  build, replace them from `guest-images/output/<tier>/env.snippet`. Optional
   `STALE_SESSION_SWEEP_INTERVAL_SECONDS` defaults to 15.
 - Enabling `HOST_AGENT_LISTEN_ADDR` now also requires `IMAGE_SIGNING_PUBLIC_KEY`
   and `IMAGE_LOCAL_DIGEST` (fail fast). Linux Standard fetch also needs
@@ -199,15 +222,14 @@ from this Mac. Leftover paper (not numbered phases):
   left.
 - Provisioner is stubs only. Launch config is JSON only (no boot). GPU bind is
   a plan from the window (Linux apply on mock sysfs; Windows apply on an
-  injected Hyper-V runner). Image
-  fetch+verify is the software contract (small fixture bytes in tests; no
-  multi-GB disk in-repo). Combined eligibility (phase 23) refuses a blocked
+  injected Hyper-V runner). Image fetch+verify is the software contract (small
+  fixture bytes in tests). Combined eligibility (phase 23) refuses a blocked
   tier in the window and on the live provision listener. On macOS, a real
   Host Agent `POST /v1/provision` is 400 (unsupported OS / not offered) even
   with a valid signature; Matchmaker then keeps the seeded locator.
   Guest-image ensure, launch-config generation, and GPU bind on this Mac skip
   / fail as unsupported (Firecracker images are not fetched; VFIO is not
-  applied).
+  applied). Packer build needs Linux/KVM (or HVF) and is not run in CI.
 - Intent text stays in the harness. It is not persisted and is not on the
   session JSON. Keyword mapping is a smallest-slice heuristic (office/code →
   Standard; GPU/game/3D/training → Pro).
@@ -232,8 +254,9 @@ from this Mac. Leftover paper (not numbered phases):
   `--exit-node`. Until a guest image actually runs those args against a
   running exit node, guest internet can still egress via the host path.
 - **FR4/FR6 live mount is still paper.** Control-plane grant + argv/plan +
-  provision `guestRclone` exist. rclone inside a booted guest still needs a
-  guest image in-repo. Session keys must not land on the volunteer host disk.
+  provision `guestRclone` exist. The Packer image installs rclone. rclone
+  inside a booted guest is still later. Session keys must not land on the
+  volunteer host disk.
 - Consumer GPU EULAs and ToS/liability still need legal review (architecture
   §9 items 10–11).
 - Aikido scan: MCP `namespaceStatus: error` this session (tool discovery
@@ -241,25 +264,17 @@ from this Mac. Leftover paper (not numbered phases):
 
 ## Notes for next agent/session
 
-- Execution **phase 25 is done** (Hyper-V DDA/GPU-P apply + rollback, leftover
-  22b). Numbered software phases 18–25 are complete. Hardware gates stay **OPEN —
-  pending real-hardware verification** — see
-  `docs/phase-logs/phase-gates-operator-pass.md` (historical PASS + retraction)
-  and `docs/phase-logs/phase-25-hyperv-dda-gpu-p.md`. A human
-  closes GATE-FC / GATE-WHPX / GATE-PRO on Linux/Windows metal using the Host
-  Agent runbooks (paste capability + fetch/launch logs; do not invent
-  `gate-*-result.md`). Read `PHASE_PLAN.md` and this file. Do
-  not start Storj. Do not invent lab output, a live Kasm URL, or `latency_ms`.
+- Execution **phase 26 is done** (Packer guest-image pipeline + signing +
+  gate-paperwork cut). Hardware lines above are **not** “confirmed working”.
+  Next numbered phase is **Firecracker real invoke** (boot the Standard disk).
+  Do not start Storj. Do not invent lab output, a live Kasm URL, or `latency_ms`.
   Do not treat renterd compose-up as a live desktop. Do not weaken
-  HostSelector, occupancy indexes, GPU exclusivity copy, OS-conditional stubs,
-  or CSP. Do not mark gates closed. Do not fetch Firecracker, QEMU, or a guest
-  disk from `cargo test` (injected fetcher / installer / file:// / httptest).
-  Do not boot a VM. Do not use Firecracker for Pro. Do not bind live `/sys`
-  from tests. Do not spawn live PowerShell from tests (inject `HyperVGpuOps`).
-  Windows QEMU still needs a human UAC click when the NSIS installer elevates.
-  Hyper-V DDA/GPU-P apply on metal still needs an elevated Host Agent, the
-  Hyper-V feature (reboot if Windows asks), and an existing VM named
-  `dcl-pro-guest` (not created or started here).
+  HostSelector, occupancy indexes, GPU exclusivity copy, OS-conditional
+  backends, or CSP. Do not fetch Firecracker, QEMU, or a guest disk from
+  `cargo test` (injected fetcher / installer / file:// / httptest). Do not
+  boot a VM in this Host Agent. Do not use Firecracker for Pro. Do not bind
+  live `/sys` from tests. Do not spawn live PowerShell from tests (inject
+  `HyperVGpuOps`). Do not commit Packer output, PEMs, or Kasm passwords.
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.
@@ -271,7 +286,8 @@ from this Mac. Leftover paper (not numbered phases):
   standard base64 Ed25519; public key is 64 hex chars. Matchmaker does not
   hold the private key. Tests use a documented fixture seed in Rust only.
   Phase 20 fetch reuses those `IMAGE_*` checksums; bytes come from
-  `HOST_AGENT_*_IMAGE_URL` (injected in tests).
+  `HOST_AGENT_*_IMAGE_URL` (injected in tests). Phase 26 `sign_image.py`
+  emits the same shape for a real disk.
 - Launch config: `host_agent_lib::launch::build` takes OS + lab tier + clamped
   `SharingConfig` and optional probe + spare disk. JSON fields are `backend`,
   `labTier`, `vcpuCount`, `memoryMib`, `kernelPath`, `rootfsPath`, optional

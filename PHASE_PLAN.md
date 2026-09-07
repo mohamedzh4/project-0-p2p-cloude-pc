@@ -1,12 +1,9 @@
 # Phase plan — Standard Lab MVP (software)
 
 Numbered phases below are **agent sessions**, not the cahier §11 product phases.
-Cahier Phase 0 (manual Firecracker / QEMU+WHPX / Pro GPU) is a **hardware gate**,
-not an agent task. On 2026-09-05 a human operator declared GATE-FC / GATE-WHPX /
-GATE-PRO PASS without measurements; on 2026-09-06 that was **retracted as
-unverified**. Current wording: **OPEN — pending real-hardware verification**.
-No measurement appendix, guest image, or live session URL is in this repo. This
-Mac cannot host. Do not invent lab output. Do not mark gates closed.
+Hardware status is three honest lines in `PROJECT_STATUS.md` (never “confirmed
+working” until a human reports a live session on metal). This Mac cannot host.
+Do not invent lab output. Guest disks: `guest-images/`.
 
 Glance file for the human: `PROJECT_STATUS.md`.
 Handoffs for the next agent: `docs/phase-logs/`.
@@ -42,7 +39,8 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 25: pytest 161, cargo test 246, vitest 31.
+  Counts after phase 26: pytest 161, cargo test 246, vitest 31, guest-images
+  unittest 12.
 
 ## Contracts to keep stable
 
@@ -66,10 +64,9 @@ Matchmaker JSON is camelCase.
 | POST | `/v1/storage` | User Bearer; issue per-user renterd bucket `dcl-<uuid>` + prefix `files/`. 201 new, 200 existing. `{ provider, bucket, prefix, endpoint, region, objects, pathStyle, mountInsideGuest, rclone, rcloneArgs, envAuth }`. No access keys. |
 | GET | `/v1/storage` | User Bearer; 200 same shape or 404 if never issued. |
 
-Session response: `{ sessionId, hostId, labTier, startedAt, connection, storage, mesh }` where `storage` is the same locator object as `/v1/storage` (no access keys). `mesh` is `{ loginServer, exitNode, exitNodeApplied, guest, user }` with ephemeral Headscale preauth keys tagged `tag:guest` / `tag:user` and guest `tailscaleUp` including `--exit-node` when `HEADSCALE_EXIT_NODE` is set (default `dcl-platform-exit`). Host Agent join stays the preauth route (`tag:host`, never `--exit-node`). Standard `connection` is `{ streamer: "kasm", kasmUrl, kasmToken, sunshineUrl: null, moonlight: null, gpuExclusive: false }`. Pro `connection` is `{ streamer: "sunshine", kasmUrl: null, kasmToken: null, sunshineUrl, moonlight: { host, app }, gpuExclusive: true }` — not Kasm renamed. Locators still live in `hosts.kasm_url`. GATE-PRO is **OPEN — pending
-real-hardware verification** (2026-09-05 operator PASS was later retracted).
-Pro backends remain stubs and there is no live Sunshine/Moonlight session in
-this repo.
+Session response: `{ sessionId, hostId, labTier, startedAt, connection, storage, mesh }` where `storage` is the same locator object as `/v1/storage` (no access keys). `mesh` is `{ loginServer, exitNode, exitNodeApplied, guest, user }` with ephemeral Headscale preauth keys tagged `tag:guest` / `tag:user` and guest `tailscaleUp` including `--exit-node` when `HEADSCALE_EXIT_NODE` is set (default `dcl-platform-exit`). Host Agent join stays the preauth route (`tag:host`, never `--exit-node`). Standard `connection` is `{ streamer: "kasm", kasmUrl, kasmToken, sunshineUrl: null, moonlight: null, gpuExclusive: false }`. Pro `connection` is `{ streamer: "sunshine", kasmUrl: null, kasmToken: null, sunshineUrl, moonlight: { host, app }, gpuExclusive: true }` — not Kasm renamed. Locators still live in `hosts.kasm_url`. Pro-GPU: implemented in code, not yet
+run on physical hardware. Provision still returns stub locators; there is no
+live Sunshine/Moonlight session in this repo.
 End response: `{ sessionId, status, endedAt, creditsDebited }`.
 History `status` is `active` | `ended` (user end) | `interrupted` (heartbeat
 silence). End response is `ended` or already-`interrupted`. Occupied silent
@@ -123,11 +120,11 @@ iframe it in early phases.
 
 | Cahier | This plan |
 | --- | --- |
-| 0 Manual compute pipeline | Hardware gates below — **OPEN — pending real-hardware verification** (2026-09-05 operator PASS later retracted as unverified) |
+| 0 Manual compute pipeline | Hardware: three honest lines in `PROJECT_STATUS.md`. Not yet run on physical hardware. Guest disks: `guest-images/` |
 | 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs). Live desktop is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid`) |
 | 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
-| 3 Pro/Gamer + latency | Execution phase 16 software (Sunshine locators). GATE-PRO **OPEN — pending real-hardware verification**; no live stream in-repo |
-| 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv. Live desktop / pairwise ACLs still paper |
+| 3 Pro/Gamer + latency | Execution phase 16 software (Sunshine locators). Pro-GPU implemented in code, not yet run on physical hardware; no live stream in-repo |
+| 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv; 26 Packer guest images. Live desktop / pairwise ACLs still paper |
 
 ## Execution phases
 
@@ -233,8 +230,7 @@ what is still manual (hardware gates). Extend this plan with numbered phases
 for remaining cahier FRs; do not implement those FRs here.
 
 **Exit:** Suites green; handoff `docs/phase-logs/phase-7-orchestrator-mvp.md`;
-living status rewritten; hardware gates were still open at that time (a later
-2026-09-05 operator PASS was retracted as unverified on 2026-09-06).
+living status rewritten; hardware still not run on physical hardware.
 
 ## Cahier FR gap (after phase 7)
 
@@ -245,9 +241,9 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR1 signup/login | Implemented (Matchmaker + `web/`) | — |
 | FR2 intent prompt → lab tier | Implemented (`web/` harness) | — |
 | FR3 match to most suitable host | Partial: `RankedHostSelector` (declared CPU then RAM; Pro GPU id) | Phase 16 when latency can be measured |
-| FR4 encrypted persistent files | Partial: renterd S3 locators + guest rclone argv/plan (env auth, not Storj). Provision hook returns `guestRclone` from locators | Live mount still needs a guest image in-repo |
-| FR5 live streamed desktop | Partial: harness opens a URL; seed is still `example.invalid` | GATE-FC / GATE-WHPX **OPEN — pending real-hardware verification**; no live Kasm in this repo |
-| FR6 logout final save + “saved as of” | Missing in the guest UI | Guest image still paper; rclone argv/plan exists |
+| FR4 encrypted persistent files | Partial: renterd S3 locators + guest rclone argv/plan (env auth, not Storj). Provision hook returns `guestRclone` from locators. Phase 26 Packer image installs rclone | Live mount still needs a booted guest |
+| FR5 live streamed desktop | Partial: harness opens a URL; seed is still `example.invalid`. Phase 26 builds Kasm/Sunshine disks | Standard-Linux / Standard-Windows implemented in code, not yet run on physical hardware |
+| FR6 logout final save + “saved as of” | Missing in the guest UI | rclone argv/plan exists; needs a booted guest |
 | FR7 session history + billing/credits | Internal ledger + `GET /v1/sessions` | Phase 11 done; no payouts |
 | FR8 declare CPU/RAM slice + exclusive GPU | Implemented except availability schedule | Schedule can wait; do not break `sharedGpuId` |
 | FR9 auto mesh join + signed image pull | Partial: signed digest+sig verify; host preauth mint + Rust join (`tag:host`, no Tailscale SaaS). Session book mints ephemeral `tag:guest` + `tag:user`. Guest join plan includes `--exit-node` from `HEADSCALE_EXIT_NODE`. ACL file is still role-based (not pairwise session tags). Storage is renterd S3, not Storj | Live guest Tailscale/rclone still need a guest image |
@@ -259,26 +255,19 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR15 re-match on host disconnect | Implemented: `interrupted` + one `HostSelector.select`; 409 if none | Same renterd bucket follows the user; no Storj |
 | FR16 meter usage / payouts | Metering + ledger; payouts deferred | Phase 11 metering done; no Stripe |
 
-## Hardware gates (human — this Mac cannot host)
+## Hardware status (human — this Mac cannot host)
 
-| Id | What | Status to record |
-| --- | --- | --- |
-| GATE-FC | One Standard session: Firecracker microVM + Kasm **inside the guest**, Linux host | **OPEN — pending real-hardware verification**. Runbook `docs/runbooks/gate-fc.md`. 2026-09-05 operator PASS later retracted. No measurement appendix, guest image, or live URL in-repo |
-| GATE-WHPX | One Standard session: QEMU+WHPX + Kasm inside the guest, Windows host | **OPEN — pending real-hardware verification**. Runbook `docs/runbooks/gate-whpx.md`. Same: not agent-verified metal |
-| GATE-PRO | One Pro session: GPU assignment (VFIO or Hyper-V) + Sunshine/Moonlight; host loses that GPU for the session | **OPEN — pending real-hardware verification**. Runbook `docs/runbooks/gate-pro.md`. Same: no PCI/`nvidia-smi`/Moonlight RTT attached |
+Status is one honest line each in `PROJECT_STATUS.md`. Never write “confirmed
+working” until a human reports a live session on metal. Do not invent lab
+output. Pointers: `docs/runbooks/gate-fc.md`, `gate-whpx.md`, `gate-pro.md`.
 
-An uncommitted `PROJECT_CONTEXT.md` draft once claimed Phase 0 was “done
-off-Mac”. That claim is **not** treated as lab evidence. Runbooks exist;
-`SEED_HOST_KASM_URL` is still `https://example.invalid/kasm`; there is no guest
-image and no hypervisor scripts. On 2026-09-05 a human **declared** the three
-gates PASS and skipped a second host PC; on 2026-09-06 that was **retracted as
-unverified**. See `docs/phase-logs/phase-gates-operator-pass.md` (historical
-declaration plus retraction note). Do not invent a measurement appendix or a
-live session URL. Do not mark gates closed. Software phases 18+ may proceed
-without closing gates.
+- Standard-Linux: Implemented in code. Not yet run on physical hardware.
+- Standard-Windows: Implemented in code. Not yet run on physical hardware.
+- Pro-GPU: Implemented in code. Not yet run on physical hardware.
 
-There are **no** `docs/phase-logs/gate-*-result.md` files. Do not create them
-from invented output.
+`SEED_HOST_KASM_URL` is still `https://example.invalid/kasm`. Guest-image
+**build** is `guest-images/` (phase 26). There is no gate-result template.
+Software phases may proceed without a metal run.
 
 ## Execution phases after 7
 
@@ -385,9 +374,8 @@ Done as a **software contract**. Session JSON and the Host Agent provision
 port distinguish Standard Kasm from Pro Sunshine/Moonlight. GPU exclusivity
 stays a Pro matching filter (`shareGpu` + non-empty `sharedGpuId`) plus
 `gpuExclusive` on the connection. VFIO / Hyper-V paths remain stubs.
-**GATE-PRO is OPEN — pending real-hardware verification** (2026-09-05 operator
-PASS later retracted) — this phase still did not invoke a hypervisor or a live
-stream, and none is in the repo. Latency-aware
+Pro-GPU is implemented in code, not yet run on physical hardware — this phase
+still did not invoke a hypervisor or a live stream, and none is in the repo. Latency-aware
 ranking still belongs in `RankedHostSelector` when a measured value exists; do
 not fake `latency_ms`. See
 `docs/phase-logs/phase-16-pro-gamer.md`.
@@ -432,8 +420,7 @@ Surface Standard/Pro **offered** plus a plain-language reason in the Host
 Agent window. Never ask the user which backend. Keep GPU exclusivity copy.
 Do not change `HostSelector.select`, occupancy indexes, CSP, Argon2id, or JWT.
 
-**Do not:** Invoke Firecracker, QEMU, or Kasm. Do not create
-`gate-*-result.md`. Do not invent live URLs. Do not mark GATE-* closed.
+**Do not:** Invoke Firecracker, QEMU, or Kasm. Do not invent live URLs.
 `SEED_HOST_KASM_URL` stays `https://example.invalid/kasm`.
 
 **Exit:** Mac and Linux-without-KVM → Standard/Pro `offered=false` with a
@@ -569,7 +556,7 @@ boot and not a backend picker.
 second display path for Pro, or when declared caps cannot be met. Reuse
 phase-18 reasons. GPU exclusivity copy stays.
 
-**Do not:** Invoke a hypervisor. Do not mark gates closed. Do not change
+**Do not:** Invoke a hypervisor. Do not invent lab output. Do not change
 Matchmaker occupancy or `HostSelector.select`.
 
 **Exit:** Tests for Mac / Linux-without-KVM / no second display path; pytest
@@ -638,11 +625,39 @@ DDA (`Disable-PnpDevice`, `Dismount-VMHostAssignableDevice -Force`,
 `Add-VMGpuPartitionAdapter`, `Set-VMGpuPartitionAdapter` at 100000000).
 Production uses `ProcessHyperVGpuOps` (`powershell.exe -NoProfile
 -NonInteractive`, 30s kill). Tests inject a fake runner. The window stays
-plan-only (`apply: false`). GATE-* stay OPEN. See
+plan-only (`apply: false`). Not yet run on physical hardware. See
 `docs/phase-logs/phase-25-hyperv-dda-gpu-p.md`.
 
-Hardware gates remain human metal work using the Host Agent automation
-(runbooks below). Numbered leftover **22b** is closed.
+Numbered leftover **22b** is closed.
+
+### Phase 26 — Guest image pipeline (Packer)
+
+**Why next:** Phases 13 and 20 verify and fetch a signed disk, but the repo
+had no way to *produce* a bootable guest with Kasm (Standard) or Sunshine
+(Pro). Nothing else has a real disk to boot.
+
+**Do:** Packer + QEMU templates that emit a signed `rootfs.img` / `rootfs.qcow2`
+the Host Agent can fetch. Standard installs Kasm Workspaces inside the guest
+(official `install.sh --accept-eula --admin-password --user-password`). Pro
+installs Sunshine from the official Ubuntu 24.04 `.deb` (`dpkg -i`) and enables
+the documented user unit. Sign Ed25519 over the raw SHA-256 with a **dev** key
+from `IMAGE_SIGNING_PRIVATE_KEY`. Checksums + signatures sit next to the image.
+Do not commit ISOs, PEMs, or disks. Do not invoke a hypervisor from Host Agent.
+
+**Do not:** Firecracker boot, QEMU `-accel whpx` boot, live VFIO sysfs from the
+window, live locator return, or the web loop. Those are later phases.
+
+**Exit:** Operator can run `guest-images/scripts/build.sh standard|pro` with
+documented inputs (cloud image URL or local path, Packer/QEMU, dev PEM).
+Tests cover templates + signing helper without hardware. Suites green.
+
+Done as a **pipeline in-repo** (2026-09-07). Artifacts are gitignored. Linux
+fetch/verify already existed; Windows remains would-fetch. Host Agent still
+does not boot. See `guest-images/README.md` and
+`docs/phase-logs/phase-26-guest-image-pipeline.md`.
+
+**Next:** Firecracker real invoke from the phase-21 launch config, using a
+disk this pipeline produced. Still not WHPX boot, live VFIO, or the web loop.
 
 ## Handoff template
 

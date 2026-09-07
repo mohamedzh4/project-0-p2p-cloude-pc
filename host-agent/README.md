@@ -300,10 +300,9 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   Session guest/user tags live on Matchmaker JSON; this agent still joins as
   `tag:host` and never passes `--advertise-exit-node` or `--exit-node`.
   Complete provision locators return `guestRclone` argv (`--s3-env-auth`).
-  GATE-FC / GATE-WHPX / GATE-PRO are **OPEN — pending real-hardware
-  verification** (2026-09-05 operator PASS later retracted) — still no live
-  hypervisor or stream in this repo. Runbooks tell a human what to paste from
-  this window on Linux/Windows metal. Storage is renterd S3, not Storj. On
+  Hardware is implemented in code, not yet run on physical hardware — still no
+  live hypervisor or stream in this repo. Guest disks: `guest-images/`. Storage
+  is renterd S3, not Storj. On
   macOS, `POST /v1/provision` is 400 (not offered / unsupported OS);
   Matchmaker then keeps the seeded locator. Local in-session occupancy is
   still not cleared when Matchmaker interrupts a session (no teardown port).
@@ -313,7 +312,8 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   consent is still manual. Phase 25 (leftover **22b**) applies Hyper-V
   DDA/GPU-P through an injectable runner with rollback; live PowerShell is
   never spawned from tests. On metal, Hyper-V apply still needs an elevated
-  agent, the Hyper-V feature, and an existing VM `dcl-pro-guest`.
+  agent, the Hyper-V feature, and an existing VM `dcl-pro-guest`. Phase 26
+  Packer pipeline produces signed guest disks; this agent still does not boot.
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

@@ -30,6 +30,11 @@ headscale/run/
 # renterd consensus / metadata if bind-mounted instead of the named volume
 renterd/data/
 
+# Guest image build artifacts (multi-GB; never commit)
+guest-images/output/
+guest-images/cache/
+guest-images/.packer-ssh/
+
 # OS and editor noise
 .DS_Store
 Thumbs.db
