@@ -1,9 +1,11 @@
 //! Inbound provision HTTP port. Verifies the signed image digest
 //! ([`crate::image::verify_image`]) **before** calling [`crate::provision::plan`].
 //! Linux Standard then starts Firecracker when the probe offered it and the
-//! binary, kernel, and verified rootfs are present. Other backends stay stubs.
-//! The Matchmaker POSTs here after host selection. The webview must not `fetch`
-//! this URL (CSP allows no remote origins).
+//! binary, kernel, and verified rootfs are present. Windows Standard then
+//! starts QEMU with `-accel whpx` when the probe offered it and the binary
+//! plus a verified disk are present. Pro stays stubs. The Matchmaker POSTs
+//! here after host selection. The webview must not `fetch` this URL (CSP
+//! allows no remote origins).
 
 use std::io::Read;
 use std::net::SocketAddr;
@@ -17,6 +19,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use crate::agent_status::Occupancy;
 use crate::eligibility::{self, EligibilityRequest};
 use crate::firecracker::{self, FirecrackerError, FirecrackerRuntime};
+use crate::qemu::{self, QemuError, QemuRuntime};
 use crate::host_capabilities::HostCapabilities;
 use crate::image::{
     trust_from_env, verify_image, GuestImageStatus, ImageError, ImageManifest, ImageTrust,
@@ -58,6 +61,8 @@ pub enum PlanHttpError {
     Launch(#[from] LaunchError),
     #[error("{0}")]
     Firecracker(#[from] FirecrackerError),
+    #[error("{0}")]
+    Qemu(#[from] QemuError),
 }
 
 /// Probe + spare CPU/RAM/disk used to refuse a stub provision instead of
@@ -70,6 +75,8 @@ pub struct ProvisionGate {
     pub spare_disk_bytes: Option<u64>,
     /// When set on Linux Standard, InstanceStart runs (or provision fails).
     pub firecracker: Option<FirecrackerBoot>,
+    /// When set on Windows Standard, QEMU `-accel whpx` runs (or provision fails).
+    pub qemu: Option<QemuBoot>,
 }
 
 /// Inputs for a real Firecracker invoke. Tests inject [`FirecrackerRuntime`].
@@ -92,6 +99,28 @@ impl std::fmt::Debug for FirecrackerBoot {
             .field("kernel_override", &self.kernel_override)
             .field("arch", &self.arch)
             .field("runtime", &"FirecrackerRuntime")
+            .finish()
+    }
+}
+
+/// Inputs for a real QEMU+WHPX invoke. Tests inject [`QemuRuntime`].
+#[derive(Clone)]
+pub struct QemuBoot {
+    pub binary: PathBuf,
+    pub image_cache_dir: PathBuf,
+    pub guest_image: GuestImageStatus,
+    pub arch: String,
+    pub runtime: Arc<dyn QemuRuntime + Send + Sync>,
+}
+
+impl std::fmt::Debug for QemuBoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QemuBoot")
+            .field("binary", &self.binary)
+            .field("image_cache_dir", &self.image_cache_dir)
+            .field("guest_image", &self.guest_image)
+            .field("arch", &self.arch)
+            .field("runtime", &"QemuRuntime")
             .finish()
     }
 }
@@ -217,7 +246,9 @@ where
 
 /// Verify the advertised image, then select the OS-conditional backend.
 /// Linux Standard with [`ProvisionGate::firecracker`] starts Firecracker
-/// (InstanceStart) or fails clearly. Digest mismatch never boots.
+/// (InstanceStart) or fails clearly. Windows Standard with
+/// [`ProvisionGate::qemu`] starts QEMU `-accel whpx` or fails clearly.
+/// Digest mismatch never boots.
 pub fn plan_http(
     os: HostOs,
     request: &ProvisionHttpRequest,
@@ -245,6 +276,12 @@ pub fn plan_http(
         if let Some(boot) = gate.and_then(|gate| gate.firecracker.as_ref()) {
             let gate = gate.expect("firecracker boot requires a gate");
             planned = invoke_linux_standard(os, request, gate, boot, planned)?;
+        }
+    }
+    if os == HostOs::Windows && lab_tier == LabTier::Standard {
+        if let Some(boot) = gate.and_then(|gate| gate.qemu.as_ref()) {
+            let gate = gate.expect("qemu boot requires a gate");
+            planned = invoke_windows_standard(os, request, gate, boot, planned)?;
         }
     }
     Ok(http_response_from_plan(&planned, guest_rclone))
@@ -287,6 +324,38 @@ fn invoke_linux_standard(
             }
         },
         &boot.image_cache_dir,
+        boot.arch.as_str(),
+        boot.runtime.as_ref(),
+    )?;
+    planned.hypervisor_invoked = true;
+    Ok(planned)
+}
+
+fn invoke_windows_standard(
+    os: HostOs,
+    request: &ProvisionHttpRequest,
+    gate: &ProvisionGate,
+    boot: &QemuBoot,
+    mut planned: ProvisionPlan,
+) -> Result<ProvisionPlan, PlanHttpError> {
+    let sharing = sharing_for_gate(gate, request);
+    let launch = launch::build(LaunchRequest {
+        os,
+        lab_tier: LabTier::Standard,
+        hardware: &gate.hardware,
+        sharing: &sharing,
+        image_cache_dir: Some(boot.image_cache_dir.as_path()),
+        guest_image: Some(&boot.guest_image),
+        capabilities: Some(&gate.capabilities),
+        spare_disk_bytes: gate.spare_disk_bytes,
+        kernel_override: None,
+    })?;
+    qemu::boot_from_launch(
+        os,
+        LabTier::Standard,
+        &gate.capabilities,
+        &launch,
+        &boot.binary,
         boot.arch.as_str(),
         boot.runtime.as_ref(),
     )?;
@@ -1175,6 +1244,7 @@ mod tests {
             sharing: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             firecracker: None,
+            qemu: None,
         }
     }
 
@@ -1201,6 +1271,7 @@ mod tests {
             sharing: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             firecracker: None,
+            qemu: None,
         }
     }
 
@@ -1440,5 +1511,247 @@ mod tests {
             format!("{STUB_CONNECTION_ORIGIN}/qemu-whpx")
         );
         assert!(recorder.spawn_calls().is_empty());
+    }
+
+    fn windows_whpx_gate() -> ProvisionGate {
+        use crate::host_capabilities::{
+            evaluate, EvaluateInput, IommuStatus, KvmAccess, WhpxCapability,
+        };
+        use crate::models::BYTES_PER_GIB;
+        use crate::test_support::{nvidia_gpu, nvidia_gpu_with, snapshot};
+
+        let gpus = [
+            nvidia_gpu(),
+            nvidia_gpu_with("NVIDIA GeForce RTX 3060", "GPU-TEST-3060", 12),
+        ];
+        ProvisionGate {
+            capabilities: evaluate(EvaluateInput {
+                os: HostOs::Windows,
+                kvm: KvmAccess::NotApplicable,
+                whpx: WhpxCapability::Available,
+                iommu: IommuStatus::Unknown,
+                gpus: &gpus,
+            }),
+            hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
+            sharing: None,
+            spare_disk_bytes: Some(64 * BYTES_PER_GIB),
+            firecracker: None,
+            qemu: None,
+        }
+    }
+
+    fn qemu_guest_ready(path: &std::path::Path) -> crate::image::GuestImageStatus {
+        crate::image::GuestImageStatus {
+            action: crate::image::ImageEnsureAction::SkippedPresent,
+            lab_tier: Some("standard".to_string()),
+            backend: crate::image::ImageBackend::Qemu,
+            path: Some(path.to_string_lossy().into_owned()),
+            digest: None,
+            log: "test".to_string(),
+            image_booted: false,
+        }
+    }
+
+    fn qemu_tree() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("qemu").join("qemu-system-x86_64.exe");
+        let rootfs = dir.path().join("standard").join("rootfs.img");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(rootfs.parent().unwrap()).unwrap();
+        std::fs::write(&binary, b"fake-qemu").unwrap();
+        std::fs::write(&rootfs, b"fake-rootfs").unwrap();
+        (dir, binary, rootfs)
+    }
+
+    #[test]
+    fn windows_standard_with_boot_inputs_invokes_whpx_and_keeps_the_placeholder_locator() {
+        use crate::qemu::{RecordingQemu, ACCEL_ARG, ACCEL_WHPX, HDA_ARG, MACHINE_PC};
+        use std::sync::Arc;
+
+        let (trust, body) = signed_standard();
+        let (tree, binary, rootfs) = qemu_tree();
+        let recorder = Arc::new(RecordingQemu::succeeding());
+        let mut gate = windows_whpx_gate();
+        gate.qemu = Some(QemuBoot {
+            binary: binary.clone(),
+            image_cache_dir: tree.path().to_path_buf(),
+            guest_image: qemu_guest_ready(&rootfs),
+            arch: "x86_64".to_string(),
+            runtime: recorder.clone(),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(body["hypervisorInvoked"], true);
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-whpx")
+        );
+        assert_eq!(body["streamer"], "kasm");
+        assert!(occupancy.is_in_session());
+
+        let spawns = recorder.spawn_calls();
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].0, binary);
+        assert_eq!(spawns[0].1[0], ACCEL_ARG);
+        assert_eq!(spawns[0].1[1], ACCEL_WHPX);
+        assert_eq!(spawns[0].1[3], MACHINE_PC);
+        assert_eq!(spawns[0].1[5], "cores=16");
+        assert_eq!(spawns[0].1[7], "32G");
+        assert_eq!(spawns[0].1[12], HDA_ARG);
+        assert_eq!(spawns[0].1[13], rootfs.to_string_lossy());
+        assert!(!spawns[0].1.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));
+    }
+
+    #[test]
+    fn windows_standard_boot_without_disk_is_400_not_a_successful_stub() {
+        use crate::qemu::RecordingQemu;
+        use std::sync::Arc;
+
+        let (trust, body) = signed_standard();
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("qemu").join("qemu-system-x86_64.exe");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::write(&binary, b"fake-qemu").unwrap();
+        let missing = dir.path().join("standard").join("rootfs.img");
+        let recorder = Arc::new(RecordingQemu::succeeding());
+        let mut gate = windows_whpx_gate();
+        gate.qemu = Some(QemuBoot {
+            binary,
+            image_cache_dir: dir.path().to_path_buf(),
+            guest_image: qemu_guest_ready(&missing),
+            arch: "x86_64".to_string(),
+            runtime: recorder.clone(),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("verified Standard guest image"));
+        assert!(!output.body.contains("connectionUrl"));
+        assert!(!occupancy.is_in_session());
+        assert!(recorder.spawn_calls().is_empty());
+    }
+
+    #[test]
+    fn windows_standard_boot_without_qemu_binary_is_400() {
+        use crate::qemu::RecordingQemu;
+        use std::sync::Arc;
+
+        let (trust, body) = signed_standard();
+        let (tree, binary, rootfs) = qemu_tree();
+        std::fs::remove_file(&binary).unwrap();
+        let recorder = Arc::new(RecordingQemu::succeeding());
+        let mut gate = windows_whpx_gate();
+        gate.qemu = Some(QemuBoot {
+            binary,
+            image_cache_dir: tree.path().to_path_buf(),
+            guest_image: qemu_guest_ready(&rootfs),
+            arch: "x86_64".to_string(),
+            runtime: recorder.clone(),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("QEMU is not installed"));
+        assert!(!occupancy.is_in_session());
+        assert!(recorder.spawn_calls().is_empty());
+    }
+
+    #[test]
+    fn linux_standard_ignores_qemu_boot_inputs() {
+        use crate::qemu::RecordingQemu;
+        use std::sync::Arc;
+
+        let (trust, body) = signed_standard();
+        let (tree, binary, rootfs) = qemu_tree();
+        let recorder = Arc::new(RecordingQemu::succeeding());
+        let mut gate = linux_kvm_gate();
+        gate.qemu = Some(QemuBoot {
+            binary,
+            image_cache_dir: tree.path().to_path_buf(),
+            guest_image: qemu_guest_ready(&rootfs),
+            arch: "x86_64".to_string(),
+            runtime: recorder.clone(),
+        });
+        let output = respond_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(body["hypervisorInvoked"], false);
+        assert_eq!(
+            body["connectionUrl"],
+            format!("{STUB_CONNECTION_ORIGIN}/firecracker")
+        );
+        assert!(recorder.spawn_calls().is_empty());
+    }
+
+    #[test]
+    fn macos_does_not_spawn_qemu() {
+        use crate::qemu::RecordingQemu;
+        use std::sync::Arc;
+
+        let (trust, body) = signed_standard();
+        let (tree, binary, rootfs) = qemu_tree();
+        let recorder = Arc::new(RecordingQemu::succeeding());
+        let mut gate = windows_whpx_gate();
+        gate.qemu = Some(QemuBoot {
+            binary,
+            image_cache_dir: tree.path().to_path_buf(),
+            guest_image: qemu_guest_ready(&rootfs),
+            arch: "x86_64".to_string(),
+            runtime: recorder.clone(),
+        });
+        let output = respond_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::MacOs,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(recorder.spawn_calls().is_empty());
+        assert!(!output.body.contains("connectionUrl"));
     }
 }

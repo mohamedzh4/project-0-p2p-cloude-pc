@@ -7,9 +7,10 @@
 //!
 //! The HTTP port in `provision_http` verifies the signed image digest
 //! ([`crate::image::verify_image`]) **before** calling [`plan`]. Linux Standard
-//! provision may then start Firecracker (phase 27). `plan` itself never
-//! invokes a hypervisor — it only selects the backend. Do not put
-//! Firecracker/QEMU details in the session router.
+//! provision may then start Firecracker (phase 27). Windows Standard may then
+//! start QEMU with `-accel whpx` (phase 28). `plan` itself never invokes a
+//! hypervisor — it only selects the backend. Do not put Firecracker/QEMU
+//! details in the session router.
 
 use std::fmt;
 
@@ -284,6 +285,7 @@ impl Provisioner for StubProvisioner {
 /// Phase 6 entry point: choose the OS-conditional backend and return a plan.
 /// Never starts Firecracker, QEMU, Kasm, Sunshine, or VFIO. Linux Standard
 /// invoke lives in [`crate::firecracker`] via the provision HTTP port.
+/// Windows Standard invoke lives in [`crate::qemu`].
 pub fn plan(os: HostOs, request: &ProvisionRequest) -> Result<ProvisionPlan, ProvisionError> {
     StubProvisioner::select(os, request.lab_tier)?.plan(request)
 }

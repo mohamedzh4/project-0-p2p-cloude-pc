@@ -8,7 +8,8 @@
 //!
 //! Nothing in this module invokes a hypervisor (Firecracker/QEMU are never
 //! executed here). Linux Standard `InstanceStart` lives in `firecracker.rs`
-//! (phase 27). The webview does not fetch (CSP allows no remote origins). Tests
+//! (phase 27). Windows Standard `-accel whpx` lives in `qemu.rs` (phase 28).
+//! The webview does not fetch (CSP allows no remote origins). Tests
 //! inject a fetcher, a fake installer, `file://`, or a loopback httptest;
 //! non-loopback HTTP is refused under `cfg(test)` unless
 //! `HOST_AGENT_HYPERVISOR_NETWORK=1`.

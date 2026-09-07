@@ -2,7 +2,9 @@
 //! the Matchmaker from Rust, ping while sharing is on, and optionally join
 //! self-hosted Headscale from Rust. Linux Standard provision starts Firecracker
 //! when the probe offers it and the binary, kernel, and verified rootfs are
-//! present. Other backends stay stubs. Tray status and immediate pause live in
+//! present. Windows Standard provision starts QEMU with `-accel whpx` when the
+//! probe offers it and the binary plus a verified disk are present. Pro stays
+//! stubs. Tray status and immediate pause live in
 //! Rust; the webview does not call the Matchmaker.
 
 mod agent_status;
@@ -24,6 +26,7 @@ mod mesh;
 mod models;
 mod provision;
 mod provision_http;
+mod qemu;
 mod storage;
 mod tray;
 
@@ -63,7 +66,8 @@ pub struct AgentState {
     /// Hosting eligibility from OS + KVM/WHPX/IOMMU/GPU. Never a backend picker.
     pub capabilities: HostCapabilities,
     /// Locate/fetch result for the OS hypervisor binary. Linux Standard
-    /// provision may invoke Firecracker; this status is still fetch-only.
+    /// provision may invoke Firecracker; Windows Standard may invoke QEMU.
+    /// This status itself is still fetch/install-only.
     pub hypervisor: HypervisorStatus,
     /// Locate/fetch result for the signed guest image. InstanceStart is not
     /// a confirmed guest userspace.
@@ -140,7 +144,7 @@ fn spawn_provision_listener(app: &tauri::App) {
                                 .map(std::path::PathBuf::from)
                                 .unwrap_or_default(),
                             image_cache_dir: cache.clone(),
-                            guest_image,
+                            guest_image: guest_image.clone(),
                             kernel_override: std::env::var(crate::firecracker::KERNEL_ENV)
                                 .ok()
                                 .map(std::path::PathBuf::from)
@@ -153,12 +157,28 @@ fn spawn_provision_listener(app: &tauri::App) {
                     } else {
                         None
                     };
+                    let qemu = if os == HostOs::Windows && capabilities.standard.offered {
+                        Some(provision_http::QemuBoot {
+                            binary: hypervisor
+                                .path
+                                .as_deref()
+                                .map(std::path::PathBuf::from)
+                                .unwrap_or_default(),
+                            image_cache_dir: cache.clone(),
+                            guest_image,
+                            arch: std::env::consts::ARCH.to_string(),
+                            runtime: std::sync::Arc::new(crate::qemu::ProcessQemuRuntime),
+                        })
+                    } else {
+                        None
+                    };
                     let gate = provision_http::ProvisionGate {
                         capabilities,
                         hardware,
                         sharing,
                         spare_disk_bytes: crate::disk_space::available_bytes(&cache),
                         firecracker,
+                        qemu,
                     };
                     if let Err(error) = provision_http::serve(
                         &config,

@@ -4,7 +4,9 @@ Packer + QEMU **build** of the disks Host Agent already knows how to
 **fetch and verify**. Linux Standard Host Agent can `InstanceStart` Firecracker
 (phase 27) when kernel + verified `rootfs.img` are present; the locator is
 still `https://provision.invalid/firecracker` (no TAP/net, no live Kasm).
-Windows QEMU+WHPX boot is still a stub.
+Windows Standard Host Agent can spawn QEMU `-accel whpx` (phase 28) when the
+verified disk is present; the locator is still
+`https://provision.invalid/qemu-whpx`.
 
 | Tier | Streamer in the guest | Disk |
 | --- | --- | --- |
@@ -47,7 +49,9 @@ export IMAGE_SIGNING_PRIVATE_KEY="$HOME/dcl-dev-ed25519.pem"
 Kasm's installer needs nested Docker inside the guest (official single-server).
 That is why the cloud image is grown to 64G and the Packer VM is 4 vCPU / 8 GiB
 for the *build*. Host Agent InstanceStart (phase 27) still needs an operator
-`FIRECRACKER_KERNEL` and does not invent a live Kasm URL.
+`FIRECRACKER_KERNEL` and does not invent a live Kasm URL. Host Agent QEMU
+`-accel whpx` (phase 28) uses the verified `rootfs.img` (raw or qcow2
+content) and also does not invent a live Kasm URL.
 
 Pro GPU vendor drivers are **not** baked in (the Packer VM has no passthrough
 GPU). Install NVIDIA/AMD drivers on first Pro boot after VFIO/DDA.
@@ -72,7 +76,7 @@ Under `output/<standard|pro>/`:
 
 | File | Role |
 | --- | --- |
-| `rootfs.qcow2` | QEMU (Linux VFIO / Windows WHPX later) |
+| `rootfs.qcow2` | QEMU (Linux VFIO / Windows WHPX `-hda`; Host Agent cache name is still `rootfs.img`) |
 | `rootfs.img` | raw; Host Agent cache name is `rootfs.img` |
 | `rootfs.img.sha256` | GNU `hex  filename` |
 | `rootfs.img.sig` | standard base64 Ed25519 over the **raw 32-byte** SHA-256 |

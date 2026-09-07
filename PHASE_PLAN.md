@@ -39,7 +39,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 27: pytest 162, cargo test 266, vitest 31, guest-images
+  Counts after phase 28: pytest 162, cargo test 288, vitest 31, guest-images
   unittest 12.
 
 ## Contracts to keep stable
@@ -90,7 +90,8 @@ still load. Matchmaker `hosts` already has `shared_gpu_id`.
 Host Agent Matchmaker calls belong in **Rust**, not `fetch` from the webview
 (CSP allows no remote origins).
 
-Host Agent provisioner (stubs, phase 5–6; Linux Standard invoke, phase 27):
+Host Agent provisioner (stubs, phase 5–6; Linux Standard invoke, phase 27;
+Windows Standard invoke, phase 28):
 `host_agent_lib::plan_provision(os, request) -> Result<ProvisionPlan,
 ProvisionError>` in `host-agent/src-tauri/src/provision.rs`. Linux Standard →
 Firecracker, Windows Standard → QEMU+WHPX, Linux Pro → QEMU+VFIO, Windows Pro
@@ -101,13 +102,17 @@ never invokes a hypervisor. The Host Agent HTTP port is `POST /v1/provision`
 (`image.rs`) **before** `plan`. On Linux Standard, when the probe offers the
 tier and `ProvisionGate.firecracker` is set, `firecracker.rs` starts the
 fetched binary (`--api-sock` + `--enable-pci`) and PUTs boot-source,
-drives/rootfs, machine-config, then `InstanceStart`. Missing kernel/binary/
-rootfs is 400, not a fake success. Response is
+drives/rootfs, machine-config, then `InstanceStart`. On Windows Standard, when
+the probe offers the tier and `ProvisionGate.qemu` is set, `qemu.rs` starts
+the fetched Weilnetz `qemu-system-*.exe` with documented `-accel whpx` (no
+TCG, no Hyper-V Standard boot). Missing kernel/binary/rootfs/WHPX is 400, not
+a fake success. Response is
 `{ connectionUrl, hypervisorInvoked, gpuExclusive, streamer }` plus Pro-only
 `sunshineUrl` and `moonlight: { host, app }`. Standard `streamer` is `kasm`.
 Pro `streamer` is `sunshine` (stub origin `https://provision.invalid`). Linux
 Standard locator stays `https://provision.invalid/firecracker` even after
-invoke. Body includes `labTier`, optional `sharedGpuId`, `imageDigest`,
+invoke. Windows Standard locator stays `https://provision.invalid/qemu-whpx`.
+Body includes `labTier`, optional `sharedGpuId`, `imageDigest`,
 `imageSignature`. Missing or mismatched image metadata is 400 (no stub boot).
 Listen requires `IMAGE_SIGNING_PUBLIC_KEY` and `IMAGE_LOCAL_DIGEST` (fail
 fast). Matchmaker session booking, after `HostSelector.select` and occupancy
@@ -129,10 +134,10 @@ iframe it in early phases.
 | Cahier | This plan |
 | --- | --- |
 | 0 Manual compute pipeline | Hardware: three honest lines in `PROJECT_STATUS.md`. Not yet run on physical hardware. Guest disks: `guest-images/` |
-| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs) through 27 (Linux Standard InstanceStart; locator still `.invalid`). Live desktop is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid`) |
+| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs) through 28 (Linux Firecracker InstanceStart + Windows QEMU `-accel whpx`; locators still `.invalid`). Live desktop is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid`) |
 | 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
 | 3 Pro/Gamer + latency | Execution phase 16 software (Sunshine locators). Pro-GPU implemented in code, not yet run on physical hardware; no live stream in-repo |
-| 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv; 26 Packer guest images; 27 Firecracker InstanceStart (no TAP). Live desktop / pairwise ACLs still paper |
+| 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv; 26 Packer guest images; 27 Firecracker InstanceStart (no TAP); 28 QEMU `-accel whpx` (no live Kasm). Live desktop / pairwise ACLs still paper |
 
 ## Execution phases
 
@@ -259,7 +264,7 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | After 45s Matchmaker treats skip as silence (interrupts). No pause field |
 | FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Later telemetry |
 | FR13 match on tier, latency, reliability | Partial: tier fit + declared caps; latency/reliability not measured | Do not fake `latency_ms` |
-| FR14 provision, heartbeat, auto teardown | Partial: mock provision + 45s stale for new books and occupied teardown; no live hypervisor | Real VMs are still not in this repo |
+| FR14 provision, heartbeat, auto teardown | Partial: mock provision + Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + 45s stale for new books and occupied teardown; locators still `.invalid` | Real VMs on metal and a live desktop URL are still not in this repo |
 | FR15 re-match on host disconnect | Implemented: `interrupted` + one `HostSelector.select`; 409 if none | Same renterd bucket follows the user; no Storj |
 | FR16 meter usage / payouts | Metering + ledger; payouts deferred | Phase 11 metering done; no Stripe |
 
@@ -488,11 +493,11 @@ Firecracker guest image into a user cache (`HOST_AGENT_IMAGE_CACHE` or
 `~/.cache/dcl-host-agent/images`) and verifies SHA-256 + Ed25519 against
 Matchmaker `IMAGE_*` metadata **before** the file is treated as ready.
 Mismatch fails fast and does not leave a ready disk. Linux Pro (when offered)
-fetches the Pro image the same way. Windows Standard logs **would fetch** a
-QEMU disk (not Firecracker). macOS skips with a logged reason. Tests inject a
-fetcher, `file://`, or loopback httptest; non-loopback HTTP is refused under
-`cfg(test)` unless `HOST_AGENT_IMAGE_NETWORK=1`. No private key in the agent.
-The webview does not fetch. GATE-* stay OPEN. See
+fetches the Pro image the same way. Windows Standard fetches the QEMU disk
+the same way (phase 28; required for `-accel whpx` boot). macOS skips with a
+logged reason. Tests inject a fetcher, `file://`, or loopback httptest;
+non-loopback HTTP is refused under `cfg(test)` unless `HOST_AGENT_IMAGE_NETWORK=1`.
+No private key in the agent. The webview does not fetch. GATE-* stay OPEN. See
 `docs/phase-logs/phase-20-guest-image-fetch.md`.
 
 ### Phase 21 — Generate launch config from sliders + GPU id
@@ -690,8 +695,33 @@ Done as a **software contract** (2026-09-07). `firecracker.rs` argv is
 a `.invalid` hostname. Not yet run on physical hardware. See
 `docs/phase-logs/phase-27-firecracker-invoke.md`.
 
-**Next:** Windows QEMU `-accel whpx` boot. Still not live VFIO from the
-window, a fake live Kasm URL, or the web loop.
+### Phase 28 — Windows QEMU `-accel whpx` boot
+
+**Why next:** Phase 24 installed QEMU; phase 20/26 the signed disk; phase 21
+the launch JSON — none of those started `qemu-system-*.exe -accel whpx`.
+
+**Do:** After the capability probe offers Windows Standard, and QEMU is
+installed plus a verified Standard disk is present, spawn QEMU with the
+documented WHPX flags. Map clamped vCPU/RAM. Fail clearly if WHPX is missing
+in the probe (no TCG). Tests inject a fake qemu-system exe (no WHPX). Keep
+the placeholder locator.
+
+**Do not:** Live VFIO from the window, Hyper-V DDA apply-from-window, a fake
+live Kasm URL, or the web loop. Do not `Start-VM`. Do not close hardware
+status.
+
+**Exit:** HTTP provision on Windows Standard invokes; argv is locked in tests;
+macOS/Linux/Pro do not spawn QEMU; suites green.
+
+Done as a **software contract** (2026-09-07). `qemu.rs` argv is qemu.org
+WHPX quick start (`-accel whpx -M pc` / aarch64 `-M virt`). Locator stays
+`https://provision.invalid/qemu-whpx`. Windows Standard image fetch is real
+(same SHA-256 + Ed25519 as Linux). Hyper-V is not a Standard boot fallback.
+Not yet run on physical hardware. See
+`docs/phase-logs/phase-28-qemu-whpx-invoke.md`.
+
+**Next:** live VFIO bind apply (Linux Pro) pointing at real sysfs while
+keeping rollback. Still not a fake live Kasm URL or the web loop.
 
 ## Handoff template
 

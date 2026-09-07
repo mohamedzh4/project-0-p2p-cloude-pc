@@ -10,10 +10,11 @@
 //! into a user cache, then runs the same SHA-256 + Ed25519 checks **before**
 //! treating the file as ready. Linux Standard fetches the Firecracker guest
 //! image. Linux Pro (when offered) fetches the Pro image. Windows Standard
-//! logs **would fetch** a QEMU disk (no multi-GB download here). macOS skips
-//! with a reason — it does not pretend Firecracker images run. The webview
-//! does not fetch. This module never holds a private key and never boots a
-//! guest. Tests inject a fetcher, `file://`, or loopback httptest.
+//! fetches the QEMU disk the same way (SHA-256 + Ed25519) so `-accel whpx`
+//! has a verified disk. Windows Pro is not fetched here (Hyper-V GPU). macOS
+//! skips with a reason — it does not pretend Firecracker images run. The
+//! webview does not fetch. This module never holds a private key and never
+//! boots a guest. Tests inject a fetcher, `file://`, or loopback httptest.
 
 use std::fmt;
 use std::fs;
@@ -529,11 +530,7 @@ pub fn ensure(
     match os {
         HostOs::MacOs | HostOs::Other => Ok(skip_unsupported(os, caps)),
         HostOs::Linux => ensure_linux(caps, trust, cache_dir, standard, pro, fetcher),
-        HostOs::Windows => ensure_windows(
-            caps,
-            standard.map(|spec| spec.url.as_str()),
-            pro.map(|spec| spec.url.as_str()),
-        ),
+        HostOs::Windows => ensure_windows(caps, trust, cache_dir, standard, pro, fetcher),
     }
 }
 
@@ -547,9 +544,29 @@ pub fn ensure_from_env(
     match os {
         HostOs::MacOs | HostOs::Other => Ok(skip_unsupported(os, caps)),
         HostOs::Windows => {
-            let standard_url = nonempty(getenv(STANDARD_URL_ENV));
-            let pro_url = nonempty(getenv(PRO_URL_ENV));
-            ensure_windows(caps, standard_url.as_deref(), pro_url.as_deref())
+            if !caps.standard.offered {
+                return Err(ImageError::StandardNotOffered {
+                    reason: caps.standard.reason.clone(),
+                });
+            }
+            let trust = trust_from_env(&getenv)?;
+            let standard = required_spec(
+                LabTier::Standard,
+                STANDARD_URL_ENV,
+                STANDARD_DIGEST_ENV,
+                STANDARD_SIG_ENV,
+                Some(trust.local_digest()),
+                &getenv,
+            )?;
+            ensure(
+                os,
+                caps,
+                Some(&trust),
+                &cache,
+                Some(&standard),
+                None,
+                fetcher,
+            )
         }
         HostOs::Linux => {
             if !caps.standard.offered {
@@ -694,38 +711,42 @@ fn ensure_linux(
 
 fn ensure_windows(
     caps: &HostCapabilities,
-    standard_url: Option<&str>,
-    pro_url: Option<&str>,
+    trust: Option<&ImageTrust>,
+    cache_dir: &Path,
+    standard: Option<&GuestImageSpec>,
+    pro: Option<&GuestImageSpec>,
+    fetcher: &dyn ImageFetcher,
 ) -> Result<GuestImageStatus, ImageError> {
     if !caps.standard.offered {
         return Err(ImageError::StandardNotOffered {
             reason: caps.standard.reason.clone(),
         });
     }
-    let url = standard_url
-        .map(str::trim)
-        .filter(|url| !url.is_empty())
-        .unwrap_or("Matchmaker IMAGE_STANDARD_* metadata");
-    let mut log = format!(
-        "would fetch QEMU guest image for Windows Standard from {url} (not a Firecracker image); not fetched"
-    );
+    let trust = trust.ok_or(ImageError::MissingPublicKey)?;
+    let standard = standard.ok_or(ImageError::MissingImageUrl {
+        url_env: STANDARD_URL_ENV,
+        lab_tier: LabTier::Standard.as_str().to_string(),
+    })?;
+    let mut status = locate_or_fetch_image(
+        cache_dir,
+        standard,
+        trust.verifying_key(),
+        Some(trust.local_digest()),
+        ImageBackend::Qemu,
+        fetcher,
+    )?;
+
     if caps.pro.offered {
-        let listed = pro_url
-            .map(str::trim)
+        let listed = pro
+            .map(|spec| spec.url.as_str())
             .filter(|url| !url.is_empty())
             .unwrap_or("Matchmaker IMAGE_PRO_* metadata");
-        log.push_str(&format!(
-            "; would fetch Pro guest image from {listed}; not fetched"
-        ));
+        status.log = format!(
+            "{}; would fetch Pro guest image from {listed}; not fetched (Windows Pro is Hyper-V GPU, not QEMU+WHPX)",
+            status.log.trim_end_matches('.')
+        );
     }
-    Ok(GuestImageStatus::success(
-        ImageEnsureAction::WouldFetch,
-        Some(LabTier::Standard.as_str().to_string()),
-        ImageBackend::Qemu,
-        None,
-        None,
-        log,
-    ))
+    Ok(status)
 }
 
 fn locate_or_fetch_image(
@@ -1514,7 +1535,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn windows_would_fetch_qemu_image_does_not_download() {
+    fn windows_fetches_standard_qemu_image_when_missing() {
         let cache = tempfile::tempdir().unwrap();
         let fetcher = ScriptedImageFetcher::new(FIXTURE_STANDARD_BYTES);
         let (trust, spec) = spec_for(
@@ -1533,13 +1554,84 @@ pub(crate) mod tests {
         )
         .unwrap();
 
-        assert_eq!(status.action, ImageEnsureAction::WouldFetch);
+        assert_eq!(status.action, ImageEnsureAction::Fetched);
         assert_eq!(status.backend, ImageBackend::Qemu);
-        assert_eq!(fetcher.hit_count(), 0);
-        assert!(status.log.contains("would fetch QEMU"));
-        assert!(status.log.contains("not a Firecracker image"));
+        assert_eq!(status.lab_tier.as_deref(), Some("standard"));
+        assert_eq!(fetcher.hit_count(), 1);
+        let path = PathBuf::from(status.path.as_deref().unwrap());
+        assert_eq!(fs::read(&path).unwrap(), FIXTURE_STANDARD_BYTES);
+        assert!(status.log.contains("fetched"));
+        assert!(status.log.contains("Ed25519"));
+        assert!(status.log.contains("would fetch Pro"));
         assert!(!status.image_booted);
-        assert!(!cache.path().join("standard").exists());
+        assert_eq!(
+            verify_image(&trust, &spec.manifest, Some(&fs::read(&path).unwrap())),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn windows_does_not_fetch_pro_image() {
+        let cache = tempfile::tempdir().unwrap();
+        let (trust, standard) = spec_for(
+            FIXTURE_STANDARD_BYTES,
+            "https://example.invalid/standard.img",
+            LabTier::Standard,
+        );
+        let (_trust_pro, pro) = spec_for(
+            FIXTURE_PRO_BYTES,
+            "https://example.invalid/pro.img",
+            LabTier::Pro,
+        );
+        let fetcher = DualImageFetcher {
+            standard: FIXTURE_STANDARD_BYTES.to_vec(),
+            pro: FIXTURE_PRO_BYTES.to_vec(),
+            hits: AtomicU32::new(0),
+        };
+        let status = ensure(
+            HostOs::Windows,
+            &windows_standard(),
+            Some(&trust),
+            cache.path(),
+            Some(&standard),
+            Some(&pro),
+            &fetcher,
+        )
+        .unwrap();
+
+        assert_eq!(status.backend, ImageBackend::Qemu);
+        assert_eq!(fetcher.hits.load(Ordering::SeqCst), 1);
+        assert!(!cache.path().join("pro/rootfs.img").exists());
+        assert!(status.log.contains("would fetch Pro"));
+        assert!(!status.image_booted);
+    }
+
+    #[test]
+    fn windows_digest_mismatch_fails_fast_and_does_not_mark_ready() {
+        let cache = tempfile::tempdir().unwrap();
+        let fetcher = ScriptedImageFetcher::new(b"evil-bytes".as_slice());
+        let (trust, spec) = spec_for(
+            FIXTURE_STANDARD_BYTES,
+            "https://example.invalid/qemu.img",
+            LabTier::Standard,
+        );
+        let error = ensure(
+            HostOs::Windows,
+            &windows_standard(),
+            Some(&trust),
+            cache.path(),
+            Some(&spec),
+            None,
+            &fetcher,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, ImageError::DigestMismatch);
+        assert_eq!(fetcher.hit_count(), 1);
+        assert!(!cache.path().join("standard/rootfs.img").exists());
+        let status = status_from_result(Err(error));
+        assert_eq!(status.action, ImageEnsureAction::Rejected);
+        assert!(!status.image_booted);
     }
 
     #[test]
@@ -1567,7 +1659,8 @@ pub(crate) mod tests {
 
     #[test]
     fn linux_and_windows_are_peer_paths_not_a_windows_special_case() {
-        let cache = tempfile::tempdir().unwrap();
+        let linux_cache = tempfile::tempdir().unwrap();
+        let windows_cache = tempfile::tempdir().unwrap();
         let (trust, spec) = spec_for(
             FIXTURE_STANDARD_BYTES,
             "https://example.invalid/img",
@@ -1577,7 +1670,7 @@ pub(crate) mod tests {
             HostOs::Linux,
             &linux_standard(),
             Some(&trust),
-            cache.path(),
+            linux_cache.path(),
             Some(&spec),
             None,
             &ScriptedImageFetcher::new(FIXTURE_STANDARD_BYTES),
@@ -1587,7 +1680,7 @@ pub(crate) mod tests {
             HostOs::Windows,
             &windows_standard(),
             Some(&trust),
-            cache.path(),
+            windows_cache.path(),
             Some(&spec),
             None,
             &ScriptedImageFetcher::new(FIXTURE_STANDARD_BYTES),
@@ -1596,7 +1689,8 @@ pub(crate) mod tests {
 
         assert_eq!(linux.backend, ImageBackend::Firecracker);
         assert_eq!(windows.backend, ImageBackend::Qemu);
-        assert_ne!(linux.action, windows.action);
+        assert_eq!(linux.action, ImageEnsureAction::Fetched);
+        assert_eq!(windows.action, ImageEnsureAction::Fetched);
         assert!(!linux.image_booted);
         assert!(!windows.image_booted);
     }
@@ -1682,6 +1776,41 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(status.action, ImageEnsureAction::Fetched);
+        assert_eq!(status.digest.as_deref(), Some(digest.as_str()));
+        assert!(!status.image_booted);
+    }
+
+    #[test]
+    fn windows_ensure_from_env_fetches_standard_qemu_image() {
+        let cache = tempfile::tempdir().unwrap();
+        let (trust, spec) = spec_for(
+            FIXTURE_STANDARD_BYTES,
+            "https://example.invalid/qemu.img",
+            LabTier::Standard,
+        );
+        let cache_path = cache.path().to_path_buf();
+        let url = spec.url.clone();
+        let digest = spec.manifest.digest_hex();
+        let signature = spec.manifest.signature_base64();
+        let public = trust.public_key_hex();
+        let local = trust.local_digest().to_hex();
+        let status = ensure_from_env(
+            HostOs::Windows,
+            &windows_standard(),
+            |key| match key {
+                PUBLIC_KEY_ENV => Some(public.clone()),
+                LOCAL_DIGEST_ENV => Some(local.clone()),
+                STANDARD_DIGEST_ENV => Some(digest.clone()),
+                STANDARD_SIG_ENV => Some(signature.clone()),
+                STANDARD_URL_ENV => Some(url.clone()),
+                CACHE_ENV => Some(cache_path.to_string_lossy().into_owned()),
+                _ => None,
+            },
+            &ScriptedImageFetcher::new(FIXTURE_STANDARD_BYTES),
+        )
+        .unwrap();
+        assert_eq!(status.action, ImageEnsureAction::Fetched);
+        assert_eq!(status.backend, ImageBackend::Qemu);
         assert_eq!(status.digest.as_deref(), Some(digest.as_str()));
         assert!(!status.image_booted);
     }
