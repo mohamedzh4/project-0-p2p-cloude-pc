@@ -40,6 +40,10 @@ pub enum MatchmakerError {
         "HOST_AGENT_URL must be an http or https URL (Matchmaker must be able to reach this agent)"
     )]
     InvalidAgentUrl,
+    #[error(
+        "HOST_AGENT_URL must be an origin Matchmaker can dial, not a wildcard bind (0.0.0.0 or [::]). Set HOST_AGENT_URL to this PC's LAN IP, DNS name, or Headscale hostname, e.g. http://192.0.2.10:7842"
+    )]
+    UnspecifiedAgentUrl,
     #[error("shareGpu is true but sharedGpuId is missing; GPU assignment is exclusive for the session, not a concurrent slice")]
     GpuIdRequired,
     #[error("sharedLogicalCores must be at least 1 to register with the Matchmaker")]
@@ -437,11 +441,39 @@ where
 }
 
 fn validate_agent_url(value: &str) -> Result<Option<String>, MatchmakerError> {
-    if value.starts_with("http://") || value.starts_with("https://") {
-        Ok(Some(value.to_string()))
-    } else {
-        Err(MatchmakerError::InvalidAgentUrl)
+    if !(value.starts_with("http://") || value.starts_with("https://")) {
+        return Err(MatchmakerError::InvalidAgentUrl);
     }
+    if agent_url_host_is_unspecified(value) {
+        return Err(MatchmakerError::UnspecifiedAgentUrl);
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn agent_url_host_is_unspecified(value: &str) -> bool {
+    let Some(host) = agent_url_host(value) else {
+        return false;
+    };
+    host == "0.0.0.0"
+        || host == "::"
+        || host == "::0"
+        || host.eq_ignore_ascii_case("0:0:0:0:0:0:0:0")
+}
+
+fn agent_url_host(value: &str) -> Option<&str> {
+    let rest = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))?;
+    let hostport = rest.split('/').next().unwrap_or(rest);
+    if let Some(inner) = hostport.strip_prefix('[') {
+        return inner.split(']').next();
+    }
+    hostport
+        .rsplit_once('@')
+        .map(|(_, hostport)| hostport)
+        .unwrap_or(hostport)
+        .split(':')
+        .next()
 }
 
 fn require_env<F>(lookup: &mut F, key: &'static str) -> Result<String, MatchmakerError>
@@ -775,6 +807,68 @@ mod tests {
         let call = transport.last();
         assert_eq!(call.body["agentUrl"], "http://127.0.0.1:7842");
         assert!(call.body.get("kasmUrl").is_none());
+    }
+
+    #[test]
+    fn unspecified_listen_addr_is_not_advertised_as_agent_url() {
+        let dir = tempdir().unwrap();
+        let hardware = snapshot(8, 16 * BYTES_PER_GIB, vec![nvidia_gpu()]);
+        let config = sharing(4, 8 * BYTES_PER_GIB, false, None);
+        config::save(dir.path(), &config).unwrap();
+
+        let error = register_declared_caps(
+            dir.path(),
+            &hardware,
+            |key| match key {
+                "MATCHMAKER_URL" => Some("http://matchmaker.test".to_string()),
+                "HOST_BOOTSTRAP_TOKEN" => Some(TEST_BOOTSTRAP_TOKEN.to_string()),
+                "HOST_DISPLAY_NAME" => Some("lab-pc".to_string()),
+                "HOST_AGENT_LISTEN_ADDR" => Some("0.0.0.0:7842".to_string()),
+                _ => None,
+            },
+            &PanicTransport,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, MatchmakerError::UnspecifiedAgentUrl));
+        assert!(error.to_string().contains("HOST_AGENT_URL"));
+        assert!(!error.to_string().contains(TEST_BOOTSTRAP_TOKEN));
+    }
+
+    #[test]
+    fn host_agent_url_overrides_unspecified_listen_bind() {
+        let dir = tempdir().unwrap();
+        let hardware = snapshot(8, 16 * BYTES_PER_GIB, vec![nvidia_gpu()]);
+        let config = sharing(4, 8 * BYTES_PER_GIB, false, None);
+        config::save(dir.path(), &config).unwrap();
+        let transport = RecordingTransport::ok("11111111-2222-3333-4444-555555555555", false, None);
+
+        register_declared_caps(
+            dir.path(),
+            &hardware,
+            |key| match key {
+                "MATCHMAKER_URL" => Some("http://matchmaker.test".to_string()),
+                "HOST_BOOTSTRAP_TOKEN" => Some(TEST_BOOTSTRAP_TOKEN.to_string()),
+                "HOST_DISPLAY_NAME" => Some("lab-pc".to_string()),
+                "HOST_AGENT_LISTEN_ADDR" => Some("0.0.0.0:7842".to_string()),
+                "HOST_AGENT_URL" => Some("http://192.0.2.10:7842".to_string()),
+                _ => None,
+            },
+            &transport,
+        )
+        .unwrap();
+
+        let call = transport.last();
+        assert_eq!(call.body["agentUrl"], "http://192.0.2.10:7842");
+    }
+
+    #[test]
+    fn ipv6_unspecified_listen_is_not_advertised() {
+        assert!(agent_url_host_is_unspecified("http://0.0.0.0:7842"));
+        assert!(agent_url_host_is_unspecified("http://[::]:7842"));
+        assert!(!agent_url_host_is_unspecified("http://127.0.0.1:7842"));
+        assert!(!agent_url_host_is_unspecified("http://192.0.2.10:7842"));
+        assert!(!agent_url_host_is_unspecified("http://host.example:7842"));
     }
 
     #[test]

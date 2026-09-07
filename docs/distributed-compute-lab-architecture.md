@@ -25,7 +25,7 @@ Everything in this document fits into one of these four planes.
 ## Implemented vs this paper (2026-09-05)
 
 This file is the **target** architecture. Software on local `main` after
-execution phase 32 is the **control-plane MVP** plus Linux Standard Firecracker
+execution phase 33 is the **control-plane MVP** plus Linux Standard Firecracker
 **InstanceStart**, Windows Standard QEMU **`-accel whpx`**, Linux Pro
 **vfio-pci bind apply**, Windows Pro **Hyper-V DDA/GPU-P apply**, and a
 **live Kasm/Sunshine locator poll** after invoke/apply (tests inject loopback;
@@ -40,8 +40,10 @@ manual), signed **guest-image**
 locate/fetch (Linux Firecracker/Pro and Windows Standard images verified
 SHA-256+Ed25519 before ready; macOS skip), a **launch config** from clamped
 sliders, a **VFIO/DDA bind** (Linux Pro provision apply +
-rollback on injectable/live sysfs; window plan-only; Windows Pro Hyper-V DDA/GPU-P apply from provision via injectable runner + rollback), and **insufficient-resource
-rejection UX** (blocked tiers are not offered). It is not a live lab.
+rollback on injectable/live sysfs; window plan-only; Windows Pro Hyper-V DDA/GPU-P apply from provision via injectable runner + rollback), **insufficient-resource
+rejection UX** (blocked tiers are not offered), and an **on-target Host Agent
+binary** (phase 33: `npm run tauri build` on Linux/Windows; packaged `.env`).
+It is not a live lab.
 
 | Paper | In-repo now |
 | --- | --- |

@@ -39,7 +39,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 32: pytest 166, cargo test 320, vitest 52, guest-images
+  Counts after phase 33: pytest 166, cargo test --lib 328, vitest 52, guest-images
   unittest 12.
 
 ## Contracts to keep stable
@@ -150,10 +150,10 @@ iframe Kasm or Sunshine in early phases.
 | Cahier | This plan |
 | --- | --- |
 | 0 Manual compute pipeline | Hardware: three honest lines in `PROJECT_STATUS.md`. Not yet run on physical hardware. Guest disks: `guest-images/` |
-| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs) through 32 (Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply + Windows Pro Hyper-V DDA/GPU-P apply + live locator poll + web full loop). Live desktop on metal is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid` for the seed command) |
+| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs) through 33 (Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply + Windows Pro Hyper-V DDA/GPU-P apply + live locator poll + web full loop + on-target Host Agent binary). Live desktop on metal is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid` for the seed command) |
 | 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
 | 3 Pro/Gamer + latency | Execution phase 16 software (Sunshine locators). Pro-GPU implemented in code, not yet run on physical hardware; no live stream in-repo |
-| 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv; 26 Packer guest images; 27 Firecracker InstanceStart (no TAP); 28 QEMU `-accel whpx`; 29 Linux Pro VFIO bind apply (window still plan-only); 30 Windows Pro Hyper-V DDA/GPU-P apply from provision (window still plan-only); 31 live locator poll after invoke/apply (tests inject loopback). Live desktop on metal / pairwise ACLs still paper |
+| 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv; 26 Packer guest images; 27 Firecracker InstanceStart (no TAP); 28 QEMU `-accel whpx`; 29 Linux Pro VFIO bind apply (window still plan-only); 30 Windows Pro Hyper-V DDA/GPU-P apply from provision (window still plan-only); 31 live locator poll after invoke/apply (tests inject loopback); 33 on-target Host Agent binary. Live desktop on metal / pairwise ACLs still paper |
 
 ## Execution phases
 
@@ -280,7 +280,7 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | After 45s Matchmaker treats skip as silence (interrupts). No pause field |
 | FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Later telemetry |
 | FR13 match on tier, latency, reliability | Partial: tier fit + declared caps; latency/reliability not measured | Do not fake `latency_ms` |
-| FR14 provision, heartbeat, auto teardown | Partial: mock provision + Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply + Windows Pro Hyper-V DDA/GPU-P apply + live locator poll + 45s stale for new books and occupied teardown. Web harness shows a clickable locator when the session JSON has one | Real VMs on metal are still not in this repo |
+| FR14 provision, heartbeat, auto teardown | Partial: mock provision + Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply + Windows Pro Hyper-V DDA/GPU-P apply + live locator poll + 45s stale for new books and occupied teardown. Web harness shows a clickable locator when the session JSON has one. Host Agent on-target build is documented (phase 33) | Real VMs on metal are still not in this repo |
 | FR15 re-match on host disconnect | Implemented: `interrupted` + one `HostSelector.select`; 409 if none | Same renterd bucket follows the user; no Storj |
 | FR16 meter usage / payouts | Metering + ledger; payouts deferred | Phase 11 metering done; no Stripe |
 
@@ -828,26 +828,27 @@ placeholder. Login restores an active Matchmaker session; end/history/credits
 come from `POST .../end` and `GET /v1/sessions`. Not yet run on physical
 hardware. See `docs/phase-logs/phase-32-web-full-loop.md`.
 
-**Next:** Host Agent binary you can copy to a Linux or Windows PC (detect,
-register, wait, boot). Documented command is `cd host-agent && npm run tauri
-build` (Tauri v2; artifacts under `src-tauri/target/release/bundle/`). This
-Mac cannot produce Linux/Windows installers. Fill packaging gaps in phase 33
-if that command is not enough.
+**Next:** Host Agent on-target binary (phase 33, done). Leftover paper after 33
+is TAP/guest net, pairwise ACLs, measured latency, and a human metal
+confirmation.
 
 ### Phase 33 — Host Agent copyable binary
 
-**Why next:** The web loop can book a live locator. Volunteers still need a
-Host Agent they can copy onto a Linux or Windows PC.
+Done as an **on-target packaging contract** (2026-09-07). Build on Linux or
+Windows with `cd host-agent && npm install && npm run tauri build -- --bundles …`. Artifacts
+under `src-tauri/target/release/bundle/` plus the unsigned binary. This Mac
+cannot emit those installers; they are not in git. Optional CI:
+`.github/workflows/host-agent.yml` (Linux + Windows runners, artifacts only).
+Packaged `.env` loads from cwd / next to the binary / app-config dir (or
+`HOST_AGENT_ENV_FILE`). Advertising `0.0.0.0` as `agentUrl` fails fast;
+set `HOST_AGENT_URL`. Guest images stay Packer (`guest-images/scripts/build.sh`).
+Not yet run on physical hardware. See
+`docs/phase-logs/phase-33-host-agent-binary.md`.
 
-**Do:** Produce or document a Host Agent artifact (`npm run tauri build` /
-`cargo tauri build`) for Linux and Windows: detect hardware, register,
-heartbeat, wait for provision, boot/apply. Do not invent a metal confirmation.
-
-**Do not:** Switch matching to manual host browsing. Do not rewrite
-Firecracker/QEMU/VFIO/Hyper-V internals. Do not close hardware status.
-
-**Exit:** An operator can copy a built agent to a host PC and run it with
-env from `.env.example`. Suites green.
+**Next:** leftover paper (TAP/guest net so Kasm/Sunshine answers on metal,
+pairwise ACLs, measured latency). No further numbered software phase is
+required for “copy the agent, set env, leave it running.” Hardware lines
+stay open until a human reports a live session on metal.
 
 ## Handoff template
 

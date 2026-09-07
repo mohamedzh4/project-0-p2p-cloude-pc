@@ -1,0 +1,84 @@
+# Host Agent packages (Linux + Windows)
+
+# On-target builds. This workflow is the honest way to produce Linux AppImage/deb
+# and Windows MSI/NSIS artifacts. Do not commit those binaries. macOS runners are
+# omitted: that OS cannot host, and this Mac already builds for itself locally.
+
+name: Host Agent packages
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "host-agent/**"
+      - ".github/workflows/host-agent.yml"
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: host-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: host-agent/src-tauri -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: host-agent/package-lock.json
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+        working-directory: ${{ github.workspace }}
+      - run: npm ci
+      - run: npm run tauri build -- --bundles appimage,deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: host-agent-linux
+          path: |
+            host-agent/src-tauri/target/release/bundle/appimage/*.AppImage
+            host-agent/src-tauri/target/release/bundle/deb/*.deb
+            host-agent/src-tauri/target/release/host-agent
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: host-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: host-agent/src-tauri -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: host-agent/package-lock.json
+      - run: npm ci
+      - run: npm run tauri build -- --bundles msi,nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: host-agent-windows
+          path: |
+            host-agent/src-tauri/target/release/bundle/msi/*.msi
+            host-agent/src-tauri/target/release/bundle/nsis/*.exe
+            host-agent/src-tauri/target/release/host-agent.exe
+          if-no-files-found: error

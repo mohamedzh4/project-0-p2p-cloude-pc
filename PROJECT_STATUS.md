@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-07, after phase 32 web full loop
+# Project Status — last updated: 2026-09-07, after phase 33 Host Agent binary
 
 ## Hardware (this Mac cannot host)
 
@@ -22,7 +22,7 @@ command. Successful provision no longer stores that placeholder. Pointers:
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
   keypairs, guest rclone argv). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–32 on local `main` (not pushed):
+- Execution phases 1–33 on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -142,7 +142,12 @@ command. Successful provision no longer stores that placeholder. Pointers:
     fetch/verify. **Phase 29:** Linux Pro VFIO bind apply from provision.
     **Phase 30:** Windows Pro Hyper-V DDA/GPU-P apply from provision.
     **Phase 31:** live Kasm/Sunshine locators after invoke/apply (loopback
-    injected in tests). **320/320** `cargo test --lib` (this phase).
+    injected in tests). **Phase 33:** on-target `npm run tauri build` (Linux
+    AppImage/deb, Windows MSI/NSIS) documented; packaged `.env` from cwd /
+    exe dir / app-config (or `HOST_AGENT_ENV_FILE`); `0.0.0.0` is not
+    advertised as `agentUrl` (set `HOST_AGENT_URL`); optional GitHub Actions
+    workflow builds on Linux/Windows runners (artifacts, not git). This Mac
+    cannot emit those installers. **328/328** `cargo test --lib` (this phase).
   - Matchmaker: Argon2id + JWT-from-env; signup/login/me; host inventory
     pending → manual approve; heartbeats; occupancy partial unique indexes
     `sessions_one_active_per_host` / `sessions_one_active_per_user`;
@@ -203,26 +208,17 @@ command. Successful provision no longer stores that placeholder. Pointers:
 
 ## In Progress
 
-- None. Numbered software phases 1–32 are on local `main`. Hardware is
+- None. Numbered software phases 1–33 are on local `main`. Hardware is
   implemented in code, not yet run on physical hardware.
 
 ## Up Next
 
-**Host Agent binary** you can copy to a Linux or Windows PC (detect,
-register, heartbeat, wait, boot). Existing command:
+Leftover paper (not a numbered software phase). Operator path:
+`docs/phase-logs/phase-33-host-agent-binary.md` and `host-agent/README.md`
+(build on Linux/Windows, env, Packer images, kernel, UAC, Hyper-V VM name).
+Do not switch matching to manual host browsing.
 
-```bash
-cd host-agent
-npm install
-npm run tauri build
-```
-
-Artifacts: `src-tauri/target/release/bundle/` (and the unsigned binary under
-`src-tauri/target/release/`). This Mac cannot produce Linux/Windows
-installers. Phase 33 owns packaging gaps (cross-compile, signing, env on
-the host). Do not switch matching to manual host browsing.
-
-Leftover paper (not this next phase):
+Leftover paper:
 
 1. Pairwise mesh ACLs — Headscale 0.26 file policy cannot mint
    `tag:session-<uuid>` owners; every `tag:user` may still reach every
@@ -246,7 +242,7 @@ Leftover paper (not this next phase):
   `POST`/`GET /v1/storage`. Phase 16–17 kept the locators-only contract.
   An unused `0007_host_latency_ms` draft from a parallel agent was **not**
   applied.
-- Local `main` is ahead of `origin/main` (planning + phases 1–32). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–33). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
@@ -270,10 +266,12 @@ Leftover paper (not this next phase):
   Windows Standard invoke also needs WHPX in the probe, Weilnetz QEMU
   installed, and a verified Standard disk (`HOST_AGENT_STANDARD_IMAGE_URL`).
 - A long-running Matchmaker on `:8000` from 2026-09-02 still has no
-  `GET /v1/sessions` (405) and no `streamer` / `mesh` fields. Restart
-  uvicorn after pulling this commit, with `HEADSCALE_*`, `IMAGE_*`, and
-  `S3_*` (or `RENTERD_S3_*`) set. Do not migrate under that process from a
-  web-only session without replacing it.
+  `GET /v1/sessions` (405) and no `streamer` / `mesh` fields. That is a
+  **stale uvicorn**, not a web/API method mismatch (`POST /v1/sessions`
+  books; `GET /v1/sessions` is history). Restart Matchmaker after pulling
+  this commit, with `HEADSCALE_*`, `IMAGE_*`, and `S3_*` (or `RENTERD_S3_*`)
+  set. Do not migrate under that process from a web-only session without
+  replacing it.
 - Pause is still local `sharingEnabled=false` (no Matchmaker field). Skipping
   heartbeats looks like disconnect: after 45s the occupied session is
   interrupted and may rematch.
@@ -343,10 +341,11 @@ Leftover paper (not this next phase):
 
 ## Notes for next agent/session
 
-- Execution **phase 32 is done** (web full loop: clickable live locator,
-  auto-match kept, end/history/credits from Matchmaker). Hardware lines
-  above are **not** “confirmed working”. Next numbered work is **Host Agent
-  binary / `npm run tauri build`** (copy to a Linux or Windows PC).
+- Execution **phase 33 is done** (on-target Host Agent build + packaged
+  `.env` + fail-fast `HOST_AGENT_URL` when listen is `0.0.0.0`). Hardware
+  lines above are **not** “confirmed working”. No further numbered software
+  phase is required to copy the agent onto a host PC. Leftover is metal
+  (TAP/net, Packer disk, kernel, UAC, Hyper-V VM, human confirmation).
   Do not start Storj. Do not invent lab output, a live metal session, or `latency_ms`. Do not treat renterd compose-up
   as a live desktop. Do not weaken HostSelector, occupancy indexes, GPU
   exclusivity copy, OS-conditional backends, or CSP. Do not switch matching

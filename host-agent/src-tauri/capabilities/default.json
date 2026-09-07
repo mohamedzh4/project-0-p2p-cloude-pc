@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Baseline capability for the host agent window. Custom hardware/config commands do not need plugin permissions. Tray, menu, and hide-to-tray are Rust-side only (setup + CloseRequested); the webview still has no image, menu, tray, or resources permissions.",
+  "description": "Baseline capability for the host agent window. Custom hardware/config commands do not need plugin permissions. Tray, menu, and hide-to-tray are Rust-side only (setup + CloseRequested). Firecracker, QEMU, PowerShell, and tailscale are spawned from Rust std::process::Command, not the Tauri shell plugin — do not add shell/sidecar permissions. The webview still has no image, menu, tray, resources, or shell permissions.",
   "windows": ["main"],
   "permissions": [
     "core:path:default",

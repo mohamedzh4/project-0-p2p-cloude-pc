@@ -107,9 +107,10 @@ HOST_AGENT_PRO_IMAGE_URL=...
 
 Copy digest + signature from `env.snippet` into Matchmaker `IMAGE_STANDARD_*` /
 `IMAGE_PRO_*` and Host Agent `IMAGE_SIGNING_PUBLIC_KEY` + `IMAGE_LOCAL_DIGEST`
-(Standard pin). Linux fetch/verify is already implemented. Windows still logs
-**would fetch** (phase 20). Linux Standard can InstanceStart; set
-`FIRECRACKER_KERNEL`. The provision locator stays `.invalid`.
+(Standard pin). Linux and Windows Standard fetch/verify are implemented.
+Linux Standard can InstanceStart; set `FIRECRACKER_KERNEL`. After invoke/apply
+the agent polls Kasm/Sunshine and returns a live locator or 400. Metal still
+needs TAP/guest net. See `host-agent/README.md` (phase 33 operator path).
 
 ## Tests (no hardware)
 

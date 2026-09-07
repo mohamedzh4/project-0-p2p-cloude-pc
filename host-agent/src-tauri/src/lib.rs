@@ -16,6 +16,7 @@ mod commands;
 mod config;
 mod disk_space;
 mod eligibility;
+mod env_file;
 mod firecracker;
 mod gpu;
 mod gpu_bind;
@@ -89,11 +90,27 @@ pub fn detect_hardware() -> HardwareSnapshot {
 }
 
 fn load_local_env() {
-    // `tauri dev` usually starts in host-agent/; `cargo run` in src-tauri/.
-    // Neither file is required — registration still fails fast if the vars
-    // are missing after this attempt.
-    let _ = dotenvy::from_filename(".env");
-    let _ = dotenvy::from_filename("../.env");
+    // Packaged installs do not share `tauri dev`'s working directory. Load
+    // `.env` from cwd, next to the binary, and the app-config dir. Process
+    // environment still wins. HOST_AGENT_ENV_FILE, if set, must exist.
+    match env_file::load_operator_env() {
+        Ok(files) => {
+            if files.is_empty() {
+                eprintln!(
+                    "host-agent env: no .env file found (cwd, executable dir, or {}); using process environment only",
+                    env_file::CONFIG_DIR_NAME
+                );
+            } else {
+                let listed = files
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                eprintln!("host-agent env: loaded {listed}");
+            }
+        }
+        Err(error) => panic!("{error}"),
+    }
 }
 
 fn spawn_heartbeat_loop(app: &tauri::App) {
@@ -190,7 +207,9 @@ fn spawn_provision_listener(app: &tauri::App) {
                             ops: std::sync::Arc::new(
                                 crate::gpu_bind::ProcessHyperVGpuOps::default(),
                             ),
-                            vm_name: Some(crate::gpu_bind::DEFAULT_HYPERV_VM.to_string()),
+                            vm_name: Some(crate::gpu_bind::hyperv_vm_name_from_env(|key| {
+                                std::env::var(key).ok()
+                            })),
                         })
                     } else {
                         None
@@ -206,12 +225,9 @@ fn spawn_provision_listener(app: &tauri::App) {
                         hyperv,
                         streamer: Some(crate::locator::StreamerWait::production()),
                     };
-                    if let Err(error) = provision_http::serve(
-                        &config,
-                        os,
-                        occupancy.as_ref(),
-                        Some(gate),
-                    ) {
+                    if let Err(error) =
+                        provision_http::serve(&config, os, occupancy.as_ref(), Some(gate))
+                    {
                         eprintln!("host-agent provision listener: {error}");
                     }
                 })

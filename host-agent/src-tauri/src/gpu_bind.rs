@@ -143,6 +143,17 @@ impl PciBindOps for SysfsBindOps {
 /// The VM must already exist; this module never creates or starts it.
 pub const DEFAULT_HYPERV_VM: &str = "dcl-pro-guest";
 
+/// Override [`DEFAULT_HYPERV_VM`]. Empty or unset keeps the default.
+pub const HYPERV_VM_ENV: &str = "HOST_AGENT_HYPERV_VM";
+
+/// Operator VM name for Windows Pro apply. Never creates or `Start-VM`s it.
+pub fn hyperv_vm_name_from_env(lookup: impl Fn(&str) -> Option<String>) -> String {
+    lookup(HYPERV_VM_ENV)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_HYPERV_VM.to_string())
+}
+
 /// Hang-safe timeout for one PowerShell/CIM invocation (phase 22 leftover).
 pub const HYPERV_POWERSHELL_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -1835,6 +1846,19 @@ mod tests {
     const BDF: &str = "0000:01:00.0";
     const LOCATION_PATH: &str = TEST_HYPERV_LOCATION_PATH;
     const INSTANCE_ID: &str = TEST_HYPERV_INSTANCE_ID;
+
+    #[test]
+    fn hyperv_vm_name_defaults_and_overrides_from_env() {
+        assert_eq!(hyperv_vm_name_from_env(|_| None), DEFAULT_HYPERV_VM);
+        assert_eq!(
+            hyperv_vm_name_from_env(|key| (key == HYPERV_VM_ENV).then(|| "  lab-guest  ".into())),
+            "lab-guest"
+        );
+        assert_eq!(
+            hyperv_vm_name_from_env(|key| (key == HYPERV_VM_ENV).then(|| "   ".into())),
+            DEFAULT_HYPERV_VM
+        );
+    }
 
     struct FailVfioBind {
         inner: SysfsBindOps,

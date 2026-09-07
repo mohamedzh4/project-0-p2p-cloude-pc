@@ -2,9 +2,8 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is the Host Agent after execution phase 31 (Linux Standard Firecracker
-invoke + Windows Standard QEMU `-accel whpx` + Linux Pro VFIO bind apply +
-Windows Pro Hyper-V DDA/GPU-P apply + live Kasm/Sunshine locator poll). It
+This is the Host Agent after execution phase 33 (copyable on-target binary:
+detect, register, heartbeat, wait, boot/apply, live locator poll). It
 does these things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU, and whether Standard/Pro sessions
@@ -87,11 +86,128 @@ does these things and nothing else:
     offered (plain-language reason; no launch document; live provision is
     400). GPU exclusivity copy stays when Pro *is* offered.
 
-There is no live Kasm or Sunshine session in this repo. Linux Standard can
+There is no live Kasm or Sunshine session **in this repo**. Linux Standard can
 `InstanceStart`; Windows Standard can spawn `-accel whpx`; Linux Pro can apply
 vfio-pci from provision; Windows Pro can apply Hyper-V DDA/GPU-P from
-provision; locators stay `.invalid` (no TAP/net). See
-`../docs/distributed-compute-lab-architecture.md` for where those land.
+provision; after invoke/apply the agent returns a reachable locator or 400.
+Metal still needs TAP/guest net, a Packer disk, and (Linux Standard) an
+operator kernel. See `../docs/distributed-compute-lab-architecture.md` for
+where those land. Hardware lines stay **implemented in code, not yet run on
+physical hardware**.
+
+## Operator path (copy to a Linux or Windows PC)
+
+This Mac cannot produce native Linux or Windows installers. **Build on the
+target OS** (or download CI artifacts after `.github/workflows/host-agent.yml`
+has run on GitHub). Do not commit `.msi` / AppImage files.
+
+### Build
+
+**Linux** (Ubuntu 22.04+ with Tauri v2 deps — see Prerequisites):
+
+```bash
+cd host-agent
+cp .env.example .env   # then edit; never commit .env
+npm install
+npm run tauri build -- --bundles appimage,deb
+```
+
+Artifacts:
+
+| Kind | Path |
+| --- | --- |
+| AppImage | `src-tauri/target/release/bundle/appimage/*.AppImage` |
+| deb | `src-tauri/target/release/bundle/deb/*.deb` |
+| unsigned binary | `src-tauri/target/release/host-agent` |
+
+**Windows** (C++ Build Tools + WebView2; run in cmd/PowerShell from the repo):
+
+```bat
+cd host-agent
+copy .env.example .env
+npm install
+npm run tauri build -- --bundles msi,nsis
+```
+
+Artifacts:
+
+| Kind | Path |
+| --- | --- |
+| MSI | `src-tauri/target/release/bundle/msi/*.msi` |
+| NSIS | `src-tauri/target/release/bundle/nsis/*.exe` |
+| unsigned binary | `src-tauri/target/release/host-agent.exe` |
+
+Copy one artifact to the volunteer PC. Cross-compile from macOS is not used.
+
+### Env on the volunteer PC
+
+Packaged apps do not see `host-agent/.env` from this repo. Put the same keys
+in one of:
+
+1. `%APPDATA%\com.distributedcomputelab.hostagent\.env` (Windows)
+2. `~/.config/com.distributedcomputelab.hostagent/.env` (Linux)
+3. A `.env` next to the binary
+4. `HOST_AGENT_ENV_FILE` pointing at a file that **must exist**
+
+Process environment still wins. Copy `.env.example` and fill at least:
+
+| Must set | Why |
+| --- | --- |
+| `MATCHMAKER_URL` | Origin the PC can reach (not loopback unless Matchmaker is local) |
+| `HOST_BOOTSTRAP_TOKEN` | Same as Matchmaker; never `HOST_APPROVE_TOKEN` |
+| `HOST_AGENT_LISTEN_ADDR` | `0.0.0.0:7842` on a volunteer PC (`off` = UI-only) |
+| `HOST_AGENT_URL` | Origin **Matchmaker** can dial. Required when listen is `0.0.0.0` (fail fast). LAN IP, DNS, or Headscale hostname, e.g. `http://192.0.2.10:7842` |
+| `IMAGE_SIGNING_PUBLIC_KEY` + `IMAGE_LOCAL_DIGEST` | Required if listening |
+| `IMAGE_STANDARD_DIGEST` / `IMAGE_STANDARD_SIGNATURE` | Fetch+verify when Standard is offered |
+| `HOST_AGENT_STANDARD_IMAGE_URL` | `file://` or HTTP to the Packer `rootfs.img`. Matchmaker does not host blobs |
+| `FIRECRACKER_KERNEL` | Linux Standard only (or `vmlinux` next to the rootfs) |
+| `HEADSCALE_LOGIN_SERVER` | To join mesh; omit to skip join |
+| `HOST_AGENT_PRO_IMAGE_URL` + Pro `IMAGE_*` | Linux when Pro is offered |
+| `HOST_AGENT_HYPERV_VM` | Windows Pro; default `dcl-pro-guest` (VM must already exist, powered off) |
+
+Guest disks: run `guest-images/scripts/build.sh standard` (and `pro` if needed)
+on a builder with Packer/QEMU, then copy `output/<tier>/rootfs.img` plus
+`env.snippet` (digest/signature). Packer is not hidden. See
+`../guest-images/README.md`.
+
+An operator must still **approve** the host on Matchmaker
+(`HOST_APPROVE_TOKEN` / `python -m matchmaker.seed --approve-host-id`).
+
+### What it does when left running
+
+Detects hardware and whether Standard/Pro is offered → locates/fetches the
+OS hypervisor binary and signed guest image → you save sharing caps and
+register (pending until approved) → heartbeats every 10s while sharing is
+on → Matchmaker `POST /v1/provision` → Linux Standard InstanceStart /
+Windows Standard `-accel whpx` / Linux Pro VFIO apply / Windows Pro
+Hyper-V DDA or GPU-P → poll Kasm `:443` or Sunshine `:47990` on the guest
+mesh hostname → return that URL or 400. The window never asks which
+backend. GPU bind from the window stays plan-only.
+
+Windows QEMU NSIS install still shows **UAC** (`qemu.nsi`
+`RequestExecutionLevel admin`). Firecracker/QEMU/PowerShell/`tailscale` are
+spawned from Rust, not the Tauri shell plugin (capabilities stay narrow).
+
+### Operator checklist
+
+- [ ] Built on Linux or Windows (`npm run tauri build -- --bundles …`); this Mac was not the builder
+- [ ] `.env` on the PC (app-config dir, next to the binary, or `HOST_AGENT_ENV_FILE`)
+- [ ] `MATCHMAKER_URL` reachable from the PC
+- [ ] `HOST_AGENT_LISTEN_ADDR=0.0.0.0:7842` and `HOST_AGENT_URL` Matchmaker can dial
+- [ ] Firewall allows TCP 7842 from Matchmaker
+- [ ] Image public key + digests/signatures from Packer `env.snippet` (not the fixture, for a real disk)
+- [ ] `HOST_AGENT_STANDARD_IMAGE_URL` (and Pro URL if offering Pro)
+- [ ] Linux Standard: `FIRECRACKER_KERNEL` (not the Firecracker demo kernel)
+- [ ] `tailscale` on PATH if joining Headscale; `HEADSCALE_LOGIN_SERVER` reachable
+- [ ] Host approved on Matchmaker
+- [ ] Windows Standard: accept UAC for Weilnetz QEMU; WHPX available
+- [ ] Windows Pro: Hyper-V enabled, agent elevated, VM `dcl-pro-guest` exists and is off
+- [ ] Linux Pro: IOMMU + second display path
+- [ ] Guest net/TAP still needed on metal for Kasm/Sunshine to answer the locator poll
+
+Restart Matchmaker after pulling recent commits if `GET /v1/sessions` is 405
+(stale uvicorn). That is not a web harness method mismatch (`POST` books,
+`GET` is history).
 
 ## Stack
 
@@ -112,7 +228,7 @@ in Rust, not `fetch` from the webview.
 
 ```
 host-agent/
-├── .env.example              MATCHMAKER_URL + HOST_BOOTSTRAP_TOKEN
+├── .env.example              MATCHMAKER_URL, tokens, listen/agent URL, image URLs, kernel
 ├── src/                      UI
 │   ├── App.tsx               window contents and state
 │   ├── api.ts                the only place that calls Tauri commands
@@ -139,6 +255,7 @@ host-agent/
     │   ├── image.rs          SHA-256 + Ed25519 verify; locate/fetch signed guest image (Linux + Windows Standard; never boot)
     │   ├── launch.rs         clamped sliders → launch-config JSON (document only)
     │   ├── eligibility.rs    probe + CPU/RAM/disk floor + VFIO plan → offered vs blocked
+    │   ├── env_file.rs       packaged `.env` paths (cwd, exe dir, app-config; fail-fast HOST_AGENT_ENV_FILE)
     │   ├── disk_space.rs     spare bytes on the image-cache volume (not a disk inventory)
     │   ├── gpu_bind.rs       VFIO plan; Linux Pro provision apply + rollback; Windows DDA/GPU-P apply from provision via injectable runner
     │   ├── provision_http.rs POST /v1/provision → verify image → plan; Linux/Windows Standard may invoke; Linux Pro may VFIO-bind; Windows Pro may Hyper-V-assign
@@ -169,33 +286,34 @@ Copy `.env.example` to `.env` on the host machine (never commit `.env`):
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `MATCHMAKER_URL` | yes | Matchmaker origin, e.g. `http://127.0.0.1:8000` |
+| `MATCHMAKER_URL` | yes | Matchmaker origin **this PC** can reach. Loopback only if Matchmaker is local. |
 | `HOST_BOOTSTRAP_TOKEN` | yes | Same Bearer token as Matchmaker `HOST_BOOTSTRAP_TOKEN` |
 | `HOST_DISPLAY_NAME` | no | Defaults to this machine's hostname |
-| `HOST_AGENT_LISTEN_ADDR` | no | Bind `host:port` for `POST /v1/provision`. Omit to disable. If set, the bootstrap token **and** image trust env vars are required (fail fast). |
-| `HOST_AGENT_URL` | no | Origin advertised as `agentUrl`. Defaults to `http://$HOST_AGENT_LISTEN_ADDR` when listening. |
+| `HOST_AGENT_LISTEN_ADDR` | volunteer yes | Bind `host:port` for `POST /v1/provision`. `off`/omit disables. Volunteer: `0.0.0.0:7842`. If set, bootstrap token **and** image trust env vars are required (fail fast). |
+| `HOST_AGENT_URL` | when listen is `0.0.0.0` | Origin advertised as `agentUrl`. Matchmaker must be able to dial it. Fail fast if derived from `0.0.0.0` / `[::]`. Defaults to `http://$HOST_AGENT_LISTEN_ADDR` only when that host is a real destination (e.g. `127.0.0.1`). |
+| `HOST_AGENT_ENV_FILE` | no | Path to a dotenv file. If set, the file must exist. |
 | `IMAGE_SIGNING_PUBLIC_KEY` | when listening | 32-byte Ed25519 public key (64 hex chars). No private key on the agent. |
 | `IMAGE_LOCAL_DIGEST` | when listening | SHA-256 hex of the standby image (or the Standard fixture for local stub). |
-| `IMAGE_STANDARD_DIGEST` / `IMAGE_STANDARD_SIGNATURE` | Linux fetch | Same Matchmaker `IMAGE_*` checksum metadata (`GET /v1/images/standard`). Required to fetch+verify on Linux when Standard is offered. |
+| `IMAGE_STANDARD_DIGEST` / `IMAGE_STANDARD_SIGNATURE` | Linux/Windows fetch | Same Matchmaker `IMAGE_*` checksum metadata (`GET /v1/images/standard`). |
 | `IMAGE_PRO_DIGEST` / `IMAGE_PRO_SIGNATURE` | Linux Pro fetch | Same Matchmaker `IMAGE_*` metadata when Pro is offered. |
 | `HOST_AGENT_IMAGE_CACHE` | no | User-writable dir for guest images. Default `~/.cache/dcl-host-agent/images` (Linux), `~/Library/Caches/dcl-host-agent/images` (macOS), `%LOCALAPPDATA%\dcl-host-agent\images` (Windows). |
-| `HOST_AGENT_STANDARD_IMAGE_URL` / `HOST_AGENT_PRO_IMAGE_URL` | Linux fetch | Bytes URL for the signed image. Not a secret. Matchmaker does not host blobs. |
+| `HOST_AGENT_STANDARD_IMAGE_URL` / `HOST_AGENT_PRO_IMAGE_URL` | when Standard/Pro offered | Bytes URL (`file://` or HTTP) for the signed image. Not a secret. Matchmaker does not host blobs. |
 | `HOST_AGENT_IMAGE_NETWORK` | tests only | `1` allows non-loopback HTTP during `cargo test`. Leave unset in CI. |
+| `FIRECRACKER_KERNEL` | Linux Standard boot | Kernel file, or `vmlinux` next to the verified rootfs. Packer does not invent one. |
 | `HEADSCALE_LOGIN_SERVER` | to join mesh | Headscale origin for `tailscale up --login-server`. Fail fast if join is attempted without it. Omit to skip join after register. |
 | `TAILSCALE_BIN` | no | Defaults to `tailscale` on PATH. |
+| `HOST_AGENT_HYPERV_VM` | no | Windows Pro VM name. Default `dcl-pro-guest`. Must already exist; not started. |
 | `HOST_AGENT_HYPERVISOR_CACHE` | no | User-writable dir for Firecracker and the Windows QEMU NSIS install. Default `~/.cache/dcl-host-agent/hypervisors` (Linux), `~/Library/Caches/dcl-host-agent/hypervisors` (macOS), `%LOCALAPPDATA%\dcl-host-agent\hypervisors` (Windows). |
 | `HOST_AGENT_FIRECRACKER_URL` / `HOST_AGENT_FIRECRACKER_SHA256` | no | Override the documented GitHub tarball + published SHA-256. Not secrets. |
 | `HOST_AGENT_QEMU_URL` / `HOST_AGENT_QEMU_SHA512` | no | Override the pinned Weilnetz NSIS installer + published SHA-512. `HOST_AGENT_QEMU_SHA256` is accepted for test fixtures. Not secrets. |
 | `HOST_AGENT_QEMU_BIN` | no | Existing `qemu-system-*.exe` (skip fetch/install when present). |
 | `HOST_AGENT_HYPERVISOR_NETWORK` | tests only | `1` allows non-loopback HTTP during `cargo test`. Leave unset in CI. |
 
-The agent fails registration and heartbeats if the URL or bootstrap token is
-missing when it would send. It does not read `HOST_APPROVE_TOKEN`. Operators
-approve with that token on the Matchmaker (`POST /v1/hosts/{id}/approve` or
-`python -m matchmaker.seed --approve-host-id`).
-
 `tauri dev` / `cargo run` load `.env` from `host-agent/` or `host-agent/src-tauri/`.
-A packaged install should set the same variables in the service environment.
+A packaged install loads `.env` from cwd, next to the binary, and the
+app-config directory above (or `HOST_AGENT_ENV_FILE`). It does not read
+`HOST_APPROVE_TOKEN`. Operators approve with that token on the Matchmaker
+(`POST /v1/hosts/{id}/approve` or `python -m matchmaker.seed --approve-host-id`).
 
 ### Generate a test keypair (do not commit the PEM)
 
@@ -220,23 +338,16 @@ rm platform-ed25519.pem /tmp/image.digest
 local Matchmaker + agent can verify without a real guest disk. Replace them
 before any production image. Never commit `.pem` / `.key` / `.env`.
 
-## Running
+## Running (development on this machine)
 
 ```bash
-cp .env.example .env   # then edit MATCHMAKER_URL and HOST_BOOTSTRAP_TOKEN
+cp .env.example .env   # then edit MATCHMAKER_URL, HOST_BOOTSTRAP_TOKEN, HOST_AGENT_URL
 npm install
 npm run tauri dev      # the real agent, reads this machine's hardware
 ```
 
-```bash
-npm run tauri build    # packaged binary for this OS (phase 33 owns cross-compile)
-```
-
-Artifacts land in `src-tauri/target/release/bundle/` (plus
-`src-tauri/target/release/host-agent` / `host-agent.exe`). Copy the matching
-OS artifact to a volunteer PC, set env from `.env.example`, then detect /
-register / heartbeat / wait for provision. This Mac cannot emit Linux or
-Windows installers. UAC still appears on Windows QEMU NSIS install.
+Packaged build for **this OS only** is under Operator path above
+(`npm run tauri build`). This Mac cannot emit Linux or Windows installers.
 
 ```bash
 npm run dev            # UI only, in a browser, with sample hardware
@@ -343,10 +454,10 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 32 finished the `web/` loop (clickable live locator, auto-match
-  kept). Next is a **copyable Host Agent binary**: `npm run tauri build`
-  from `host-agent/` (see Running). Cross-compile / signing / Windows+Linux
-  artifacts from this Mac are still gaps.
+- Phase 33 finished the **on-target build + operator env path**. Leftover paper
+  is TAP/guest net, pairwise ACLs, measured latency, and a human metal
+  confirmation. Do not invent a live desktop. Hardware is implemented in
+  code, not yet run on physical hardware.
 - Phase 23 insufficient-resource UX is in: the window shows Standard/Pro as
   **Available** or **Not available** with a reason from the probe, the
   2 vCPU / 4 GiB / 50 GiB floor, or a refused VFIO/DDA plan. A blocked tier

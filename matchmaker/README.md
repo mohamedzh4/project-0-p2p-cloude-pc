@@ -1,7 +1,7 @@
 # Matchmaker
 
 Control-plane service for the Distributed Compute Lab (software MVP after
-execution phase 32): auth, host inventory, heartbeats, session occupancy,
+execution phase 33): auth, host inventory, heartbeats, session occupancy,
 an internal credits ledger, signed base-image **metadata**, Headscale
 **preauth mint** for Host Agent mesh join plus session ephemeral guest/user
 keys (self-hosted; no Tailscale SaaS), **renterd** S3 bucket provision
