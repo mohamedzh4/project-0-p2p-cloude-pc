@@ -229,6 +229,16 @@ npm run tauri dev      # the real agent, reads this machine's hardware
 ```
 
 ```bash
+npm run tauri build    # packaged binary for this OS (phase 33 owns cross-compile)
+```
+
+Artifacts land in `src-tauri/target/release/bundle/` (plus
+`src-tauri/target/release/host-agent` / `host-agent.exe`). Copy the matching
+OS artifact to a volunteer PC, set env from `.env.example`, then detect /
+register / heartbeat / wait for provision. This Mac cannot emit Linux or
+Windows installers. UAC still appears on Windows QEMU NSIS install.
+
+```bash
 npm run dev            # UI only, in a browser, with sample hardware
 ```
 
@@ -333,6 +343,10 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
+- Phase 32 finished the `web/` loop (clickable live locator, auto-match
+  kept). Next is a **copyable Host Agent binary**: `npm run tauri build`
+  from `host-agent/` (see Running). Cross-compile / signing / Windows+Linux
+  artifacts from this Mac are still gaps.
 - Phase 23 insufficient-resource UX is in: the window shows Standard/Pro as
   **Available** or **Not available** with a reason from the probe, the
   2 vCPU / 4 GiB / 50 GiB floor, or a refused VFIO/DDA plan. A blocked tier

@@ -189,6 +189,19 @@ textarea {
   font-size: 14px;
 }
 
+.moonlight {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgb(53 92 125 / 0.1);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.moonlight strong {
+  font-family: var(--display);
+}
+
 .row {
   display: flex;
   flex-wrap: wrap;

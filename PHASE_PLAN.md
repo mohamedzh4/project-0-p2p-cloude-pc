@@ -39,7 +39,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 31: pytest 166, cargo test 320, vitest 31, guest-images
+  Counts after phase 32: pytest 166, cargo test 320, vitest 52, guest-images
   unittest 12.
 
 ## Contracts to keep stable
@@ -141,15 +141,16 @@ live locator even when `hypervisorInvoked` is true. Do not put
 Firecracker/QEMU/WHPX names in `sessions.py`. Provision POSTs the registry
 digest+signature for the booked `labTier`.
 
-`web/` is a harness, not the product dashboard. Kasm opens in a new tab; do not
-iframe it in early phases.
+`web/` is a harness, not the product dashboard. Standard Kasm opens in a new
+tab; Pro shows Moonlight host/app and a Sunshine web-UI link when live. Do not
+iframe Kasm or Sunshine in early phases.
 
 ## Cahier map
 
 | Cahier | This plan |
 | --- | --- |
 | 0 Manual compute pipeline | Hardware: three honest lines in `PROJECT_STATUS.md`. Not yet run on physical hardware. Guest disks: `guest-images/` |
-| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs) through 31 (Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply + Windows Pro Hyper-V DDA/GPU-P apply + live locator poll). Live desktop on metal is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid` for the seed command) |
+| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs) through 32 (Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply + Windows Pro Hyper-V DDA/GPU-P apply + live locator poll + web full loop). Live desktop on metal is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid` for the seed command) |
 | 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
 | 3 Pro/Gamer + latency | Execution phase 16 software (Sunshine locators). Pro-GPU implemented in code, not yet run on physical hardware; no live stream in-repo |
 | 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv; 26 Packer guest images; 27 Firecracker InstanceStart (no TAP); 28 QEMU `-accel whpx`; 29 Linux Pro VFIO bind apply (window still plan-only); 30 Windows Pro Hyper-V DDA/GPU-P apply from provision (window still plan-only); 31 live locator poll after invoke/apply (tests inject loopback). Live desktop on metal / pairwise ACLs still paper |
@@ -270,7 +271,7 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR2 intent prompt → lab tier | Implemented (`web/` harness) | — |
 | FR3 match to most suitable host | Partial: `RankedHostSelector` (declared CPU then RAM; Pro GPU id) | Phase 16 when latency can be measured |
 | FR4 encrypted persistent files | Partial: renterd S3 locators + guest rclone argv/plan (env auth, not Storj). Provision hook returns `guestRclone` from locators. Phase 26 Packer image installs rclone | Live mount still needs a booted guest |
-| FR5 live streamed desktop | Partial: harness opens a URL; seed is still `example.invalid`. Phase 26 builds Kasm/Sunshine disks. Phase 31 returns a live locator after invoke/apply when the streamer answers (tests inject loopback) | Standard-Linux / Standard-Windows / Pro-GPU implemented in code, not yet run on physical hardware |
+| FR5 live streamed desktop | Partial: harness opens a live Kasm `/` or Sunshine `:47990/` locator when Matchmaker returns one (`.invalid` stays hidden). Seed is still `example.invalid`. Phase 26 builds Kasm/Sunshine disks. Phase 31 returns a live locator after invoke/apply when the streamer answers (tests inject loopback) | Standard-Linux / Standard-Windows / Pro-GPU implemented in code, not yet run on physical hardware |
 | FR6 logout final save + “saved as of” | Missing in the guest UI | rclone argv/plan exists; needs a booted guest |
 | FR7 session history + billing/credits | Internal ledger + `GET /v1/sessions` | Phase 11 done; no payouts |
 | FR8 declare CPU/RAM slice + exclusive GPU | Implemented except availability schedule | Schedule can wait; do not break `sharedGpuId` |
@@ -279,7 +280,7 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | After 45s Matchmaker treats skip as silence (interrupts). No pause field |
 | FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Later telemetry |
 | FR13 match on tier, latency, reliability | Partial: tier fit + declared caps; latency/reliability not measured | Do not fake `latency_ms` |
-| FR14 provision, heartbeat, auto teardown | Partial: mock provision + Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply + Windows Pro Hyper-V DDA/GPU-P apply + live locator poll + 45s stale for new books and occupied teardown | Real VMs on metal and a clickable live desktop are still not in this repo |
+| FR14 provision, heartbeat, auto teardown | Partial: mock provision + Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply + Windows Pro Hyper-V DDA/GPU-P apply + live locator poll + 45s stale for new books and occupied teardown. Web harness shows a clickable locator when the session JSON has one | Real VMs on metal are still not in this repo |
 | FR15 re-match on host disconnect | Implemented: `interrupted` + one `HostSelector.select`; 409 if none | Same renterd bucket follows the user; no Storj |
 | FR16 meter usage / payouts | Metering + ledger; payouts deferred | Phase 11 metering done; no Stripe |
 
@@ -817,21 +818,36 @@ end/history/credits against real sessions, auto-match (existing FR2/FR3).
 
 ### Phase 32 — Web full loop
 
-**Why next:** Provision can return a live locator. The harness still hides
-Open desktop for `.invalid` and does not exercise end/history/credits
-against those sessions as a product loop.
+Done as a **software contract** (2026-09-07). The `web/` harness keeps FR2
+intent → `labTier` and FR3 automatic `POST /v1/sessions` (no host picker).
+Phase-31 live locators (Kasm `https://{meshHost}/`, Sunshine
+`https://{meshHost}:47990/`) pass `isLiveConnectionUrl` and render a
+clickable Open desktop / Open Sunshine web UI link. `.invalid` stays hidden
+(no iframe). Pro shows Moonlight host/app when that host is not a
+placeholder. Login restores an active Matchmaker session; end/history/credits
+come from `POST .../end` and `GET /v1/sessions`. Not yet run on physical
+hardware. See `docs/phase-logs/phase-32-web-full-loop.md`.
 
-**Do:** Clickable live desktop link for Standard Kasm and Pro Sunshine
-locators that pass `isLiveConnectionUrl`. Session end, history, and credits
-against real sessions. Keep auto-match (FR2 intent → `labTier`, FR3
-`HostSelector`) unless a product decision already chose otherwise — do not
-silently switch to manual host browsing.
+**Next:** Host Agent binary you can copy to a Linux or Windows PC (detect,
+register, wait, boot). Documented command is `cd host-agent && npm run tauri
+build` (Tauri v2; artifacts under `src-tauri/target/release/bundle/`). This
+Mac cannot produce Linux/Windows installers. Fill packaging gaps in phase 33
+if that command is not enough.
 
-**Do not:** Invent a metal confirmation. Do not rewrite Firecracker/QEMU/VFIO
-/Hyper-V apply. Do not close hardware status.
+### Phase 33 — Host Agent copyable binary
 
-**Exit:** Web harness books → opens a live locator when the session has one
-→ end/history/credits. Suites green.
+**Why next:** The web loop can book a live locator. Volunteers still need a
+Host Agent they can copy onto a Linux or Windows PC.
+
+**Do:** Produce or document a Host Agent artifact (`npm run tauri build` /
+`cargo tauri build`) for Linux and Windows: detect hardware, register,
+heartbeat, wait for provision, boot/apply. Do not invent a metal confirmation.
+
+**Do not:** Switch matching to manual host browsing. Do not rewrite
+Firecracker/QEMU/VFIO/Hyper-V internals. Do not close hardware status.
+
+**Exit:** An operator can copy a built agent to a host PC and run it with
+env from `.env.example`. Suites green.
 
 ## Handoff template
 

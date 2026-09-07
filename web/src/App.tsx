@@ -4,7 +4,13 @@ import { ApiError, endSession, listSessions, login, matchmakerUrl, requestSessio
 import { AuthForm } from "./components/AuthForm";
 import { SessionPanel } from "./components/SessionPanel";
 import { mapIntentToLabTier, canRequestSession } from "./intent";
-import { interpretSessionError, interpretSessionSuccess } from "./sessionRequest";
+import {
+  activeSessionLabTier,
+  creditsSummary,
+  endedNotice,
+  interpretSessionError,
+  interpretSessionSuccess,
+} from "./sessionRequest";
 import type { AuthMode, Notice, SessionHistoryResponse, SessionResponse, UserPublic } from "./types";
 
 export default function App() {
@@ -35,8 +41,26 @@ export default function App() {
     try {
       const result = await listSessions(accessToken);
       setHistory(result.data);
+      return result.data;
     } catch {
       setHistory(null);
+      return null;
+    }
+  }
+
+  async function restoreHeldSession(accessToken: string, historyData: SessionHistoryResponse | null) {
+    const labTier = activeSessionLabTier(historyData);
+    if (!labTier) {
+      return;
+    }
+    try {
+      const held = await requestSession(accessToken, labTier);
+      const view = interpretSessionSuccess(held.status, held.data);
+      setSession(view.session);
+      setNotice(view.notice);
+    } catch (error) {
+      const view = interpretSessionError(error, labTier);
+      setNotice(view.notice);
     }
   }
 
@@ -50,7 +74,8 @@ export default function App() {
       setUser(result.data.user);
       setSession(null);
       setPassword("");
-      await loadHistory(result.data.accessToken);
+      const historyData = await loadHistory(result.data.accessToken);
+      await restoreHeldSession(result.data.accessToken, historyData);
     } catch (error) {
       setNotice({
         kind: "error",
@@ -90,9 +115,9 @@ export default function App() {
     setBusy(true);
     setNotice(null);
     try {
-      await endSession(token, session.sessionId);
+      const result = await endSession(token, session.sessionId);
       setSession(null);
-      setNotice({ kind: "ended" });
+      setNotice(endedNotice(result.data.creditsDebited));
       await loadHistory(token);
     } catch (error) {
       setNotice({
@@ -119,10 +144,10 @@ export default function App() {
         <p className="kicker">Matchmaker harness</p>
         <h1>Lab session</h1>
         <p className="lede">
-          Sign in, say what you want to do, and book a session. Intent maps to
-          Standard (CPU/RAM slice, Kasm) or Pro (exclusive GPU, Sunshine /
-          Moonlight). A live locator is not the <code>.invalid</code> stub TLD.
-          This is not the product UI.
+          Sign in, say what you want to do, and Matchmaker auto-matches an
+          approved live host. Intent maps to Standard (CPU/RAM slice, Kasm) or
+          Pro (exclusive GPU, Sunshine / Moonlight). A live locator is not the{" "}
+          <code>.invalid</code> stub TLD. This is not the product UI.
         </p>
       </header>
 
@@ -147,11 +172,7 @@ export default function App() {
           />
           <section className="panel history">
             <h2>Session history</h2>
-            <p className="hint">
-              {history
-                ? `${history.creditsDebited} credits debited on the internal ledger. Not a card charge.`
-                : "Could not load credits yet."}
-            </p>
+            <p className="hint">{creditsSummary(history)}</p>
             {history && history.sessions.length === 0 ? (
               <p className="hint">No sessions yet.</p>
             ) : null}

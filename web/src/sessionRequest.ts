@@ -1,6 +1,6 @@
 import { ApiError } from "./api";
 import type { LabTier } from "./intent";
-import type { Notice, SessionResponse } from "./types";
+import type { Notice, SessionHistoryResponse, SessionResponse } from "./types";
 
 export type SessionRequestView = {
   session: SessionResponse | null;
@@ -36,4 +36,29 @@ export function interpretSessionError(
       message: error instanceof ApiError ? error.message : "Could not request a session",
     },
   };
+}
+
+/** POST /v1/sessions body: lab tier only. Matching stays on HostSelector. */
+export function sessionBookBody(labTier: LabTier): { labTier: LabTier } {
+  return { labTier };
+}
+
+/** Restore a held session from GET /v1/sessions without picking a host. */
+export function activeSessionLabTier(history: SessionHistoryResponse | null): LabTier | null {
+  const active = history?.sessions.find((row) => row.status === "active");
+  if (!active) {
+    return null;
+  }
+  return active.labTier === "pro" ? "pro" : "standard";
+}
+
+export function endedNotice(creditsDebited: number): Notice {
+  return { kind: "ended", creditsDebited };
+}
+
+export function creditsSummary(history: SessionHistoryResponse | null): string {
+  if (!history) {
+    return "Could not load credits from Matchmaker yet.";
+  }
+  return `${history.creditsDebited} credits debited on the internal ledger. Not a card charge.`;
 }

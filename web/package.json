@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Matchmaker test harness — signup, request a session, show seeded Kasm values, end",
+  "description": "Matchmaker test harness — signup, auto-match a session, live locator, end/history/credits",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

@@ -93,6 +93,6 @@ export type AuthMode = "signup" | "login";
 export type Notice =
   | { kind: "occupied" }
   | { kind: "unavailable" }
-  | { kind: "ended" }
+  | { kind: "ended"; creditsDebited?: number }
   | { kind: "existing" }
   | { kind: "error"; message: string };

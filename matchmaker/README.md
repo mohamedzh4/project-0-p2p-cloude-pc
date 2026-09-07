@@ -1,12 +1,13 @@
 # Matchmaker
 
 Control-plane service for the Distributed Compute Lab (software MVP after
-execution phase 31): auth, host inventory, heartbeats, session occupancy,
+execution phase 32): auth, host inventory, heartbeats, session occupancy,
 an internal credits ledger, signed base-image **metadata**, Headscale
 **preauth mint** for Host Agent mesh join plus session ephemeral guest/user
 keys (self-hosted; no Tailscale SaaS), **renterd** S3 bucket provision
 for guest rclone (not Storj), and Host Agent provision that stores a **live**
-Kasm/Sunshine locator (or fails the book).
+Kasm/Sunshine locator (or fails the book). The `web/` harness auto-matches
+and opens that locator when it is not `.invalid`.
 Hosts register declared caps and start **pending**;
 sessions book a manually approved host whose last heartbeat is fresh (within
 45s). Among eligible hosts, `RankedHostSelector` prefers more declared CPU,

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, listSessions, matchmakerUrl, requestSession } from "./api";
+import { ApiError, endSession, listSessions, matchmakerUrl, requestSession } from "./api";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -46,6 +46,8 @@ describe("requestSession error mapping", () => {
     expect(url).toBe("http://matchmaker.test/v1/sessions");
     expect(init.method).toBe("POST");
     expect(init.body).toBe(JSON.stringify({ labTier: "standard" }));
+    expect(JSON.parse(String(init.body))).toEqual({ labTier: "standard" });
+    expect(JSON.parse(String(init.body))).not.toHaveProperty("hostId");
     const headers = new Headers(init.headers);
     expect(headers.get("Authorization")).toBe("Bearer access-token");
   });
@@ -145,6 +147,34 @@ describe("listSessions", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("http://matchmaker.test/v1/sessions");
     expect(init.method).toBe("GET");
+    const headers = new Headers(init.headers);
+    expect(headers.get("Authorization")).toBe("Bearer access-token");
+  });
+});
+
+describe("endSession", () => {
+  it("posts to the Matchmaker end route and returns creditsDebited", async () => {
+    const endBody = {
+      sessionId: "11111111-1111-1111-1111-111111111111",
+      status: "ended",
+      endedAt: "2026-09-07T12:02:00.000Z",
+      creditsDebited: 2,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, endBody));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      endSession("access-token", "11111111-1111-1111-1111-111111111111"),
+    ).resolves.toEqual({
+      status: 200,
+      data: endBody,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "http://matchmaker.test/v1/sessions/11111111-1111-1111-1111-111111111111/end",
+    );
+    expect(init.method).toBe("POST");
     const headers = new Headers(init.headers);
     expect(headers.get("Authorization")).toBe("Bearer access-token");
   });

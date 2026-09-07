@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-07, after phase 31 live locators
+# Project Status — last updated: 2026-09-07, after phase 32 web full loop
 
 ## Hardware (this Mac cannot host)
 
@@ -22,7 +22,7 @@ command. Successful provision no longer stores that placeholder. Pointers:
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
   keypairs, guest rclone argv). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–31 on local `main` (not pushed):
+- Execution phases 1–32 on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -178,12 +178,16 @@ command. Successful provision no longer stores that placeholder. Pointers:
     has no `intent` field. No latency/reliability columns. No Matchmaker
     pause field. No payment processor. No image CDN / multi-GB download. No
     live Sia network in unit tests. No live Headscale in unit tests.
-  - Web harness: signup/login, FR2 intent prompt → `labTier`, request/end
-    session, session history + credits debited, optional storage locator
-    (endpoint/bucket only — not secrets), mesh hostname/tags/exit-node (not
-    the preauth secret). Pro copy points at Sunshine / Moonlight; Standard
-    still opens Kasm in a new tab. **31/31** vitest; `npm run typecheck`
-    passed (unchanged this phase).
+  - Web harness: signup/login, FR2 intent prompt → `labTier`, automatic
+    `POST /v1/sessions` (no host picker; FR3 `HostSelector` on Matchmaker).
+    Phase-31 live locators (Kasm mesh `/`, Sunshine `:47990/`) render a
+    clickable Open desktop / Open Sunshine web UI link; `.invalid` stays
+    hidden (no iframe). Pro shows Moonlight host/app when that host is not a
+    placeholder. Login restores an `active` row from `GET /v1/sessions`.
+    End/history/credits come from Matchmaker (`POST .../end`, `GET /v1/sessions`).
+    Optional storage locator (endpoint/bucket only — not secrets), mesh
+    hostname/tags/exit-node (not the preauth secret). GPU exclusivity copy
+    stays. **52/52** vitest; `npm run typecheck` passed.
   - Headscale compose in `headscale/` (image `0.26.1`) with checked-in
     default-deny `acl.hujson`. Guest-path exit-node overlay
     `docker-compose.exit-node.yml` (`TS_HOSTNAME: dcl-platform-exit`). renterd
@@ -199,15 +203,24 @@ command. Successful provision no longer stores that placeholder. Pointers:
 
 ## In Progress
 
-- None. Numbered software phases 1–31 are on local `main`. Hardware is
+- None. Numbered software phases 1–32 are on local `main`. Hardware is
   implemented in code, not yet run on physical hardware.
 
 ## Up Next
 
-**Web full loop** — clickable live desktop link, session end/history/credits
-against real sessions, auto-match (existing FR2/FR3) unless the product
-already chose otherwise. Do not silently switch to manual host browsing.
-Do not invent a live desktop on metal.
+**Host Agent binary** you can copy to a Linux or Windows PC (detect,
+register, heartbeat, wait, boot). Existing command:
+
+```bash
+cd host-agent
+npm install
+npm run tauri build
+```
+
+Artifacts: `src-tauri/target/release/bundle/` (and the unsigned binary under
+`src-tauri/target/release/`). This Mac cannot produce Linux/Windows
+installers. Phase 33 owns packaging gaps (cross-compile, signing, env on
+the host). Do not switch matching to manual host browsing.
 
 Leftover paper (not this next phase):
 
@@ -233,7 +246,7 @@ Leftover paper (not this next phase):
   `POST`/`GET /v1/storage`. Phase 16–17 kept the locators-only contract.
   An unused `0007_host_latency_ms` draft from a parallel agent was **not**
   applied.
-- Local `main` is ahead of `origin/main` (planning + phases 1–31). Nothing was
+- Local `main` is ahead of `origin/main` (planning + phases 1–32). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
@@ -256,9 +269,11 @@ Leftover paper (not this next phase):
   also needs `FIRECRACKER_KERNEL` (or `vmlinux` next to the verified rootfs).
   Windows Standard invoke also needs WHPX in the probe, Weilnetz QEMU
   installed, and a verified Standard disk (`HOST_AGENT_STANDARD_IMAGE_URL`).
-- A long-running Matchmaker on `:8000` from before this phase will not return
-  `mesh` / `rcloneArgs` / `streamer` on sessions. Restart uvicorn after
-  pulling this commit, with `HEADSCALE_*` and `S3_*` (or `RENTERD_S3_*`) set.
+- A long-running Matchmaker on `:8000` from 2026-09-02 still has no
+  `GET /v1/sessions` (405) and no `streamer` / `mesh` fields. Restart
+  uvicorn after pulling this commit, with `HEADSCALE_*`, `IMAGE_*`, and
+  `S3_*` (or `RENTERD_S3_*`) set. Do not migrate under that process from a
+  web-only session without replacing it.
 - Pause is still local `sharingEnabled=false` (no Matchmaker field). Skipping
   heartbeats looks like disconnect: after 45s the occupied session is
   interrupted and may rematch.
@@ -323,19 +338,20 @@ Leftover paper (not this next phase):
   volunteer host disk.
 - Consumer GPU EULAs and ToS/liability still need legal review (architecture
   §9 items 10–11).
-- Aikido scan: MCP `namespaceStatus: error` this session (tool discovery
-  failed; `mcp_auth` already handled). Not a scan pass. Run `/aikido:setup`.
+- Aikido scan: MCP `namespaceStatus: error` this session (`mcp_auth` timed
+  out; tool discovery failed). Not a scan pass. Run `/aikido:setup`.
 
 ## Notes for next agent/session
 
-- Execution **phase 31 is done** (live Kasm/Sunshine locators after invoke
-  or GPU apply; Matchmaker stores the live URL or 502s a placeholder book).
-  Hardware lines above are **not** “confirmed working”. Next numbered work
-  is **web full loop** (clickable live desktop, end/history/credits, keep
-  FR2/FR3 auto-match).
+- Execution **phase 32 is done** (web full loop: clickable live locator,
+  auto-match kept, end/history/credits from Matchmaker). Hardware lines
+  above are **not** “confirmed working”. Next numbered work is **Host Agent
+  binary / `npm run tauri build`** (copy to a Linux or Windows PC).
   Do not start Storj. Do not invent lab output, a live metal session, or `latency_ms`. Do not treat renterd compose-up
   as a live desktop. Do not weaken HostSelector, occupancy indexes, GPU
-  exclusivity copy, OS-conditional backends, or CSP. Do not fetch Firecracker,
+  exclusivity copy, OS-conditional backends, or CSP. Do not switch matching
+  to a host catalog unless a later product decision says so — flag it, do
+  not silently implement. Do not fetch Firecracker,
   QEMU, or a guest disk from `cargo test` (injected fetcher / installer /
   file:// / httptest). Do not spawn a real Firecracker or QEMU from tests
   (inject `FirecrackerRuntime` / `QemuRuntime`). Do not use Firecracker for

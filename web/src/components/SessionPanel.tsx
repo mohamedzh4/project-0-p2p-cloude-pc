@@ -6,7 +6,13 @@ import {
   gpuExclusivityVisible,
   mapIntentToLabTier,
 } from "../intent";
-import { isLiveConnectionUrl, sessionLocator, sessionStreamer } from "../connection";
+import {
+  isLiveConnectionUrl,
+  sessionDesktopLink,
+  sessionLocator,
+  sessionMoonlightClient,
+  sessionStreamer,
+} from "../connection";
 import type { Notice, SessionResponse, UserPublic } from "../types";
 
 interface SessionPanelProps {
@@ -28,7 +34,9 @@ function noticeText(notice: Notice): string {
     case "unavailable":
       return "No Pro host is free. Either none is approved and live, or that GPU is already assigned. Pro is exclusive for the session, not a concurrent slice.";
     case "ended":
-      return "Session ended. The host is free to request again.";
+      return notice.creditsDebited != null
+        ? `Session ended. ${notice.creditsDebited} credits debited on the internal ledger (not a card charge).`
+        : "Session ended. The host is free to request again.";
     case "existing":
       return "You already have an active session. Showing it instead of creating a new one.";
     case "error":
@@ -50,6 +58,8 @@ export function SessionPanel({
   const streamer = session ? sessionStreamer(session) : null;
   const locator = session ? sessionLocator(session) : null;
   const live = isLiveConnectionUrl(locator);
+  const desktopLink = session ? sessionDesktopLink(session) : null;
+  const moonlight = session ? sessionMoonlightClient(session) : null;
   const mappedTier = mapIntentToLabTier(intent);
   const showExclusivity = gpuExclusivityVisible(mappedTier);
   const canRequest = canRequestSession(intent);
@@ -74,10 +84,10 @@ export function SessionPanel({
 
       {session ? (
         <>
-          <span className="placeholder-flag">
+          <span className="placeholder-flag" data-live={live ? "true" : "false"}>
             {live
               ? isPro
-                ? "Live Sunshine locator — open with Moonlight, not Kasm"
+                ? "Live Sunshine locator — desktop is Moonlight, not Kasm"
                 : "Live session URL — opens on the host PC"
               : "Connection URL is a placeholder, not a live desktop"}
           </span>
@@ -141,10 +151,16 @@ export function SessionPanel({
               {PRO_GPU_EXCLUSIVITY}
             </p>
           ) : null}
+          {moonlight ? (
+            <p className="moonlight" role="status">
+              Moonlight client: host <strong>{moonlight.host}</strong> · app{" "}
+              {moonlight.app}. That is the live Pro desktop, not a browser iframe.
+            </p>
+          ) : null}
           {live ? (
             <p className="hint">
               {isPro
-                ? "Pro streams Sunshine from inside the guest. Use a Moonlight client with the host below. Selkies-GStreamer is a documented browser alternative, not this API. Do not iframe the stream here."
+                ? "Sunshine's HTTPS page is the guest web UI. Use Moonlight for the desktop. Selkies-GStreamer is a documented browser alternative, not this API. Do not iframe the stream here."
                 : "Kasm is not embedded here (iframes are usually blocked). Open desktop uses a new tab. Paste any token into Kasm if it asks."}
             </p>
           ) : (
@@ -152,27 +168,28 @@ export function SessionPanel({
               {isPro ? (
                 <>
                   Stub Sunshine/Moonlight locators use the <code>.invalid</code> TLD.
-                  GATE-PRO is operator-declared closed (2026-09-05); a live stream
-                  still is not in this repo.
+                  Open desktop stays hidden. Hardware is implemented in code, not
+                  yet run on physical hardware.
                 </>
               ) : (
                 <>
                   Seed and mock-provision URLs use the <code>.invalid</code> TLD.
-                  GATE-FC / GATE-WHPX are operator-declared closed (2026-09-05);
-                  Open desktop stays hidden until a live Kasm URL exists.
+                  Open desktop stays hidden until Matchmaker returns a live Kasm
+                  locator. Hardware is implemented in code, not yet run on
+                  physical hardware.
                 </>
               )}
             </p>
           )}
           <div className="row end-row">
-            {live && locator && !isPro ? (
-              <a className="open-link" href={locator} target="_blank" rel="noreferrer">
-                Open desktop
-              </a>
-            ) : null}
-            {live && locator && isPro ? (
-              <a className="open-link" href={locator} target="_blank" rel="noreferrer">
-                Open Sunshine URL
+            {desktopLink ? (
+              <a
+                className="open-link"
+                href={desktopLink.href}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {desktopLink.label}
               </a>
             ) : null}
             <button type="button" className="danger" disabled={busy} onClick={onEnd}>
@@ -219,7 +236,8 @@ export function SessionPanel({
           {canRequest ? (
             <p className="tier-preview">
               Maps to <strong>{mappedTier}</strong>
-              {showExclusivity ? " — exclusive GPU" : " — CPU/RAM slice"}.
+              {showExclusivity ? " — exclusive GPU" : " — CPU/RAM slice"}. Matchmaker
+              auto-matches an approved live host — this harness does not list hosts.
             </p>
           ) : (
             <p className="tier-preview">Answer the prompt to choose a lab tier.</p>
@@ -232,6 +250,10 @@ export function SessionPanel({
           ) : canRequest ? (
             <p className="hint">{STANDARD_SLICE_HINT}</p>
           ) : null}
+          <p className="hint">
+            Host inventory is register + heartbeat on Matchmaker (then manual
+            approve). Request session posts <code>labTier</code> only.
+          </p>
           <div className="row">
             <button type="submit" disabled={busy || !canRequest}>
               {busy ? "Working…" : "Request session"}
