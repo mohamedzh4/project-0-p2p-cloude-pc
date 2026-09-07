@@ -39,7 +39,7 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 30: pytest 162, cargo test 305, vitest 31, guest-images
+  Counts after phase 31: pytest 166, cargo test 320, vitest 31, guest-images
   unittest 12.
 
 ## Contracts to keep stable
@@ -65,8 +65,10 @@ Matchmaker JSON is camelCase.
 | GET | `/v1/storage` | User Bearer; 200 same shape or 404 if never issued. |
 
 Session response: `{ sessionId, hostId, labTier, startedAt, connection, storage, mesh }` where `storage` is the same locator object as `/v1/storage` (no access keys). `mesh` is `{ loginServer, exitNode, exitNodeApplied, guest, user }` with ephemeral Headscale preauth keys tagged `tag:guest` / `tag:user` and guest `tailscaleUp` including `--exit-node` when `HEADSCALE_EXIT_NODE` is set (default `dcl-platform-exit`). Host Agent join stays the preauth route (`tag:host`, never `--exit-node`). Standard `connection` is `{ streamer: "kasm", kasmUrl, kasmToken, sunshineUrl: null, moonlight: null, gpuExclusive: false }`. Pro `connection` is `{ streamer: "sunshine", kasmUrl: null, kasmToken: null, sunshineUrl, moonlight: { host, app }, gpuExclusive: true }` — not Kasm renamed. Locators still live in `hosts.kasm_url`. Pro-GPU: implemented in code, not yet
-run on physical hardware. Provision still returns stub locators; there is no
-live Sunshine/Moonlight session in this repo.
+run on physical hardware. After a successful invoke or GPU apply, provision
+returns a live Kasm/Sunshine locator (mesh hostname, ports 443 / 47990) or
+fails; it does not occupy a host with `.invalid`. There is still no live
+desktop on metal in this repo.
 End response: `{ sessionId, status, endedAt, creditsDebited }`.
 History `status` is `active` | `ended` (user end) | `interrupted` (heartbeat
 silence). End response is `ended` or already-`interrupted`. Occupied silent
@@ -110,12 +112,15 @@ TCG, no Hyper-V Standard boot). Missing kernel/binary/rootfs/WHPX is 400, not
 a fake success. Response is
 `{ connectionUrl, hypervisorInvoked, gpuExclusive, streamer }` plus Pro-only
 `sunshineUrl` and `moonlight: { host, app }`. Standard `streamer` is `kasm`.
-Pro `streamer` is `sunshine` (stub origin `https://provision.invalid`). Linux
-Standard locator stays `https://provision.invalid/firecracker` even after
-invoke. Windows Standard locator stays `https://provision.invalid/qemu-whpx`.
-Linux Pro locator stays `https://provision.invalid/qemu-vfio` after VFIO bind.
-Windows Pro locator stays `https://provision.invalid/hyperv-gpu` after DDA/GPU-P.
-On Linux Pro, when the probe offers the tier and `ProvisionGate.vfio` is set,
+Pro `streamer` is `sunshine`. After Firecracker/QEMU invoke or VFIO/Hyper-V
+apply, the agent polls for a reachable locator (Kasm `https://{meshHost}/`
+on 443, Sunshine `https://{meshHost}:47990/`) and returns that URL, or 400
+if the streamer never answers. Plan-only (no invoke/apply) may still use
+`https://provision.invalid/{backend}`. `HttpHostProvisioner` rejects
+`.invalid` locators even with `hypervisorInvoked: true`; a live URL with
+invoke is stored on the host row. If provision fails while the host row is
+still a placeholder, the session row is deleted (502) so occupancy is not
+held with a seed URL.
 `gpu_bind.rs` applies vfio-pci against injectable sysfs (production: live
 `/sys`; `cfg(test)` refuses live `/sys`) with rollback. The Host Agent window
 stays `apply: false`. On Windows Pro, when the probe offers the tier and
@@ -130,13 +135,11 @@ Listen requires `IMAGE_SIGNING_PUBLIC_KEY` and `IMAGE_LOCAL_DIGEST` (fail
 fast). Matchmaker session booking, after `HostSelector.select` and occupancy
 commit, calls a `HostProvisioner` port (`get_host_provisioner()`), not a
 hypervisor and not a concrete selector. Origin: `host.agentUrl`, else optional
-`HOST_AGENT_PROVISION_URL`. If that call is unavailable, the seeded/placeholder
-locator on the host row is kept (`kasmUrl` column; session JSON still splits
-Kasm vs Sunshine by `labTier`). `HttpHostProvisioner` keeps
-`hypervisorInvoked: true` only when the locator hostname ends with `.invalid`;
-invoke plus a live URL is dropped. Do not put Firecracker/QEMU/WHPX names in
-`sessions.py`. Provision POSTs the registry digest+signature for the booked
-`labTier`.
+`HOST_AGENT_PROVISION_URL`. If that call is unavailable, a live URL already on the host row is kept;
+a placeholder seed is not occupied (502). `HttpHostProvisioner` stores a
+live locator even when `hypervisorInvoked` is true. Do not put
+Firecracker/QEMU/WHPX names in `sessions.py`. Provision POSTs the registry
+digest+signature for the booked `labTier`.
 
 `web/` is a harness, not the product dashboard. Kasm opens in a new tab; do not
 iframe it in early phases.
@@ -146,10 +149,10 @@ iframe it in early phases.
 | Cahier | This plan |
 | --- | --- |
 | 0 Manual compute pipeline | Hardware: three honest lines in `PROJECT_STATUS.md`. Not yet run on physical hardware. Guest disks: `guest-images/` |
-| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs) through 30 (Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply + Windows Pro Hyper-V DDA/GPU-P apply; locators still `.invalid`). Live desktop is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid`) |
+| 1 MVP Standard Lab, hosts approved manually | Software: execution phases 1–7 (control plane + stubs) through 31 (Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply + Windows Pro Hyper-V DDA/GPU-P apply + live locator poll). Live desktop on metal is still not in this repo (`SEED_HOST_KASM_URL` stays `example.invalid` for the seed command) |
 | 2 Matching + billing + auto onboarding | Execution phases 8–12 (intent, ranking swap, tray, billing, re-match). Mesh/storage: ask human first |
 | 3 Pro/Gamer + latency | Execution phase 16 software (Sunshine locators). Pro-GPU implemented in code, not yet run on physical hardware; no live stream in-repo |
-| 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv; 26 Packer guest images; 27 Firecracker InstanceStart (no TAP); 28 QEMU `-accel whpx` (no live Kasm); 29 Linux Pro VFIO bind apply (window still plan-only); 30 Windows Pro Hyper-V DDA/GPU-P apply from provision (window still plan-only). Live desktop / pairwise ACLs still paper |
+| 4 Hardening | Execution phase 13 (images); 14 mesh mint+join; 14c ACLs + host tags; 15 renterd; 17 session guest/user tags + guest `--exit-node` plan + guest rclone argv; 26 Packer guest images; 27 Firecracker InstanceStart (no TAP); 28 QEMU `-accel whpx`; 29 Linux Pro VFIO bind apply (window still plan-only); 30 Windows Pro Hyper-V DDA/GPU-P apply from provision (window still plan-only); 31 live locator poll after invoke/apply (tests inject loopback). Live desktop on metal / pairwise ACLs still paper |
 
 ## Execution phases
 
@@ -267,7 +270,7 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR2 intent prompt → lab tier | Implemented (`web/` harness) | — |
 | FR3 match to most suitable host | Partial: `RankedHostSelector` (declared CPU then RAM; Pro GPU id) | Phase 16 when latency can be measured |
 | FR4 encrypted persistent files | Partial: renterd S3 locators + guest rclone argv/plan (env auth, not Storj). Provision hook returns `guestRclone` from locators. Phase 26 Packer image installs rclone | Live mount still needs a booted guest |
-| FR5 live streamed desktop | Partial: harness opens a URL; seed is still `example.invalid`. Phase 26 builds Kasm/Sunshine disks | Standard-Linux / Standard-Windows implemented in code, not yet run on physical hardware |
+| FR5 live streamed desktop | Partial: harness opens a URL; seed is still `example.invalid`. Phase 26 builds Kasm/Sunshine disks. Phase 31 returns a live locator after invoke/apply when the streamer answers (tests inject loopback) | Standard-Linux / Standard-Windows / Pro-GPU implemented in code, not yet run on physical hardware |
 | FR6 logout final save + “saved as of” | Missing in the guest UI | rclone argv/plan exists; needs a booted guest |
 | FR7 session history + billing/credits | Internal ledger + `GET /v1/sessions` | Phase 11 done; no payouts |
 | FR8 declare CPU/RAM slice + exclusive GPU | Implemented except availability schedule | Schedule can wait; do not break `sharedGpuId` |
@@ -276,7 +279,7 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | After 45s Matchmaker treats skip as silence (interrupts). No pause field |
 | FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Later telemetry |
 | FR13 match on tier, latency, reliability | Partial: tier fit + declared caps; latency/reliability not measured | Do not fake `latency_ms` |
-| FR14 provision, heartbeat, auto teardown | Partial: mock provision + Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply + Windows Pro Hyper-V DDA/GPU-P apply + 45s stale for new books and occupied teardown; locators still `.invalid` | Real VMs on metal and a live desktop URL are still not in this repo |
+| FR14 provision, heartbeat, auto teardown | Partial: mock provision + Linux Firecracker InstanceStart + Windows QEMU `-accel whpx` + Linux Pro VFIO bind apply + Windows Pro Hyper-V DDA/GPU-P apply + live locator poll + 45s stale for new books and occupied teardown | Real VMs on metal and a clickable live desktop are still not in this repo |
 | FR15 re-match on host disconnect | Implemented: `interrupted` + one `HostSelector.select`; 409 if none | Same renterd bucket follows the user; no Storj |
 | FR16 meter usage / payouts | Metering + ledger; payouts deferred | Phase 11 metering done; no Stripe |
 
@@ -290,7 +293,8 @@ output. Pointers: `docs/runbooks/gate-fc.md`, `gate-whpx.md`, `gate-pro.md`.
 - Standard-Windows: Implemented in code. Not yet run on physical hardware.
 - Pro-GPU: Implemented in code. Not yet run on physical hardware.
 
-`SEED_HOST_KASM_URL` is still `https://example.invalid/kasm`. Guest-image
+`SEED_HOST_KASM_URL` is still `https://example.invalid/kasm` for the seed
+command. Successful provision no longer stores that placeholder. Guest-image
 **build** is `guest-images/` (phase 26). There is no gate-result template.
 Software phases may proceed without a metal run.
 
@@ -797,28 +801,37 @@ Windows Pro image fetch stays would-fetch (assignment attaches to an
 existing VM, not a fetched disk). Not yet run on physical hardware. See
 `docs/phase-logs/phase-30-hyperv-provision-apply.md`.
 
-**Next:** Live locators — once a VM would have Kasm/Sunshine reachable,
-Host Agent returns the real URL to Matchmaker and drop
-`SEED_HOST_KASM_URL` from the provision flow (still not “confirmed on
-hardware”). Then web clickable loop.
-
 ### Phase 31 — Live locators (Kasm / Sunshine)
 
-**Why next:** Provision still returns `.invalid` placeholders even after
-Firecracker InstanceStart, QEMU `-accel whpx`, VFIO bind, and Hyper-V
-DDA/GPU-P. Matchmaker keeps `SEED_HOST_KASM_URL` / `hosts.kasm_url`
-when the provision locator is a stub.
+Done as a **software contract** (2026-09-07). When Linux/Windows Standard
+invoke or Linux/Windows Pro GPU apply succeeds, Host Agent polls for a
+reachable streamer and returns that URL (Kasm `:443` / Sunshine `:47990` on
+the Headscale guest hostname, or an injected loopback in tests). Timeout or
+a `.invalid` locator is 400 on the agent and 502 on Matchmaker (session row
+deleted; occupancy not held with a seed). Plan-only stubs may still return
+`.invalid`. Not yet run on physical hardware. See
+`docs/phase-logs/phase-31-live-locators.md`.
 
-**Do:** When a guest streamer would actually be reachable, return that
-URL from Host Agent provision to Matchmaker and stop using the seed
-placeholder on that path. Keep GPU exclusivity. Do not invent a URL.
+**Next:** web full loop — clickable live desktop link, session
+end/history/credits against real sessions, auto-match (existing FR2/FR3).
 
-**Do not:** Fake a live desktop. Do not close hardware status. Do not
-rewrite VFIO/Hyper-V apply.
+### Phase 32 — Web full loop
 
-**Exit:** Provision can return a non-`.invalid` locator without dropping
-`hypervisorInvoked: true` on a live hostname (phase 27 rule). Tests
-cover the split. Suites green.
+**Why next:** Provision can return a live locator. The harness still hides
+Open desktop for `.invalid` and does not exercise end/history/credits
+against those sessions as a product loop.
+
+**Do:** Clickable live desktop link for Standard Kasm and Pro Sunshine
+locators that pass `isLiveConnectionUrl`. Session end, history, and credits
+against real sessions. Keep auto-match (FR2 intent → `labTier`, FR3
+`HostSelector`) unless a product decision already chose otherwise — do not
+silently switch to manual host browsing.
+
+**Do not:** Invent a metal confirmation. Do not rewrite Firecracker/QEMU/VFIO
+/Hyper-V apply. Do not close hardware status.
+
+**Exit:** Web harness books → opens a live locator when the session has one
+→ end/history/credits. Suites green.
 
 ## Handoff template
 

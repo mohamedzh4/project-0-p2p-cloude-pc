@@ -138,6 +138,21 @@ def _host_or_error(db: Session, host_id: UUID) -> Host:
     return host
 
 
+def _abort_unprovisioned_session(
+    db: Session,
+    session: LabSession,
+    headscale: HeadscaleClient,
+) -> None:
+    """Release occupancy when provision did not yield a live locator."""
+    session_id = session.id
+    db.delete(session)
+    db.commit()
+    try:
+        expire_session_mesh(headscale, session_id=session_id)
+    except HeadscaleError:
+        pass
+
+
 @router.post("/sessions", response_model=SessionResponse)
 def request_session(
     response: Response,
@@ -211,17 +226,22 @@ def request_session(
         ) from None
 
     db.refresh(session)
-    # Occupancy is already held by the session row. Provision is a port on the
-    # selected host (HTTP to its agent, or a test double). If the agent is
-    # unreachable, keep the seeded/placeholder URL on the host row.
-    provision_booked_host(
+    # Occupancy is already held by the session row. Provision must return a
+    # live locator (not `.invalid`). If the agent is down while the host row
+    # is still a placeholder, abort so the host is not occupied with a seed.
+    if not provision_booked_host(
         db,
         host,
         provisioner,
         lab_tier=req.lab_tier,
         storage=locators_from_grant(grant),
         guest_mesh=guest_mesh_hint(mesh),
-    )
+    ):
+        _abort_unprovisioned_session(db, session, headscale)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="host provision failed",
+        )
     response.status_code = status.HTTP_201_CREATED
     return _session_response(session, host, grant, mesh)
 

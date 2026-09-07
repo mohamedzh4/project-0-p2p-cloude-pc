@@ -160,14 +160,23 @@ def _rematch_user(
 
     db.refresh(session)
     storage = _storage_locators_for_user(db, user_id)
-    provision_booked_host(
+    session_id = session.id
+    if not provision_booked_host(
         db,
         host,
         provisioner,
         lab_tier=lab_tier,
         storage=storage,
         guest_mesh=guest_mesh_hint(mesh) if mesh is not None else None,
-    )
+    ):
+        db.delete(session)
+        db.commit()
+        if headscale is not None:
+            try:
+                expire_session_mesh(headscale, session_id=session_id)
+            except HeadscaleError:
+                pass
+        return None
     return session
 
 

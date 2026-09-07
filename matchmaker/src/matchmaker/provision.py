@@ -20,7 +20,8 @@ from matchmaker.schemas import ConnectionInfo, MoonlightInfo
 from matchmaker.storage import GuestStorageLocators
 
 _PROVISION_PATH = "/v1/provision"
-_REQUEST_TIMEOUT_SECONDS = 10.0
+# Host Agent may poll Kasm/Sunshine for up to ~60s after invoke.
+_REQUEST_TIMEOUT_SECONDS = 90.0
 
 STREAMER_KASM = "kasm"
 STREAMER_SUNSHINE = "sunshine"
@@ -61,6 +62,14 @@ class HostProvisioner(Protocol):
         guest_mesh: GuestMeshHint | None = None,
     ) -> ProvisionResult | None:
         """Ask the selected host's agent to become ready, or None to use the host row."""
+
+
+def locator_is_placeholder(url: str | None) -> bool:
+    """RFC 2606 `.invalid` (seed example.invalid and stub provision.invalid)."""
+    if url is None or not url.strip():
+        return True
+    host = (urlparse(url.strip()).hostname or "").lower().rstrip(".")
+    return host == "invalid" or host.endswith(".invalid")
 
 
 def apply_provision_result(db: Session, host: Host, result: ProvisionResult) -> None:
@@ -116,7 +125,14 @@ def provision_booked_host(
     lab_tier: str,
     storage: GuestStorageLocators | None = None,
     guest_mesh: GuestMeshHint | None = None,
-) -> None:
+) -> bool:
+    """Overwrite the host locator with a live agent URL.
+
+    Returns False when the agent is down, returns a placeholder, or yields
+    nothing while the host row is still `.invalid`. Callers must not occupy
+    a host with a placeholder. A live URL already on the host row is kept
+    only when the agent did not answer.
+    """
     result = provisioner.provision(
         host,
         lab_tier=lab_tier,
@@ -124,8 +140,11 @@ def provision_booked_host(
         guest_mesh=guest_mesh,
     )
     if result is None or not result.connection_url.strip():
-        return
+        return not locator_is_placeholder(host.kasm_url)
+    if locator_is_placeholder(result.locator()):
+        return False
     apply_provision_result(db, host, result)
+    return True
 
 
 def agent_origin(value: str | None) -> str | None:
@@ -147,7 +166,9 @@ class HttpHostProvisioner:
     """POST `{origin}/v1/provision` with the host bootstrap Bearer.
 
     Origin is `host.agent_url`, else the optional Matchmaker fallback URL.
-    Network/HTTP failures return None so booking can use the seeded kasm URL.
+    Network/HTTP failures return None. Placeholder (`.invalid`) locators are
+    never treated as success — the session router then fails the book instead
+    of occupying the host with a seed URL.
     """
 
     def __init__(
@@ -226,13 +247,8 @@ class HttpHostProvisioner:
         connection_url = body.get("connectionUrl")
         if not isinstance(connection_url, str) or not connection_url.strip():
             return None
-        if body.get("hypervisorInvoked") is True:
-            # Phase 27 may InstanceStart on Linux Standard. Keep the locator
-            # only when it is still a placeholder (.invalid). A live Kasm URL
-            # is a later locator phase — do not treat invoke as a confirmed desktop.
-            host = (urlparse(connection_url.strip()).hostname or "").lower()
-            if not host.endswith(".invalid"):
-                return None
+        if locator_is_placeholder(connection_url):
+            return None
 
         token = body.get("connectionToken")
         connection_token = token.strip() if isinstance(token, str) and token.strip() else None

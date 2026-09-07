@@ -1,17 +1,18 @@
 # Matchmaker
 
 Control-plane service for the Distributed Compute Lab (software MVP after
-execution phase 17): auth, host inventory, heartbeats, session occupancy,
+execution phase 31): auth, host inventory, heartbeats, session occupancy,
 an internal credits ledger, signed base-image **metadata**, Headscale
 **preauth mint** for Host Agent mesh join plus session ephemeral guest/user
-keys (self-hosted; no Tailscale SaaS), and **renterd** S3 bucket provision
-for guest rclone (not Storj).
+keys (self-hosted; no Tailscale SaaS), **renterd** S3 bucket provision
+for guest rclone (not Storj), and Host Agent provision that stores a **live**
+Kasm/Sunshine locator (or fails the book).
 Hosts register declared caps and start **pending**;
 sessions book a manually approved host whose last heartbeat is fresh (within
 45s). Among eligible hosts, `RankedHostSelector` prefers more declared CPU,
 then more RAM, then host id. Pro bookings also require a dedicated GPU id.
 After occupancy commit, the Matchmaker calls a Host Agent **provision port**
-(HTTP, or a test double) for a stub connection URL. Occupancy stays on session
+(HTTP, or a test double) for a connection locator. Occupancy stays on session
 indexes, not a host flag. Ending a session meters `startedAt` → `endedAt` into
 `ledger_entries` (user debit / host credit). A host silent for 45s with an
 active session is marked `interrupted`, billed once, and rematched via
@@ -23,9 +24,11 @@ Guest join plans include `--exit-node=$HEADSCALE_EXIT_NODE` (default
 `dcl-platform-exit`). rclone belongs **inside the guest**.
 
 How Matchmaker finds the agent: `hosts.agent_url` from inventory, else optional
-`HOST_AGENT_PROVISION_URL`. If neither is usable, the seeded/placeholder
-`kasmUrl` on the host row is kept. OS/backend selection stays in Host Agent
-Rust (`plan_provision`); this service does not name Firecracker/QEMU/WHPX.
+`HOST_AGENT_PROVISION_URL`. A live locator already on the host row is kept
+only when the agent does not answer. A placeholder seed (`.invalid`) is not
+occupied — the book is 502 and the session row is deleted. OS/backend
+selection stays in Host Agent Rust (`plan_provision`); this service does not
+name Firecracker/QEMU/WHPX.
 
 ## What it does
 
@@ -46,8 +49,10 @@ Rust (`plan_provision`); this service does not name Firecracker/QEMU/WHPX.
   free, then calls the Host Agent provision port. Standard `connection` is
   Kasm (`streamer: kasm`); Pro is Sunshine/Moonlight (`streamer: sunshine`,
   `gpuExclusive: true`) — not a renamed Kasm URL. The locator comes from that
-  stub result when the agent is reachable; otherwise the URL already stored
-  on the host row (`hosts.kasm_url`). Before booking, the router reclaims
+  result when the agent returns a non-`.invalid` URL; a placeholder result
+  fails the book (502). If the agent is unreachable, a live URL already stored
+  on the host row (`hosts.kasm_url`) is kept; a seed placeholder is not.
+  Before booking, the router reclaims
   sessions on silent hosts (same as history and heartbeat) and provisions a
   **renterd** per-user bucket and mints ephemeral Headscale `tag:guest` /
   `tag:user` keys. Session JSON `storage` is locators only (S3 endpoint,
@@ -160,8 +165,10 @@ To approve a host that registered through the API:
 python -m matchmaker.seed --approve-host-id HOST_UUID
 ```
 
-`https://example.invalid/kasm` is only a placeholder. The web harness will not
-offer "Open desktop" until this is a real `http(s)` URL on the host.
+`https://example.invalid/kasm` is only a seed placeholder. Successful
+provision overwrites `hosts.kasm_url` with the live locator from the agent.
+The web harness will not offer "Open desktop" until the session has a real
+`http(s)` URL (phase 32).
 
 ### 5. Run
 
@@ -192,7 +199,7 @@ Needs the test database in `TEST_DATABASE_URL` (created by compose).
 pytest
 ```
 
-Expect **161** passed (phase 17). Unit tests mock renterd S3 and Headscale
+Expect **166** passed (phase 31). Unit tests mock renterd S3 and Headscale
 HTTP; they do not start Docker or talk to a live Sia network.
 
 ## API

@@ -4,13 +4,15 @@ Implemented in code. Not yet run on physical hardware.
 
 See `PROJECT_STATUS.md`. Guest disks: `guest-images/README.md`.
 Never write "confirmed working" until a human reports a live session on metal.
-Do not invent lab output. The locator is still
-`https://provision.invalid/qemu-whpx`.
+Do not invent lab output. After a successful spawn, provision polls Kasm
+on `https://{guestMesh.hostname}/` (HTTPS 443) and returns that URL, or 400
+if it never answers. Tests inject loopback HTTP. Metal still needs guest net.
 
 Phase 28 starts QEMU (`-accel whpx`) from Host Agent `POST /v1/provision`
-when Windows Standard is offered. That is a software contract. It is not a
-live Kasm session. Hyper-V is the Pro GPU backend, not a Standard boot
-fallback. TCG is not the Standard Windows product.
+when Windows Standard is offered. Phase 31 polls Kasm after that invoke.
+That is a software contract. It is not a live Kasm session on metal. Hyper-V
+is the Pro GPU backend, not a Standard boot fallback. TCG is not the
+Standard Windows product.
 
 ## Operator requirements (metal)
 
@@ -24,7 +26,8 @@ Unattended blockers. Meeting them does not close the hardware line.
 3. Verified Standard disk (phase 20 fetch / phase 26 Packer
    `guest-images/output/standard/rootfs.img`). Host Agent cache name is
    `rootfs.img`; `-hda` accepts raw or qcow2 content.
-4. TAP/guest network is **not** in phase 28. Even a successful spawn does
-   not yield a reachable Kasm URL.
+4. TAP/guest network is **not** in this runbook. A successful spawn plus
+   locator poll still needs a reachable Kasm on the mesh hostname. Timeout
+   is 400, not a `.invalid` success.
 5. Teardown HTTP is unused (occupancy is not cleared when Matchmaker
    interrupts).

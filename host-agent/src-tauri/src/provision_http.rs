@@ -7,9 +7,11 @@
 //! against injectable (production: live) sysfs when the probe offered Pro.
 //! Windows Pro then applies Hyper-V DDA (preferred) or exclusive GPU-P
 //! through an injectable runner (production: PowerShell) when the probe
-//! offered Pro. The window stays plan-only. The Matchmaker POSTs here after
-//! host selection. The webview must not `fetch` this URL (CSP allows no
-//! remote origins).
+//! offered Pro. After a successful invoke or GPU apply, the handler polls
+//! for a reachable Kasm (Standard) or Sunshine (Pro) locator and returns
+//! that URL — never a `.invalid` placeholder claimed as live. The window
+//! stays plan-only. The Matchmaker POSTs here after host selection. The
+//! webview must not `fetch` this URL (CSP allows no remote origins).
 
 use std::io::Read;
 use std::net::SocketAddr;
@@ -30,6 +32,7 @@ use crate::image::{
     trust_from_env, verify_image, GuestImageStatus, ImageError, ImageManifest, ImageTrust,
 };
 use crate::launch::{self, LaunchError, LaunchRequest};
+use crate::locator::{self, LiveLocator, LocatorError, StreamerKind, StreamerWait};
 use crate::models::{HardwareSnapshot, SharingConfig};
 use crate::provision::{plan, HostOs, LabTier, ProvisionError, ProvisionPlan, ProvisionRequest};
 use crate::storage::GuestRcloneMount;
@@ -70,6 +73,8 @@ pub enum PlanHttpError {
     Qemu(#[from] QemuError),
     #[error("{0}")]
     GpuBind(#[from] GpuBindError),
+    #[error("{0}")]
+    Locator(#[from] LocatorError),
 }
 
 /// Probe + spare CPU/RAM/disk used to refuse a stub provision instead of
@@ -93,6 +98,9 @@ pub struct ProvisionGate {
     /// uses [`gpu_bind::ProcessHyperVGpuOps`]. The window never sets this — it
     /// stays [`gpu_bind::WINDOW_GPU_BIND_APPLY`] with `hyperv: None`.
     pub hyperv: Option<HyperVAssign>,
+    /// After invoke or GPU apply, wait for Kasm/Sunshine. Tests inject a
+    /// loopback origin. Production uses [`StreamerWait::production`].
+    pub streamer: Option<StreamerWait>,
 }
 
 /// Inputs for a real Firecracker invoke. Tests inject [`FirecrackerRuntime`].
@@ -299,7 +307,9 @@ where
 /// [`ProvisionGate::qemu`] starts QEMU `-accel whpx` or fails clearly.
 /// Linux Pro with [`ProvisionGate::vfio`] applies vfio-pci or fails clearly.
 /// Windows Pro with [`ProvisionGate::hyperv`] applies DDA/GPU-P or fails
-/// clearly. Digest mismatch never boots. The window does not call this with apply.
+/// clearly. After invoke or GPU apply, poll for a live locator or fail
+/// (no placeholder success). Digest mismatch never boots. The window does
+/// not call this with apply.
 pub fn plan_http(
     os: HostOs,
     request: &ProvisionHttpRequest,
@@ -338,19 +348,44 @@ pub fn plan_http(
     let pro_offered = gate
         .map(|gate| gate.capabilities.pro.offered)
         .unwrap_or(false);
+    let mut gpu_applied = false;
     if gpu_bind::linux_pro_provision_should_apply(os, lab_tier, pro_offered) {
         if let Some(vfio) = gate.and_then(|gate| gate.vfio.as_ref()) {
             let gate = gate.expect("vfio bind requires a gate");
             apply_linux_pro_vfio(os, request, gate, vfio)?;
+            gpu_applied = true;
         }
     }
     if gpu_bind::windows_pro_provision_should_apply(os, lab_tier, pro_offered) {
         if let Some(hyperv) = gate.and_then(|gate| gate.hyperv.as_ref()) {
             let gate = gate.expect("hyperv assign requires a gate");
             apply_windows_pro_hyperv(os, request, gate, hyperv)?;
+            gpu_applied = true;
         }
     }
+    if planned.hypervisor_invoked || gpu_applied {
+        let live = resolve_live_locator(lab_tier, request, gate)?;
+        return Ok(http_response_from_live(&planned, &live, guest_rclone));
+    }
     Ok(http_response_from_plan(&planned, guest_rclone))
+}
+
+fn resolve_live_locator(
+    lab_tier: LabTier,
+    request: &ProvisionHttpRequest,
+    gate: Option<&ProvisionGate>,
+) -> Result<LiveLocator, PlanHttpError> {
+    let kind = if lab_tier == LabTier::Pro {
+        StreamerKind::Sunshine
+    } else {
+        StreamerKind::Kasm
+    };
+    let wait = locator::wait_from_gate(gate.and_then(|gate| gate.streamer.as_ref()));
+    let hostname = request
+        .guest_mesh
+        .as_ref()
+        .and_then(|mesh| mesh.hostname.as_deref());
+    Ok(locator::await_live_locator(kind, hostname, &wait)?)
 }
 
 fn invoke_linux_standard(
@@ -564,6 +599,42 @@ fn guest_rclone_from_request(request: &ProvisionHttpRequest) -> Option<GuestRclo
         remote: mount.remote(),
         env_auth: true,
     })
+}
+
+fn http_response_from_live(
+    planned: &ProvisionPlan,
+    live: &LiveLocator,
+    guest_rclone: Option<GuestRclonePlan>,
+) -> ProvisionHttpResponse {
+    if live.streamer == StreamerKind::Sunshine {
+        ProvisionHttpResponse {
+            connection_url: live.connection_url.clone(),
+            hypervisor_invoked: planned.hypervisor_invoked,
+            gpu_exclusive: planned.gpu_exclusive,
+            streamer: STREAMER_SUNSHINE.to_string(),
+            sunshine_url: live.sunshine_url.clone(),
+            moonlight: Some(MoonlightHint {
+                host: live.moonlight_host.clone().unwrap_or_else(|| {
+                    locator::hostname_from_url(&live.connection_url).unwrap_or_default()
+                }),
+                app: live
+                    .moonlight_app
+                    .clone()
+                    .unwrap_or_else(|| locator::MOONLIGHT_APP.to_string()),
+            }),
+            guest_rclone,
+        }
+    } else {
+        ProvisionHttpResponse {
+            connection_url: live.connection_url.clone(),
+            hypervisor_invoked: planned.hypervisor_invoked,
+            gpu_exclusive: planned.gpu_exclusive,
+            streamer: STREAMER_KASM.to_string(),
+            sunshine_url: None,
+            moonlight: None,
+            guest_rclone,
+        }
+    }
 }
 
 fn http_response_from_plan(
@@ -1384,6 +1455,7 @@ mod tests {
             qemu: None,
             vfio: None,
             hyperv: None,
+            streamer: None,
         }
     }
 
@@ -1413,6 +1485,7 @@ mod tests {
             qemu: None,
             vfio: None,
             hyperv: None,
+            streamer: None,
         }
     }
 
@@ -1498,6 +1571,30 @@ mod tests {
         );
     }
 
+    fn spawn_live_streamer() -> String {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let addr = server
+            .server_addr()
+            .to_ip()
+            .expect("live locator test listens on TCP");
+        thread::spawn(move || {
+            for request in server.incoming_requests() {
+                let _ = request.respond(Response::from_string("kasm"));
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    fn with_live_streamer(mut gate: ProvisionGate, url: &str) -> ProvisionGate {
+        gate.streamer = Some(StreamerWait::injected_http(url));
+        gate
+    }
+
+    fn with_unreachable_streamer(mut gate: ProvisionGate) -> ProvisionGate {
+        gate.streamer = Some(StreamerWait::unreachable());
+        gate
+    }
+
     fn guest_ready(path: &std::path::Path) -> crate::image::GuestImageStatus {
         crate::image::GuestImageStatus {
             action: crate::image::ImageEnsureAction::SkippedPresent,
@@ -1524,14 +1621,15 @@ mod tests {
     }
 
     #[test]
-    fn linux_standard_with_boot_inputs_invokes_and_keeps_the_placeholder_locator() {
+    fn linux_standard_with_boot_inputs_invokes_and_returns_the_live_locator() {
         use crate::firecracker::{RecordingFirecracker, API_PATH_ORDER, API_SOCK_ARG, ENABLE_PCI_ARG};
         use std::sync::Arc;
 
+        let live_url = spawn_live_streamer();
         let (trust, body) = signed_standard();
         let (tree, binary, rootfs) = boot_tree();
         let recorder = Arc::new(RecordingFirecracker::succeeding());
-        let mut gate = linux_kvm_gate();
+        let mut gate = with_live_streamer(linux_kvm_gate(), &live_url);
         gate.firecracker = Some(FirecrackerBoot {
             binary: binary.clone(),
             image_cache_dir: tree.path().to_path_buf(),
@@ -1555,7 +1653,8 @@ mod tests {
         assert_eq!(output.status, 200);
         let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
         assert_eq!(body["hypervisorInvoked"], true);
-        assert_eq!(
+        assert_eq!(body["connectionUrl"], live_url);
+        assert_ne!(
             body["connectionUrl"],
             format!("{STUB_CONNECTION_ORIGIN}/firecracker")
         );
@@ -1573,6 +1672,42 @@ mod tests {
         let machine: serde_json::Value = serde_json::from_str(&puts[2].1).unwrap();
         assert_eq!(machine["vcpu_count"], 16);
         assert_eq!(machine["mem_size_mib"], 32768);
+    }
+
+    #[test]
+    fn linux_standard_invoke_times_out_when_streamer_is_unreachable() {
+        use crate::firecracker::RecordingFirecracker;
+        use std::sync::Arc;
+
+        let (trust, body) = signed_standard();
+        let (tree, binary, rootfs) = boot_tree();
+        let recorder = Arc::new(RecordingFirecracker::succeeding());
+        let mut gate = with_unreachable_streamer(linux_kvm_gate());
+        gate.firecracker = Some(FirecrackerBoot {
+            binary,
+            image_cache_dir: tree.path().to_path_buf(),
+            guest_image: guest_ready(&rootfs),
+            kernel_override: None,
+            arch: "x86_64".to_string(),
+            runtime: recorder.clone(),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("not reachable"));
+        assert!(!output.body.contains("connectionUrl"));
+        assert!(!occupancy.is_in_session());
+        assert_eq!(recorder.spawn_calls().len(), 1);
     }
 
     #[test]
@@ -1680,6 +1815,7 @@ mod tests {
             qemu: None,
             vfio: None,
             hyperv: None,
+            streamer: None,
         }
     }
 
@@ -1707,14 +1843,15 @@ mod tests {
     }
 
     #[test]
-    fn windows_standard_with_boot_inputs_invokes_whpx_and_keeps_the_placeholder_locator() {
+    fn windows_standard_with_boot_inputs_invokes_whpx_and_returns_the_live_locator() {
         use crate::qemu::{RecordingQemu, ACCEL_ARG, ACCEL_WHPX, HDA_ARG, MACHINE_PC};
         use std::sync::Arc;
 
+        let live_url = spawn_live_streamer();
         let (trust, body) = signed_standard();
         let (tree, binary, rootfs) = qemu_tree();
         let recorder = Arc::new(RecordingQemu::succeeding());
-        let mut gate = windows_whpx_gate();
+        let mut gate = with_live_streamer(windows_whpx_gate(), &live_url);
         gate.qemu = Some(QemuBoot {
             binary: binary.clone(),
             image_cache_dir: tree.path().to_path_buf(),
@@ -1737,7 +1874,8 @@ mod tests {
         assert_eq!(output.status, 200);
         let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
         assert_eq!(body["hypervisorInvoked"], true);
-        assert_eq!(
+        assert_eq!(body["connectionUrl"], live_url);
+        assert_ne!(
             body["connectionUrl"],
             format!("{STUB_CONNECTION_ORIGIN}/qemu-whpx")
         );
@@ -1755,6 +1893,41 @@ mod tests {
         assert_eq!(spawns[0].1[12], HDA_ARG);
         assert_eq!(spawns[0].1[13], rootfs.to_string_lossy());
         assert!(!spawns[0].1.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));
+    }
+
+    #[test]
+    fn windows_standard_invoke_times_out_when_streamer_is_unreachable() {
+        use crate::qemu::RecordingQemu;
+        use std::sync::Arc;
+
+        let (trust, body) = signed_standard();
+        let (tree, binary, rootfs) = qemu_tree();
+        let recorder = Arc::new(RecordingQemu::succeeding());
+        let mut gate = with_unreachable_streamer(windows_whpx_gate());
+        gate.qemu = Some(QemuBoot {
+            binary,
+            image_cache_dir: tree.path().to_path_buf(),
+            guest_image: qemu_guest_ready(&rootfs),
+            arch: "x86_64".to_string(),
+            runtime: recorder.clone(),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("not reachable"));
+        assert!(!output.body.contains("connectionUrl"));
+        assert!(!occupancy.is_in_session());
+        assert_eq!(recorder.spawn_calls().len(), 1);
     }
 
     #[test]
@@ -1955,12 +2128,13 @@ mod tests {
     }
 
     #[test]
-    fn linux_pro_with_vfio_gate_applies_bind_and_keeps_the_placeholder_locator() {
+    fn linux_pro_with_vfio_gate_applies_bind_and_returns_the_live_sunshine_locator() {
         use std::sync::Arc;
 
+        let live_url = spawn_live_streamer();
         let (trust, body) = signed_pro();
         let (_tree, sysfs) = crate::gpu_bind::mock_linux_vfio_sysfs();
-        let mut gate = linux_kvm_gate();
+        let mut gate = with_live_streamer(linux_kvm_gate(), &live_url);
         assert!(gate.capabilities.pro.offered);
         gate.vfio = Some(VfioBind {
             sysfs: sysfs.clone(),
@@ -1980,14 +2154,18 @@ mod tests {
         );
         assert_eq!(output.status, 200);
         let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
-        assert_eq!(
+        assert_eq!(body["connectionUrl"], live_url);
+        assert_eq!(body["sunshineUrl"], live_url);
+        assert_ne!(
             body["connectionUrl"],
             format!("{STUB_CONNECTION_ORIGIN}/qemu-vfio")
         );
+        assert_ne!(body["sunshineUrl"], STUB_SUNSHINE_URL);
         assert_eq!(body["hypervisorInvoked"], false);
         assert_eq!(body["gpuExclusive"], true);
         assert_eq!(body["streamer"], "sunshine");
-        assert_eq!(body["sunshineUrl"], STUB_SUNSHINE_URL);
+        assert_eq!(body["moonlight"]["host"], "127.0.0.1");
+        assert_eq!(body["moonlight"]["app"], "Desktop");
         assert!(occupancy.is_in_session());
         assert_eq!(
             vfio_control_lines(&sysfs.driver_dir("nvidia").join("unbind")),
@@ -2000,6 +2178,40 @@ mod tests {
         assert_eq!(
             vfio_control_lines(&sysfs.vfio_pci.join("bind")),
             vec![crate::gpu_bind::TEST_GPU_BDF]
+        );
+    }
+
+    #[test]
+    fn linux_pro_vfio_times_out_when_sunshine_is_unreachable() {
+        use std::sync::Arc;
+
+        let (trust, body) = signed_pro();
+        let (_tree, sysfs) = crate::gpu_bind::mock_linux_vfio_sysfs();
+        let mut gate = with_unreachable_streamer(linux_kvm_gate());
+        gate.vfio = Some(VfioBind {
+            sysfs: sysfs.clone(),
+            ops: Arc::new(crate::gpu_bind::SysfsBindOps),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("not reachable"));
+        assert!(!output.body.contains("connectionUrl"));
+        assert!(!occupancy.is_in_session());
+        assert_eq!(
+            vfio_control_lines(&sysfs.vfio_pci.join("bind")),
+            vec![crate::gpu_bind::TEST_GPU_BDF],
+            "GPU bind still ran; timeout is after apply"
         );
     }
 
@@ -2156,12 +2368,13 @@ mod tests {
     }
 
     #[test]
-    fn windows_pro_with_hyperv_gate_applies_dda_and_keeps_the_placeholder_locator() {
+    fn windows_pro_with_hyperv_gate_applies_dda_and_returns_the_live_sunshine_locator() {
         use std::sync::Arc;
 
+        let live_url = spawn_live_streamer();
         let (trust, body) = signed_pro();
         let runner = Arc::new(crate::gpu_bind::RecordingHyperV::dda());
-        let mut gate = windows_whpx_gate();
+        let mut gate = with_live_streamer(windows_whpx_gate(), &live_url);
         assert!(gate.capabilities.pro.offered);
         gate.hyperv = Some(HyperVAssign {
             ops: runner.clone(),
@@ -2181,14 +2394,16 @@ mod tests {
         );
         assert_eq!(output.status, 200);
         let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
-        assert_eq!(
+        assert_eq!(body["connectionUrl"], live_url);
+        assert_eq!(body["sunshineUrl"], live_url);
+        assert_ne!(
             body["connectionUrl"],
             format!("{STUB_CONNECTION_ORIGIN}/hyperv-gpu")
         );
+        assert_ne!(body["sunshineUrl"], STUB_SUNSHINE_URL);
         assert_eq!(body["hypervisorInvoked"], false);
         assert_eq!(body["gpuExclusive"], true);
         assert_eq!(body["streamer"], "sunshine");
-        assert_eq!(body["sunshineUrl"], STUB_SUNSHINE_URL);
         assert!(occupancy.is_in_session());
         assert_eq!(
             runner.names(),
@@ -2200,6 +2415,37 @@ mod tests {
                 "Get-VMAssignableDevice",
             ]
         );
+        assert!(runner.dda_assigned());
+        assert!(!output.body.to_ascii_lowercase().contains("start-vm"));
+    }
+
+    #[test]
+    fn windows_pro_hyperv_times_out_when_sunshine_is_unreachable() {
+        use std::sync::Arc;
+
+        let (trust, body) = signed_pro();
+        let runner = Arc::new(crate::gpu_bind::RecordingHyperV::dda());
+        let mut gate = with_unreachable_streamer(windows_whpx_gate());
+        gate.hyperv = Some(HyperVAssign {
+            ops: runner.clone(),
+            vm_name: Some(crate::gpu_bind::DEFAULT_HYPERV_VM.to_string()),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Windows,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 400);
+        assert!(output.body.contains("not reachable"));
+        assert!(!output.body.contains("connectionUrl"));
+        assert!(!occupancy.is_in_session());
         assert!(runner.dda_assigned());
         assert!(!output.body.to_ascii_lowercase().contains("start-vm"));
     }
@@ -2305,9 +2551,10 @@ mod tests {
     fn windows_pro_gpu_p_gate_applies_exclusive_partition() {
         use std::sync::Arc;
 
+        let live_url = spawn_live_streamer();
         let (trust, body) = signed_pro();
         let runner = Arc::new(crate::gpu_bind::RecordingHyperV::gpu_p());
-        let mut gate = windows_whpx_gate();
+        let mut gate = with_live_streamer(windows_whpx_gate(), &live_url);
         gate.hyperv = Some(HyperVAssign {
             ops: runner.clone(),
             vm_name: Some(crate::gpu_bind::DEFAULT_HYPERV_VM.to_string()),
@@ -2324,11 +2571,10 @@ mod tests {
         );
         assert_eq!(output.status, 200);
         let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
-        assert_eq!(
-            body["connectionUrl"],
-            format!("{STUB_CONNECTION_ORIGIN}/hyperv-gpu")
-        );
+        assert_eq!(body["connectionUrl"], live_url);
+        assert_eq!(body["sunshineUrl"], live_url);
         assert_eq!(body["gpuExclusive"], true);
+        assert_eq!(body["streamer"], "sunshine");
         assert_eq!(
             runner.names(),
             vec![

@@ -20,8 +20,11 @@ from matchmaker.storage import GuestStorageLocators
 KASM_URL = "https://kasm.test.example/session"
 KASM_TOKEN = "test-kasm-token"
 PROVISION_URL = "https://provision.invalid/mock"
+LIVE_KASM_URL = "https://kasm.test.example/desktop"
 SUNSHINE_URL = "https://provision.invalid/sunshine"
+LIVE_SUNSHINE_URL = "https://dcl-guest.test.example:47990/"
 MOONLIGHT_HOST = "sunshine.provision.invalid"
+LIVE_MOONLIGHT_HOST = "dcl-guest.test.example"
 
 
 def host_auth_header() -> dict[str, str]:
@@ -146,8 +149,8 @@ class FakeHostProvisioner:
 
     connection_url: str
     connection_token: str | None = None
-    sunshine_url: str = SUNSHINE_URL
-    moonlight_host: str = MOONLIGHT_HOST
+    sunshine_url: str = LIVE_SUNSHINE_URL
+    moonlight_host: str = LIVE_MOONLIGHT_HOST
     calls: list[tuple[UUID, str]] = field(default_factory=list)
     storage_calls: list[GuestStorageLocators | None] = field(default_factory=list)
     mesh_calls: list[GuestMeshHint | None] = field(default_factory=list)

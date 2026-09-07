@@ -1,21 +1,30 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from matchmaker.auth import hash_password
+from matchmaker.config import get_settings
+from matchmaker.deps import get_host_provisioner
+from matchmaker.main import app
 from matchmaker.models import Host, HostStatus, LabSession, LabTier, SessionStatus, User
+from matchmaker.provision import HttpHostProvisioner
 from tests.helpers import (
     KASM_TOKEN,
     KASM_URL,
+    LIVE_KASM_URL,
+    LIVE_SUNSHINE_URL,
     PROVISION_URL,
-    SUNSHINE_URL,
     FakeHostProvisioner,
     auth_header,
     heartbeat,
@@ -199,7 +208,7 @@ def test_new_session_kasm_url_comes_from_provision_result(
     )
     assert response.status_code == 201
     data = response.json()
-    assert data["connection"]["kasmUrl"] == PROVISION_URL
+    assert data["connection"]["kasmUrl"] == LIVE_KASM_URL
     assert data["connection"]["kasmUrl"] != KASM_URL
     assert data["connection"]["kasmToken"] == KASM_TOKEN
     assert data["hostId"] == str(seeded_host.id)
@@ -215,7 +224,7 @@ def test_existing_session_does_not_provision_again(
     assert first.status_code == 201
     assert second.status_code == 200
     assert first.json()["sessionId"] == second.json()["sessionId"]
-    assert second.json()["connection"]["kasmUrl"] == PROVISION_URL
+    assert second.json()["connection"]["kasmUrl"] == LIVE_KASM_URL
     assert len(fake_provisioner.calls) == 1
     assert seeded_host.id
 
@@ -228,7 +237,7 @@ def test_double_book_still_409_when_provision_succeeds(
     created = client.post("/v1/sessions", headers=auth_header(first_token))
     blocked = client.post("/v1/sessions", headers=auth_header(second_token))
     assert created.status_code == 201
-    assert created.json()["connection"]["kasmUrl"] == PROVISION_URL
+    assert created.json()["connection"]["kasmUrl"] == LIVE_KASM_URL
     assert blocked.status_code == 409
     assert len(fake_provisioner.calls) == 1
     assert seeded_host.id
@@ -250,7 +259,7 @@ def test_concurrent_requests_only_one_gets_the_host_with_provision(
     assert codes == [201, 409], [response.json() for response in results]
     winners = [response.json() for response in results if response.status_code == 201]
     assert winners[0]["hostId"] == str(seeded_host.id)
-    assert winners[0]["connection"]["kasmUrl"] == PROVISION_URL
+    assert winners[0]["connection"]["kasmUrl"] == LIVE_KASM_URL
     assert 1 <= len(fake_provisioner.calls) <= 2
 
 
@@ -391,7 +400,7 @@ def test_pro_session_requires_dedicated_gpu_host(
         lab_tier=LabTier.PRO,
         share_gpu=True,
         shared_gpu_id="GPU-BOOK",
-        kasm_url=SUNSHINE_URL,
+        kasm_url=LIVE_SUNSHINE_URL,
     )
     booked = client.post("/v1/sessions", headers=auth_header(token), json={"labTier": "pro"})
     assert booked.status_code == 201
@@ -401,8 +410,8 @@ def test_pro_session_requires_dedicated_gpu_host(
     assert connection["streamer"] == "sunshine"
     assert connection["kasmUrl"] is None
     assert connection["kasmToken"] is None
-    assert connection["sunshineUrl"] == SUNSHINE_URL
-    assert connection["moonlight"]["host"] == "provision.invalid"
+    assert connection["sunshineUrl"] == LIVE_SUNSHINE_URL
+    assert connection["moonlight"]["host"] == "dcl-guest.test.example"
     assert connection["gpuExclusive"] is True
     storage = booked.json()["storage"]
     assert "accessKeyId" not in storage
@@ -428,6 +437,143 @@ def test_pro_provisioner_locator_is_sunshine_not_kasm(
     connection = booked.json()["connection"]
     assert connection["streamer"] == "sunshine"
     assert connection["kasmUrl"] is None
-    assert connection["sunshineUrl"] == SUNSHINE_URL
+    assert connection["sunshineUrl"] == LIVE_SUNSHINE_URL
     assert connection["gpuExclusive"] is True
     assert fake_provisioner.calls == [(host.id, "pro")]
+
+
+def test_book_stores_live_locator_from_agent_not_seed(
+    client: TestClient, db: Session
+) -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            payload = json.dumps(
+                {
+                    "connectionUrl": LIVE_KASM_URL,
+                    "hypervisorInvoked": True,
+                    "streamer": "kasm",
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        host = Host(
+            display_name="live-agent-host",
+            lab_tier=LabTier.STANDARD,
+            shared_logical_cores=4,
+            shared_memory_bytes=8 * 1024 * 1024 * 1024,
+            share_gpu=False,
+            shared_gpu_id=None,
+            kasm_url=KASM_URL,
+            kasm_token=KASM_TOKEN,
+            agent_url=origin,
+            status=HostStatus.APPROVED,
+            last_seen_at=datetime.now(timezone.utc),
+        )
+        db.add(host)
+        db.commit()
+        db.refresh(host)
+        app.dependency_overrides[get_host_provisioner] = lambda: HttpHostProvisioner(
+            bearer_token=get_settings().host_bootstrap_token,
+        )
+        token = signup(client)["accessToken"]
+        booked = client.post("/v1/sessions", headers=auth_header(token))
+    finally:
+        app.dependency_overrides.pop(get_host_provisioner, None)
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert booked.status_code == 201
+    assert booked.json()["connection"]["kasmUrl"] == LIVE_KASM_URL
+    assert booked.json()["connection"]["kasmUrl"] != KASM_URL
+    db.refresh(host)
+    assert host.kasm_url == LIVE_KASM_URL
+
+
+def test_placeholder_provision_fails_the_book_and_does_not_occupy(
+    client: TestClient, seeded_host: Host, db: Session
+) -> None:
+    fake = FakeHostProvisioner(connection_url=PROVISION_URL)
+    app.dependency_overrides[get_host_provisioner] = lambda: fake
+    try:
+        token = signup(client)["accessToken"]
+        booked = client.post("/v1/sessions", headers=auth_header(token))
+        assert booked.status_code == 502
+        assert booked.json()["detail"] == "host provision failed"
+        db.expire_all()
+        assert db.scalars(select(LabSession)).all() == []
+    finally:
+        app.dependency_overrides.pop(get_host_provisioner, None)
+
+    token_b = signup(client, "second@example.com")["accessToken"]
+    app.dependency_overrides[get_host_provisioner] = lambda: FakeHostProvisioner(
+        connection_url=LIVE_KASM_URL
+    )
+    try:
+        retry = client.post("/v1/sessions", headers=auth_header(token_b))
+    finally:
+        app.dependency_overrides.pop(get_host_provisioner, None)
+    assert retry.status_code == 201
+    assert retry.json()["hostId"] == str(seeded_host.id)
+    assert retry.json()["connection"]["kasmUrl"] == LIVE_KASM_URL
+
+
+def test_agent_timeout_with_placeholder_seed_fails_the_book(
+    client: TestClient, db: Session
+) -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"detail":"streamer at http://127.0.0.1:9/ was not reachable in time"}')
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        host = Host(
+            display_name="timeout-host",
+            lab_tier=LabTier.STANDARD,
+            shared_logical_cores=4,
+            shared_memory_bytes=8 * 1024 * 1024 * 1024,
+            share_gpu=False,
+            shared_gpu_id=None,
+            kasm_url="https://example.invalid/kasm",
+            kasm_token=None,
+            agent_url=origin,
+            status=HostStatus.APPROVED,
+            last_seen_at=datetime.now(timezone.utc),
+        )
+        db.add(host)
+        db.commit()
+        app.dependency_overrides[get_host_provisioner] = lambda: HttpHostProvisioner(
+            bearer_token=get_settings().host_bootstrap_token,
+        )
+        token = signup(client)["accessToken"]
+        booked = client.post("/v1/sessions", headers=auth_header(token))
+    finally:
+        app.dependency_overrides.pop(get_host_provisioner, None)
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert booked.status_code == 502
+    db.expire_all()
+    assert db.scalars(select(LabSession)).all() == []
+    db.refresh(host)
+    assert host.kasm_url == "https://example.invalid/kasm"

@@ -15,10 +15,12 @@ run when Matchmaker POSTs `POST /v1/provision` and the capability probe
 offered Pro.
 
 This phase does **not** attach the bound GPU to a QEMU boot and does
-**not** `Start-VM`. Locators stay `https://provision.invalid/qemu-vfio`
-(Linux) and `https://provision.invalid/hyperv-gpu` (Windows). Sunshine
-stays `https://provision.invalid/sunshine`. `SEED_HOST_KASM_URL` stays
-`https://example.invalid/kasm`.
+**not** `Start-VM`. After GPU apply, provision polls Sunshine on
+`https://{guestMesh.hostname}:47990/` (web UI; GameStream base is 47989)
+and returns that URL, or 400 if it never answers. Tests inject loopback
+HTTP. Metal still needs a guest that is actually serving Sunshine.
+`SEED_HOST_KASM_URL` stays `https://example.invalid/kasm` for the seed
+command.
 
 ## Linux vfio-pci sysfs contract
 

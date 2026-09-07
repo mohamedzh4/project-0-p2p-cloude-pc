@@ -14,12 +14,15 @@ from matchmaker.provision import (
     STREAMER_SUNSHINE,
     HttpHostProvisioner,
     agent_origin,
+    locator_is_placeholder,
     session_connection,
 )
 from matchmaker.storage import GuestStorageLocators
 from tests.helpers import (
     KASM_TOKEN,
     KASM_URL,
+    LIVE_KASM_URL,
+    LIVE_SUNSHINE_URL,
     PROVISION_URL,
     SUNSHINE_URL,
     inventory_payload,
@@ -71,7 +74,7 @@ def test_http_provisioner_posts_to_the_agent_and_reads_connection_url() -> None:
             captured["body"] = json.loads(self.rfile.read(length))
             payload = json.dumps(
                 {
-                    "connectionUrl": PROVISION_URL,
+                    "connectionUrl": LIVE_KASM_URL,
                     "hypervisorInvoked": False,
                     "connectionToken": "stub-token",
                 }
@@ -94,7 +97,7 @@ def test_http_provisioner_posts_to_the_agent_and_reads_connection_url() -> None:
         thread.join(timeout=2)
 
     assert result is not None
-    assert result.connection_url == PROVISION_URL
+    assert result.connection_url == LIVE_KASM_URL
     assert result.connection_token == "stub-token"
     assert captured["path"] == "/v1/provision"
     assert captured["authorization"] == "Bearer test-host-bootstrap-token"
@@ -112,7 +115,7 @@ def test_http_provisioner_posts_storage_endpoint_without_s3_secrets() -> None:
             length = int(self.headers.get("Content-Length", "0"))
             captured["body"] = json.loads(self.rfile.read(length))
             payload = json.dumps(
-                {"connectionUrl": PROVISION_URL, "hypervisorInvoked": False}
+                {"connectionUrl": LIVE_KASM_URL, "hypervisorInvoked": False}
             ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -154,7 +157,7 @@ def test_http_provisioner_posts_guest_locators_and_mesh_hint_without_secrets() -
             length = int(self.headers.get("Content-Length", "0"))
             captured["body"] = json.loads(self.rfile.read(length))
             payload = json.dumps(
-                {"connectionUrl": PROVISION_URL, "hypervisorInvoked": False}
+                {"connectionUrl": LIVE_KASM_URL, "hypervisorInvoked": False}
             ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -216,7 +219,7 @@ def test_http_provisioner_advertises_signed_image_metadata() -> None:
             length = int(self.headers.get("Content-Length", "0"))
             captured["body"] = json.loads(self.rfile.read(length))
             payload = json.dumps(
-                {"connectionUrl": PROVISION_URL, "hypervisorInvoked": False}
+                {"connectionUrl": LIVE_KASM_URL, "hypervisorInvoked": False}
             ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -260,7 +263,7 @@ def test_http_provisioner_uses_fallback_origin_when_host_has_none() -> None:
 
         def do_POST(self) -> None:  # noqa: N802
             payload = json.dumps(
-                {"connectionUrl": PROVISION_URL, "hypervisorInvoked": False}
+                {"connectionUrl": LIVE_KASM_URL, "hypervisorInvoked": False}
             ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -283,7 +286,7 @@ def test_http_provisioner_uses_fallback_origin_when_host_has_none() -> None:
         thread.join(timeout=2)
 
     assert result is not None
-    assert result.connection_url == PROVISION_URL
+    assert result.connection_url == LIVE_KASM_URL
 
 
 def test_http_provisioner_treats_agent_errors_as_unavailable() -> None:
@@ -309,7 +312,7 @@ def test_http_provisioner_treats_agent_errors_as_unavailable() -> None:
     assert result is None
 
 
-def test_http_provisioner_accepts_invoke_when_locator_is_still_a_placeholder() -> None:
+def test_http_provisioner_rejects_a_placeholder_locator_even_after_invoke() -> None:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # noqa: A003
             return
@@ -335,11 +338,10 @@ def test_http_provisioner_accepts_invoke_when_locator_is_still_a_placeholder() -
         server.shutdown()
         thread.join(timeout=2)
 
-    assert result is not None
-    assert result.connection_url == PROVISION_URL
+    assert result is None
 
 
-def test_http_provisioner_refuses_a_live_locator_claimed_with_invoke() -> None:
+def test_http_provisioner_accepts_a_live_locator_claimed_with_invoke() -> None:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # noqa: A003
             return
@@ -347,7 +349,7 @@ def test_http_provisioner_refuses_a_live_locator_claimed_with_invoke() -> None:
         def do_POST(self) -> None:  # noqa: N802
             payload = json.dumps(
                 {
-                    "connectionUrl": "https://kasm.example.com/session",
+                    "connectionUrl": LIVE_KASM_URL,
                     "hypervisorInvoked": True,
                 }
             ).encode()
@@ -368,7 +370,9 @@ def test_http_provisioner_refuses_a_live_locator_claimed_with_invoke() -> None:
         server.shutdown()
         thread.join(timeout=2)
 
-    assert result is None
+    assert result is not None
+    assert result.connection_url == LIVE_KASM_URL
+    assert not locator_is_placeholder(result.connection_url)
 
 
 def test_http_provisioner_reads_pro_sunshine_fields() -> None:
@@ -383,12 +387,12 @@ def test_http_provisioner_reads_pro_sunshine_fields() -> None:
             captured["body"] = json.loads(self.rfile.read(length))
             payload = json.dumps(
                 {
-                    "connectionUrl": "https://provision.invalid/qemu-vfio",
+                    "connectionUrl": LIVE_SUNSHINE_URL,
                     "hypervisorInvoked": False,
                     "gpuExclusive": True,
                     "streamer": "sunshine",
-                    "sunshineUrl": SUNSHINE_URL,
-                    "moonlight": {"host": "sunshine.provision.invalid", "app": "Desktop"},
+                    "sunshineUrl": LIVE_SUNSHINE_URL,
+                    "moonlight": {"host": "dcl-guest.test.example", "app": "Desktop"},
                 }
             ).encode()
             self.send_response(200)
@@ -413,10 +417,10 @@ def test_http_provisioner_reads_pro_sunshine_fields() -> None:
 
     assert result is not None
     assert result.streamer == STREAMER_SUNSHINE
-    assert result.sunshine_url == SUNSHINE_URL
-    assert result.locator() == SUNSHINE_URL
+    assert result.sunshine_url == LIVE_SUNSHINE_URL
+    assert result.locator() == LIVE_SUNSHINE_URL
     assert result.gpu_exclusive is True
-    assert result.moonlight_host == "sunshine.provision.invalid"
+    assert result.moonlight_host == "dcl-guest.test.example"
     body = captured["body"]
     assert isinstance(body, dict)
     assert body["labTier"] == "pro"
@@ -485,3 +489,12 @@ def test_invalid_agent_url_is_rejected(client: TestClient) -> None:
         json=inventory_payload(agentUrl="not-a-url"),
     )
     assert response.status_code == 422
+
+
+def test_locator_is_placeholder_matches_rfc2606() -> None:
+    assert locator_is_placeholder("https://example.invalid/kasm")
+    assert locator_is_placeholder("https://provision.invalid/firecracker")
+    assert locator_is_placeholder("https://provision.invalid/sunshine")
+    assert locator_is_placeholder("")
+    assert not locator_is_placeholder(LIVE_KASM_URL)
+    assert not locator_is_placeholder("http://127.0.0.1:8443/")

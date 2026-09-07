@@ -2,21 +2,20 @@
 
 Packer + QEMU **build** of the disks Host Agent already knows how to
 **fetch and verify**. Linux Standard Host Agent can `InstanceStart` Firecracker
-(phase 27) when kernel + verified `rootfs.img` are present; the locator is
-still `https://provision.invalid/firecracker` (no TAP/net, no live Kasm).
-Windows Standard Host Agent can spawn QEMU `-accel whpx` (phase 28) when the
-verified disk is present; the locator is still
-`https://provision.invalid/qemu-whpx`. Linux Pro Host Agent can apply vfio-pci
-bind on provision (phase 29); the locator is still
-`https://provision.invalid/qemu-vfio` (no QEMU VFIO attach, no live Sunshine).
-Windows Pro Host Agent can apply Hyper-V DDA/GPU-P on provision (phase 30);
-the locator is still `https://provision.invalid/hyperv-gpu` (no `Start-VM`,
-no live Sunshine).
+(phase 27) when kernel + verified `rootfs.img` are present, then poll Kasm
+on `https://{guestMesh.hostname}/` (HTTPS 443). Windows Standard Host Agent
+can spawn QEMU `-accel whpx` (phase 28) and poll the same Kasm locator.
+Linux Pro Host Agent can apply vfio-pci bind on provision (phase 29) and
+poll Sunshine on `https://{guestMesh.hostname}:47990/`. Windows Pro Host
+Agent can apply Hyper-V DDA/GPU-P on provision (phase 30) and poll Sunshine
+the same way (VM `dcl-pro-guest` must already exist; no `Start-VM`). Metal
+still needs TAP/guest net. Tests inject loopback HTTP. Timeout is 400, not
+a `.invalid` success.
 
-| Tier | Streamer in the guest | Disk |
-| --- | --- | --- |
-| Standard | [Kasm Workspaces](https://kasm.com/docs/latest/install/single_server_install.html) single-server | `output/standard/rootfs.qcow2` + `rootfs.img` |
-| Pro | [Sunshine](https://docs.lizardbyte.dev/projects/sunshine/latest/md_docs_2getting__started.html) (Moonlight is the client) | `output/pro/rootfs.qcow2` + `rootfs.img` |
+| Tier | Streamer in the guest | Locator after provision | Disk |
+| --- | --- | --- | --- |
+| Standard | [Kasm Workspaces](https://kasm.com/docs/latest/install/single_server_install.html) single-server | `https://{guestMesh.hostname}/` (HTTPS 443; Packer does not pass `-L 8443`) | `output/standard/rootfs.qcow2` + `rootfs.img` |
+| Pro | [Sunshine](https://docs.lizardbyte.dev/projects/sunshine/latest/md_docs_2getting__started.html) (Moonlight is the client) | `https://{guestMesh.hostname}:47990/` (web UI; GameStream base is 47989) | `output/pro/rootfs.qcow2` + `rootfs.img` |
 
 Storage locators stay renterd S3 (not Storj). Mesh stays self-hosted Headscale
 (the Tailscale *client* is installed in the guest; it is not `tailscale up`'d
@@ -125,9 +124,9 @@ Packer.
 ## Honest limits
 
 - This pipeline has **not** been run on physical hardware in this repo.
-- Host Agent `POST /v1/provision` on Linux Standard may set
-  `hypervisorInvoked: true` after `InstanceStart`. The locator stays
-  `https://provision.invalid/firecracker` (no TAP). Windows/Pro stay stubs
-  with `hypervisorInvoked: false`.
-- `SEED_HOST_KASM_URL` remains `https://example.invalid/kasm` until a human
-  boots a guest **and** has a live URL. Phase 27 does not invent one.
+- Host Agent `POST /v1/provision` on Linux/Windows Standard may set
+  `hypervisorInvoked: true` after invoke, then poll Kasm on the mesh
+  hostname (443). Linux/Windows Pro GPU apply polls Sunshine (47990).
+  Timeout is 400. Plan-only stubs may still return `.invalid`.
+- `SEED_HOST_KASM_URL` remains `https://example.invalid/kasm` for the seed
+  command. Successful provision overwrites it with the live locator.

@@ -6,7 +6,9 @@
 //! probe offers it and the binary plus a verified disk are present. Linux Pro
 //! provision applies vfio-pci bind when the probe offers Pro; Windows Pro
 //! provision applies Hyper-V DDA/GPU-P when the probe offers Pro (window stays
-//! plan-only). Tray status and immediate pause live in
+//! plan-only). After a successful invoke or GPU apply, provision polls for a
+//! reachable Kasm or Sunshine locator (mesh hostname; never an invented URL).
+//! Tray status and immediate pause live in
 //! Rust; the webview does not call the Matchmaker.
 
 mod agent_status;
@@ -23,6 +25,7 @@ mod hypervisor;
 mod identity;
 mod image;
 mod launch;
+mod locator;
 mod matchmaker;
 mod mesh;
 mod models;
@@ -201,6 +204,7 @@ fn spawn_provision_listener(app: &tauri::App) {
                         qemu,
                         vfio,
                         hyperv,
+                        streamer: Some(crate::locator::StreamerWait::production()),
                     };
                     if let Err(error) = provision_http::serve(
                         &config,

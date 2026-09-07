@@ -77,10 +77,10 @@ from matchmaker.models import Host, HostStatus, LabTier  # noqa: E402
 from tests.helpers import (  # noqa: E402
     KASM_TOKEN,
     KASM_URL,
+    LIVE_KASM_URL,
     FakeHeadscale,
     FakeHostProvisioner,
     FakeRenterd,
-    PROVISION_URL,
 )
 
 
@@ -157,7 +157,7 @@ def client() -> TestClient:
 
 @pytest.fixture
 def fake_provisioner() -> Generator[FakeHostProvisioner, None, None]:
-    fake = FakeHostProvisioner(connection_url=PROVISION_URL)
+    fake = FakeHostProvisioner(connection_url=LIVE_KASM_URL)
     app.dependency_overrides[get_host_provisioner] = lambda: fake
     try:
         yield fake

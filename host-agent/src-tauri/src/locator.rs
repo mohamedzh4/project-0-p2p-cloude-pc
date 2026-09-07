@@ -1,0 +1,508 @@
+//! Live Kasm / Sunshine locators after a successful invoke or GPU apply.
+//!
+//! Never invent a public URL. Construct from the session's Headscale guest
+//! hostname (not a LAN IP) and poll until that URL answers, or fail. Tests
+//! inject a loopback HTTP origin or a fake guest probe.
+
+use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use thiserror::Error;
+
+/// Kasm Workspaces single-server default: HTTPS on 443
+/// (`https://<WEBAPP_SERVER>` after install). Packer does not pass `-L`.
+pub const KASM_HTTPS_PORT: u16 = 443;
+
+/// Sunshine HTTPS web UI. GameStream/Moonlight base port is 47989; the
+/// configuration UI is 47990 (exposed in LizardByte's documented port range).
+pub const SUNSHINE_WEBUI_PORT: u16 = 47990;
+
+pub const MOONLIGHT_APP: &str = "Desktop";
+
+const PRODUCTION_TIMEOUT: Duration = Duration::from_secs(60);
+const PRODUCTION_INTERVAL: Duration = Duration::from_millis(500);
+const HTTP_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamerKind {
+    Kasm,
+    Sunshine,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveLocator {
+    pub connection_url: String,
+    pub sunshine_url: Option<String>,
+    pub moonlight_host: Option<String>,
+    pub moonlight_app: Option<String>,
+    pub streamer: StreamerKind,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum LocatorError {
+    #[error(
+        "guest mesh hostname is required to construct a live locator; refusing to invent a public URL"
+    )]
+    MissingMeshHostname,
+    #[error("refusing placeholder locator {0}; a live streamer URL is required after provision")]
+    Placeholder(String),
+    #[error("streamer at {url} was not reachable in time")]
+    Unreachable { url: String },
+}
+
+/// Probe a candidate locator. Tests inject a loopback server or a fake guest.
+pub trait StreamerProbe: Send + Sync {
+    fn is_reachable(&self, url: &str) -> bool;
+}
+
+/// GET the locator. Any HTTP status (including 401 on a login page) means the
+/// streamer is up. TLS/connect failure falls back to TCP so Sunshine/Kasm
+/// self-signed certs on the mesh still count as reachable.
+pub struct HttpStreamerProbe {
+    pub request_timeout: Duration,
+}
+
+impl Default for HttpStreamerProbe {
+    fn default() -> Self {
+        Self {
+            request_timeout: HTTP_PROBE_TIMEOUT,
+        }
+    }
+}
+
+impl StreamerProbe for HttpStreamerProbe {
+    fn is_reachable(&self, url: &str) -> bool {
+        let Some(host) = hostname_from_url(url) else {
+            return false;
+        };
+        if cfg!(test) && !is_loopback_host(&host) {
+            // cargo test must not hit the network or treat a mesh name as live.
+            return false;
+        }
+        if http_responded(url, self.request_timeout) {
+            return true;
+        }
+        tcp_open(url, self.request_timeout)
+    }
+}
+
+#[derive(Clone)]
+pub struct StreamerWait {
+    pub timeout: Duration,
+    pub interval: Duration,
+    pub probe: Arc<dyn StreamerProbe>,
+    /// Tests inject a loopback origin. Production leaves this unset and
+    /// constructs from the guest mesh hostname.
+    pub override_url: Option<String>,
+}
+
+impl std::fmt::Debug for StreamerWait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamerWait")
+            .field("timeout", &self.timeout)
+            .field("interval", &self.interval)
+            .field("override_url", &self.override_url)
+            .field("probe", &"StreamerProbe")
+            .finish()
+    }
+}
+
+impl StreamerWait {
+    pub fn production() -> Self {
+        Self {
+            timeout: PRODUCTION_TIMEOUT,
+            interval: PRODUCTION_INTERVAL,
+            probe: Arc::new(HttpStreamerProbe::default()),
+            override_url: None,
+        }
+    }
+
+    /// Tests: poll this exact URL (loopback HTTP) and return it when reachable.
+    pub fn injected_http(url: impl Into<String>) -> Self {
+        Self {
+            timeout: Duration::from_secs(2),
+            interval: Duration::from_millis(20),
+            probe: Arc::new(HttpStreamerProbe {
+                request_timeout: Duration::from_millis(300),
+            }),
+            override_url: Some(url.into()),
+        }
+    }
+
+    /// Tests: streamer never answers. Not a fake public success URL.
+    pub fn unreachable() -> Self {
+        Self {
+            timeout: Duration::from_millis(40),
+            interval: Duration::from_millis(10),
+            probe: Arc::new(NeverReady),
+            override_url: Some("http://127.0.0.1:9/".to_string()),
+        }
+    }
+
+    fn fail_fast() -> Self {
+        Self {
+            timeout: Duration::from_millis(20),
+            interval: Duration::from_millis(5),
+            probe: Arc::new(HttpStreamerProbe {
+                request_timeout: Duration::from_millis(10),
+            }),
+            override_url: None,
+        }
+    }
+}
+
+/// Used when invoke/apply ran but the gate did not inject a probe.
+pub fn wait_from_gate(wait: Option<&StreamerWait>) -> StreamerWait {
+    wait.cloned().unwrap_or_else(|| {
+        if cfg!(test) {
+            StreamerWait::fail_fast()
+        } else {
+            StreamerWait::production()
+        }
+    })
+}
+
+pub fn kasm_workspace_url(mesh_hostname: &str) -> String {
+    format!("https://{}/", host_for_url(mesh_hostname.trim()))
+}
+
+pub fn sunshine_web_url(mesh_hostname: &str) -> String {
+    format!(
+        "https://{}:{SUNSHINE_WEBUI_PORT}/",
+        host_for_url(mesh_hostname.trim())
+    )
+}
+
+pub fn locator_is_placeholder(url: &str) -> bool {
+    let Some(host) = hostname_from_url(url) else {
+        return true;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "invalid" || host.ends_with(".invalid")
+}
+
+pub fn await_live_locator(
+    kind: StreamerKind,
+    mesh_hostname: Option<&str>,
+    wait: &StreamerWait,
+) -> Result<LiveLocator, LocatorError> {
+    let url = candidate_url(kind, mesh_hostname, wait)?;
+    if locator_is_placeholder(&url) {
+        return Err(LocatorError::Placeholder(url));
+    }
+    await_reachable(&url, wait)?;
+    Ok(live_from_url(kind, url))
+}
+
+fn candidate_url(
+    kind: StreamerKind,
+    mesh_hostname: Option<&str>,
+    wait: &StreamerWait,
+) -> Result<String, LocatorError> {
+    if let Some(over) = wait
+        .override_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(over.to_string());
+    }
+    let host = mesh_hostname
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(LocatorError::MissingMeshHostname)?;
+    Ok(match kind {
+        StreamerKind::Kasm => kasm_workspace_url(host),
+        StreamerKind::Sunshine => sunshine_web_url(host),
+    })
+}
+
+fn await_reachable(url: &str, wait: &StreamerWait) -> Result<(), LocatorError> {
+    let deadline = Instant::now() + wait.timeout;
+    loop {
+        if wait.probe.is_reachable(url) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(LocatorError::Unreachable {
+                url: url.to_string(),
+            });
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        thread::sleep(wait.interval.min(remaining));
+    }
+}
+
+fn live_from_url(kind: StreamerKind, url: String) -> LiveLocator {
+    match kind {
+        StreamerKind::Kasm => LiveLocator {
+            connection_url: url,
+            sunshine_url: None,
+            moonlight_host: None,
+            moonlight_app: None,
+            streamer: StreamerKind::Kasm,
+        },
+        StreamerKind::Sunshine => {
+            let host = hostname_from_url(&url).unwrap_or_default();
+            LiveLocator {
+                connection_url: url.clone(),
+                sunshine_url: Some(url),
+                moonlight_host: Some(host),
+                moonlight_app: Some(MOONLIGHT_APP.to_string()),
+                streamer: StreamerKind::Sunshine,
+            }
+        }
+    }
+}
+
+fn host_for_url(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
+pub fn hostname_from_url(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let host = if let Some(inner) = authority.strip_prefix('[') {
+        inner.split(']').next()?.to_string()
+    } else {
+        authority
+            .rsplit_once('@')
+            .map(|(_, hostport)| hostport)
+            .unwrap_or(authority)
+            .split(':')
+            .next()?
+            .to_string()
+    };
+    if host.is_empty() {
+        None
+    } else {
+        Some(host)
+    }
+}
+
+fn port_from_url(url: &str) -> u16 {
+    let https = url.starts_with("https://");
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let authority = rest.split('/').next().unwrap_or(rest);
+    if let Some(inner) = authority.strip_prefix('[') {
+        if let Some((_, port)) = inner.split_once("]:") {
+            if let Ok(parsed) = port.split('/').next().unwrap_or(port).parse() {
+                return parsed;
+            }
+        }
+        return if https { 443 } else { 80 };
+    }
+    if let Some((_, port)) = authority.rsplit_once(':') {
+        if let Ok(parsed) = port.parse() {
+            return parsed;
+        }
+    }
+    if https {
+        443
+    } else {
+        80
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_matches(|c| c == '[' || c == ']');
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+}
+
+fn http_responded(url: &str, timeout: Duration) -> bool {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .redirects(0)
+        .build();
+    match agent.get(url).call() {
+        Ok(_) => true,
+        Err(ureq::Error::Status(_, _)) => true,
+        Err(_) => false,
+    }
+}
+
+fn tcp_open(url: &str, timeout: Duration) -> bool {
+    let Some(host) = hostname_from_url(url) else {
+        return false;
+    };
+    let port = port_from_url(url);
+    let Ok(mut addrs) = (host.as_str(), port).to_socket_addrs() else {
+        return false;
+    };
+    addrs.any(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok())
+}
+
+struct NeverReady;
+
+impl StreamerProbe for NeverReady {
+    fn is_reachable(&self, _url: &str) -> bool {
+        false
+    }
+}
+
+#[cfg(test)]
+struct AlwaysReady;
+
+#[cfg(test)]
+impl StreamerProbe for AlwaysReady {
+    fn is_reachable(&self, _url: &str) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tiny_http::{Response, Server};
+
+    fn spawn_ok_http() -> String {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let addr = server
+            .server_addr()
+            .to_ip()
+            .expect("locator test listens on TCP");
+        thread::spawn(move || {
+            for request in server.incoming_requests() {
+                let _ = request.respond(Response::from_string("ok"));
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    #[test]
+    fn kasm_url_uses_mesh_hostname_and_https_443() {
+        assert_eq!(
+            kasm_workspace_url("dcl-guest-aaaa"),
+            "https://dcl-guest-aaaa/"
+        );
+        assert_eq!(KASM_HTTPS_PORT, 443);
+    }
+
+    #[test]
+    fn sunshine_url_uses_mesh_hostname_and_web_ui_47990() {
+        assert_eq!(
+            sunshine_web_url("dcl-guest-bbbb"),
+            "https://dcl-guest-bbbb:47990/"
+        );
+        assert_eq!(SUNSHINE_WEBUI_PORT, 47990);
+    }
+
+    #[test]
+    fn placeholder_detects_rfc2606_invalid() {
+        assert!(locator_is_placeholder("https://provision.invalid/firecracker"));
+        assert!(locator_is_placeholder("https://example.invalid/kasm"));
+        assert!(locator_is_placeholder("https://provision.invalid/sunshine"));
+        assert!(!locator_is_placeholder("https://kasm.test.example/desktop"));
+        assert!(!locator_is_placeholder("http://127.0.0.1:8443/"));
+    }
+
+    #[test]
+    fn mesh_kasm_locator_when_probe_succeeds() {
+        let wait = StreamerWait {
+            timeout: Duration::from_millis(50),
+            interval: Duration::from_millis(5),
+            probe: Arc::new(AlwaysReady),
+            override_url: None,
+        };
+        let live = await_live_locator(StreamerKind::Kasm, Some("dcl-guest-cccc"), &wait).unwrap();
+        assert_eq!(live.connection_url, "https://dcl-guest-cccc/");
+        assert_eq!(live.streamer, StreamerKind::Kasm);
+        assert!(live.sunshine_url.is_none());
+        assert!(!locator_is_placeholder(&live.connection_url));
+    }
+
+    #[test]
+    fn mesh_sunshine_locator_when_probe_succeeds() {
+        let wait = StreamerWait {
+            timeout: Duration::from_millis(50),
+            interval: Duration::from_millis(5),
+            probe: Arc::new(AlwaysReady),
+            override_url: None,
+        };
+        let live =
+            await_live_locator(StreamerKind::Sunshine, Some("dcl-guest-dddd"), &wait).unwrap();
+        assert_eq!(live.sunshine_url.as_deref(), Some("https://dcl-guest-dddd:47990/"));
+        assert_eq!(live.moonlight_host.as_deref(), Some("dcl-guest-dddd"));
+        assert_eq!(live.moonlight_app.as_deref(), Some(MOONLIGHT_APP));
+        assert_eq!(live.streamer, StreamerKind::Sunshine);
+    }
+
+    #[test]
+    fn missing_mesh_hostname_does_not_invent_a_url() {
+        let wait = StreamerWait {
+            timeout: Duration::from_millis(10),
+            interval: Duration::from_millis(5),
+            probe: Arc::new(AlwaysReady),
+            override_url: None,
+        };
+        let error = await_live_locator(StreamerKind::Kasm, None, &wait).unwrap_err();
+        assert_eq!(error, LocatorError::MissingMeshHostname);
+    }
+
+    #[test]
+    fn injected_loopback_http_is_returned_when_reachable() {
+        let url = spawn_ok_http();
+        let live =
+            await_live_locator(StreamerKind::Kasm, Some("dcl-guest-ignored"), &StreamerWait::injected_http(&url))
+                .unwrap();
+        assert_eq!(live.connection_url, url);
+        assert!(!locator_is_placeholder(&live.connection_url));
+    }
+
+    #[test]
+    fn timeout_when_streamer_never_answers() {
+        let error = await_live_locator(StreamerKind::Kasm, None, &StreamerWait::unreachable())
+            .unwrap_err();
+        assert!(matches!(error, LocatorError::Unreachable { .. }));
+    }
+
+    #[test]
+    fn placeholder_override_is_refused() {
+        let wait = StreamerWait {
+            timeout: Duration::from_millis(10),
+            interval: Duration::from_millis(5),
+            probe: Arc::new(AlwaysReady),
+            override_url: Some("https://provision.invalid/kasm".to_string()),
+        };
+        let error = await_live_locator(StreamerKind::Kasm, Some("dcl-guest"), &wait).unwrap_err();
+        assert!(matches!(error, LocatorError::Placeholder(_)));
+    }
+
+    #[test]
+    fn http_probe_treats_401_as_reachable() {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+        thread::spawn(move || {
+            for request in server.incoming_requests() {
+                let _ = request.respond(
+                    Response::from_string("login").with_status_code(tiny_http::StatusCode(401)),
+                );
+            }
+        });
+        let url = format!("http://{addr}/");
+        assert!(HttpStreamerProbe::default().is_reachable(&url));
+    }
+
+    #[test]
+    fn http_probe_does_not_treat_closed_loopback_as_live() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let url = format!("http://127.0.0.1:{port}/");
+        assert!(!HttpStreamerProbe {
+            request_timeout: Duration::from_millis(50),
+        }
+        .is_reachable(&url));
+    }
+}

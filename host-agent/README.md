@@ -2,9 +2,10 @@
 
 The program that runs on a volunteer's PC ("Host") in the Distributed Compute Lab.
 
-This is the Host Agent after execution phase 30 (Linux Standard Firecracker
+This is the Host Agent after execution phase 31 (Linux Standard Firecracker
 invoke + Windows Standard QEMU `-accel whpx` + Linux Pro VFIO bind apply +
-Windows Pro Hyper-V DDA/GPU-P apply). It does these things and nothing else:
+Windows Pro Hyper-V DDA/GPU-P apply + live Kasm/Sunshine locator poll). It
+does these things and nothing else:
 
 1. Detects the machine's CPU, RAM and GPU, and whether Standard/Pro sessions
    can be offered (OS + KVM / Windows hypervisor / IOMMU / second display
@@ -32,7 +33,11 @@ Windows Pro Hyper-V DDA/GPU-P apply). It does these things and nothing else:
    when the probe offers Pro. The settings window stays plan-only
    (`apply: false`, `hyperv: None`) so opening it does not steal the GPU.
    The Hyper-V VM `dcl-pro-guest` must already exist and be powered off;
-   this agent does not create or `Start-VM` it.
+   this agent does not create or `Start-VM` it. After a successful invoke or
+   GPU apply, provision polls for a reachable Kasm (`https://{meshHost}/`,
+   443) or Sunshine (`https://{meshHost}:47990/`) locator and returns that
+   URL, or 400 if the streamer never answers. Tests inject loopback HTTP.
+   Plan-only stubs may still return `https://provision.invalid/{backend}`.
 7. Optionally listens for `POST /v1/provision` from the Matchmaker
    (`HOST_AGENT_LISTEN_ADDR`). The handler verifies the advertised SHA-256
    digest + Ed25519 signature against `IMAGE_SIGNING_PUBLIC_KEY` and
@@ -42,7 +47,9 @@ Windows Pro Hyper-V DDA/GPU-P apply). It does these things and nothing else:
    Linux Pro with VFIO inputs applies vfio-pci or returns 400 (rollback on
    mid-step failure). Windows Pro with Hyper-V inputs applies DDA/GPU-P or
    returns 400 (rollback on mid-step failure; tests never spawn PowerShell).
-   The locator stays `https://provision.invalid/{backend}`. Mismatch is 400.
+   After invoke/apply, the locator is the reachable streamer URL (mesh
+   hostname, or injected loopback in tests). Timeout or a missing mesh
+   hostname is 400 — not a `.invalid` success. Mismatch is 400.
    Complete storage locators yield `guestRclone` (`--s3-env-auth`); guest-mesh
    hints are accepted and not used for host `tailscale up`. The webview does
    not `fetch` this.
@@ -261,15 +268,15 @@ pause via `set_sharing_enabled`), token redaction in `Debug`, presence
 (paused beats occupancy), and earnings GET (`credits accrued (not paid out)`).
 Provision HTTP: Linux/Windows stub URLs, 401 without Bearer, macOS rejected,
 bind round-trip; Linux Standard with boot inputs sets `hypervisorInvoked`
-true and keeps `https://provision.invalid/firecracker`; missing kernel is
-400 (occupancy unset). Windows Standard with boot inputs sets
-`hypervisorInvoked` true and keeps `https://provision.invalid/qemu-whpx`;
-missing QEMU/disk/WHPX is 400. Linux Pro with VFIO inputs applies bind and
-keeps `https://provision.invalid/qemu-vfio`; mid-step failure is 400 with
-rollback. Windows Pro with Hyper-V inputs applies DDA (preferred) or
-exclusive GPU-P and keeps `https://provision.invalid/hyperv-gpu`; mid-step
-failure is 400 with rollback; tests inject `HyperVGpuOps` and never spawn
-PowerShell. Occupancy marked only on HTTP 200. Image verify: valid signature accepts; tampered bytes reject;
+true and returns the injected live locator; missing kernel or unreachable
+Kasm is 400 (occupancy unset). Windows Standard with boot inputs sets
+`hypervisorInvoked` true and returns the live locator; missing QEMU/disk/WHPX
+or unreachable Kasm is 400. Linux Pro with VFIO inputs applies bind and
+returns the live Sunshine locator; mid-step failure or unreachable Sunshine
+is 400 with rollback. Windows Pro with Hyper-V inputs applies DDA (preferred)
+or exclusive GPU-P and returns the live Sunshine locator; mid-step failure
+or unreachable Sunshine is 400 with rollback; tests inject `HyperVGpuOps`
+and never spawn PowerShell. Occupancy marked only on HTTP 200. Image verify: valid signature accepts; tampered bytes reject;
 missing public key / local digest fail fast; HTTP mismatch does not boot.
 Hypervisor fetch: Linux missing → install into cache after SHA-256; present →
 skip; checksum mismatch → fail fast and do not install; macOS skip; Windows
