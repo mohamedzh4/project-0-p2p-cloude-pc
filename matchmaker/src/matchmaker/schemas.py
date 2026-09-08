@@ -221,3 +221,17 @@ class MeshPreauthResponse(CamelModel):
     reusable: bool
     ephemeral: bool
     expires_at: str
+
+
+class GatewayResolveRequest(CamelModel):
+    """Public-gateway lookup. `token` is the path grant, not a user JWT."""
+
+    token: str = Field(min_length=1, max_length=128)
+
+
+class GatewayResolveResponse(CamelModel):
+    """Internal locator for one scoped session. Never a default fallback."""
+
+    session_id: UUID
+    target_url: str
+    streamer: str

@@ -88,7 +88,10 @@ Host Agent Headscale key via `get_headscale_client()` (tests swap a fake;
 no live Headscale in pytest). Host mint is tagged `tag:host`. Session book
 mints ephemeral `tag:guest` / `tag:user` via `mesh.py`. Default-deny ACLs
 live in `headscale/acl.hujson` (role-based; not pairwise session tags).
-Guest `--exit-node` comes from `HEADSCALE_EXIT_NODE`. Metering is in
+`tag:gateway` ↔ `tag:guest` is the public HTTPS ingress (phase 35); Headscale
+0.26 still cannot pairwise-isolate sessions. When `GATEWAY_PUBLIC_ORIGIN` is
+set, session JSON locators are `https://<origin>/s/<token>/` and
+`POST /v1/gateway/resolve` maps the token (gateway Bearer). Guest `--exit-node` comes from `HEADSCALE_EXIT_NODE`. Metering is in
 `ledger.py`, called at user end and on silence interrupt. renterd S3 is
 `get_renterd_client()` (tests swap a fake; no live Sia network in pytest).
 
@@ -106,7 +109,8 @@ Edit `.env` and set `POSTGRES_PASSWORD`, `JWT_SECRET`, `HOST_BOOTSTRAP_TOKEN`,
 `HOST_APPROVE_TOKEN`, `CREDITS_PER_MINUTE` (integer credits per billed
 minute; `0` is allowed), the `IMAGE_*` digest/signature pairs, the
 Headscale vars (`HEADSCALE_URL`, `HEADSCALE_LOGIN_SERVER`, `HEADSCALE_API_KEY`,
-`HEADSCALE_USER`), and the renterd S3 vars (`S3_ENDPOINT` / `S3_ACCESS_KEY` /
+`HEADSCALE_USER`), optional public-gateway vars (`GATEWAY_PUBLIC_ORIGIN` +
+`GATEWAY_RESOLVE_TOKEN` — see `docs/runbooks/gateway.md`), and the renterd S3 vars (`S3_ENDPOINT` / `S3_ACCESS_KEY` /
 `S3_SECRET_KEY`, or the `RENTERD_S3_*` aliases). Keep `DATABASE_URL` /
 `TEST_DATABASE_URL` in sync with the password. See `docs/runbooks/headscale.md`
 and `docs/runbooks/renterd.md`.
@@ -140,7 +144,7 @@ pip install -e ".[dev]"
 alembic upgrade head
 ```
 
-Head includes `0006_user_storage_bucket` (per-user renterd bucket). Do not rewrite
+Head includes `0007_session_ingress_tokens` (public-gateway scoped tokens). Do not rewrite
 `0001_initial`, `0002_host_last_seen`, `0003_host_agent_url`, or
 `0004_ledger_entries`.
 

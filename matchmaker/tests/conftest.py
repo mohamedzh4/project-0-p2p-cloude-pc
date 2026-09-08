@@ -69,6 +69,10 @@ os.environ.pop("S3_ENDPOINT", None)
 os.environ.pop("S3_ACCESS_KEY", None)
 os.environ.pop("S3_SECRET_KEY", None)
 os.environ.pop("S3_BUCKET", None)
+# Public gateway is opt-in. A local .env must not wrap session locators in pytest.
+os.environ.pop("GATEWAY_PUBLIC_ORIGIN", None)
+os.environ.pop("GATEWAY_RESOLVE_TOKEN", None)
+os.environ.pop("GATEWAY_TOKEN_TTL_SECONDS", None)
 
 from matchmaker.db import get_engine, get_session_factory  # noqa: E402
 from matchmaker.deps import get_headscale_client, get_host_provisioner, get_renterd_client  # noqa: E402
@@ -114,7 +118,7 @@ def clean_tables() -> Generator[None, None, None]:
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE TABLE user_storage, ledger_entries, sessions, hosts, users "
+                "TRUNCATE TABLE session_ingress_tokens, user_storage, ledger_entries, sessions, hosts, users "
                 "RESTART IDENTITY CASCADE"
             )
         )

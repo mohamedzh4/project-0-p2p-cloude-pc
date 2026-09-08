@@ -108,3 +108,15 @@ def require_host_approver(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> None:
     _require_static_bearer(credentials, get_settings().host_approve_token)
+
+
+def require_gateway_resolver(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> None:
+    expected = get_settings().gateway_resolve_token
+    if expected is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+    _require_static_bearer(credentials, expected)

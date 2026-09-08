@@ -118,6 +118,7 @@ class LabSession(Base):
     user: Mapped[User] = relationship(back_populates="sessions")
     host: Mapped[Host] = relationship(back_populates="sessions")
     ledger_entries: Mapped[list[LedgerEntry]] = relationship(back_populates="session")
+    ingress_tokens: Mapped[list[SessionIngressToken]] = relationship(back_populates="session")
 
 
 class LedgerEntry(Base):
@@ -150,6 +151,38 @@ class LedgerEntry(Base):
     session: Mapped[LabSession] = relationship(back_populates="ledger_entries")
     user: Mapped[User | None] = relationship(back_populates="ledger_entries")
     host: Mapped[Host | None] = relationship(back_populates="ledger_entries")
+
+
+class SessionIngressToken(Base):
+    """Scoped public-gateway grant for one active session (architecture §9 item 9).
+
+    The browser presents `token` in the public URL. Only `token_hash` is used
+    for lookup. `token` is stored so an existing-session 200 can return the
+    same URL. Never a guessable mapping from session id to a guest address.
+    """
+
+    __tablename__ = "session_ingress_tokens"
+    __table_args__ = (
+        UniqueConstraint("session_id", name="session_ingress_tokens_one_per_session"),
+        UniqueConstraint("token_hash", name="session_ingress_tokens_token_hash_key"),
+        Index("ix_session_ingress_tokens_expires_at", "expires_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    session_id: Mapped[UUID] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+    target_url: Mapped[str] = mapped_column(Text, nullable=False)
+    streamer: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    session: Mapped[LabSession] = relationship(back_populates="ingress_tokens")
 
 
 class UserStorage(Base):

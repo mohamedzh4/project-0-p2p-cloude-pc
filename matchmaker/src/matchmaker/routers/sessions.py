@@ -34,6 +34,7 @@ from matchmaker.mesh import (
     mesh_info_from_grant,
     mint_session_mesh,
 )
+from matchmaker.ingress import connection_for_browser, expire_session_ingress
 from matchmaker.models import Host, LabSession, SessionStatus, User
 from matchmaker.provision import HostProvisioner, provision_booked_host, session_connection
 from matchmaker.renterd import RenterdClient, RenterdError, StorageGrant
@@ -55,17 +56,25 @@ router = APIRouter()
 
 
 def _session_response(
+    db: Session,
     session: LabSession,
     host: Host,
     grant: StorageGrant,
     mesh: SessionMeshGrant,
 ) -> SessionResponse:
+    settings = get_settings()
     return SessionResponse(
         session_id=session.id,
         host_id=host.id,
         lab_tier=host.lab_tier,
         started_at=session.started_at,
-        connection=session_connection(host),
+        connection=connection_for_browser(
+            db,
+            session,
+            session_connection(host),
+            public_origin=settings.gateway_public_origin,
+            ttl_seconds=settings.gateway_token_ttl_seconds,
+        ),
         storage=mount_info_from_grant(grant),
         mesh=mesh_info_from_grant(mesh),
     )
@@ -145,6 +154,7 @@ def _abort_unprovisioned_session(
 ) -> None:
     """Release occupancy when provision did not yield a live locator."""
     session_id = session.id
+    expire_session_ingress(db, session_id=session_id)
     db.delete(session)
     db.commit()
     try:
@@ -173,7 +183,7 @@ def request_session(
         grant = _ensure_storage(db, user, renterd)
         mesh = _mint_mesh(headscale, existing.id)
         return _session_response(
-            existing, _host_or_error(db, existing.host_id), grant, mesh
+            db, existing, _host_or_error(db, existing.host_id), grant, mesh
         )
 
     # --- later plug-ins (do not implement here) ---
@@ -183,7 +193,9 @@ def request_session(
     # 2. Headscale: host join is POST /v1/hosts/{id}/mesh/preauth (tag:host).
     #    This router mints ephemeral tag:guest + tag:user keys per session and
     #    points the guest join plan at HEADSCALE_EXIT_NODE. ACLs stay the
-    #    Headscale policy file (role tags, not pairwise session tags).
+    #    Headscale policy file (role tags, not pairwise session tags). When
+    #    GATEWAY_PUBLIC_ORIGIN is set, connection locators are public gateway
+    #    URLs (token-scoped); the host row still stores the mesh locator.
     # 3. renterd/rclone: ensure a per-user bucket *before* occupy. Mount
     #    inside the guest. Never plaintext on the volunteer host disk.
     #    Silence rematch does not call renterd — the same bucket follows
@@ -218,7 +230,7 @@ def request_session(
             response.status_code = status.HTTP_200_OK
             raced_mesh = _mint_mesh(headscale, raced.id)
             return _session_response(
-                raced, _host_or_error(db, raced.host_id), grant, raced_mesh
+                db, raced, _host_or_error(db, raced.host_id), grant, raced_mesh
             )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -243,7 +255,7 @@ def request_session(
             detail="host provision failed",
         )
     response.status_code = status.HTTP_201_CREATED
-    return _session_response(session, host, grant, mesh)
+    return _session_response(db, session, host, grant, mesh)
 
 
 @router.post("/sessions/{session_id}/end", response_model=EndSessionResponse)
@@ -282,6 +294,7 @@ def end_session(
             # Occupancy is already released. Missing nodes are expected when
             # no guest image joined.
             pass
+        expire_session_ingress(db, session_id=session.id)
 
     if session.ended_at is None:
         raise HTTPException(

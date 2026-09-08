@@ -44,6 +44,7 @@ From `docs/cahier-des-charges-distributed-compute-lab.md` §11.
 project-0-p2p-cloude-pc/
 ├── guest-images/  Packer pipeline: signed Standard (Kasm) / Pro (Sunshine) disks
 ├── docs/           architecture, cahier, runbooks, phase-logs
+├── gateway/        public HTTPS ingress (Caddy + tag:gateway proxy)
 ├── headscale/      self-hosted Headscale compose (no Tailscale SaaS)
 ├── renterd/        self-hosted renterd S3 gateway compose (not Storj)
 ├── host-agent/     Tauri tray: hardware probe, sharing UI, pause, local config

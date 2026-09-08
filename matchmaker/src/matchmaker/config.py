@@ -102,6 +102,49 @@ def _headscale_exit_node() -> str | None:
     return value
 
 
+def _gateway_public_origin() -> str | None:
+    """Public HTTPS origin the web app opens (zero-install Standard Lab).
+
+    Unset keeps session JSON on the mesh locator (local lab). Production
+    browser-only access requires this plus GATEWAY_RESOLVE_TOKEN. Do not
+    invent a domain — the operator supplies one they control DNS for.
+    """
+    raw = os.environ.get("GATEWAY_PUBLIC_ORIGIN")
+    if raw is None or raw.strip() == "":
+        return None
+    value = raw.strip().rstrip("/")
+    if not value.startswith("https://"):
+        raise RuntimeError("GATEWAY_PUBLIC_ORIGIN must be an https URL")
+    return value
+
+
+def _gateway_resolve_token(origin: str | None) -> str | None:
+    raw = os.environ.get("GATEWAY_RESOLVE_TOKEN")
+    if raw is None or raw.strip() == "":
+        if origin is not None:
+            raise RuntimeError(
+                "GATEWAY_RESOLVE_TOKEN is required when GATEWAY_PUBLIC_ORIGIN is set"
+            )
+        return None
+    value = raw.strip()
+    if len(value) < 16:
+        raise RuntimeError("GATEWAY_RESOLVE_TOKEN must be at least 16 characters")
+    return value
+
+
+def _gateway_token_ttl_seconds() -> int:
+    raw = os.environ.get("GATEWAY_TOKEN_TTL_SECONDS", "43200").strip()
+    if raw == "":
+        raw = "43200"
+    try:
+        ttl = int(raw)
+    except ValueError as exc:
+        raise RuntimeError("GATEWAY_TOKEN_TTL_SECONDS must be an integer") from exc
+    if ttl <= 0:
+        raise RuntimeError("GATEWAY_TOKEN_TTL_SECONDS must be positive")
+    return ttl
+
+
 def _guest_s3_endpoint() -> str:
     """URL guests rclone against. Defaults to the Matchmaker→renterd endpoint."""
     guest_name = _first_nonempty_env("S3_GUEST_ENDPOINT", "RENTERD_S3_GUEST_ENDPOINT")
@@ -158,6 +201,9 @@ class Settings:
     renterd_s3_region: str
     renterd_s3_access_key: str = field(repr=False)
     renterd_s3_secret_key: str = field(repr=False)
+    gateway_public_origin: str | None
+    gateway_resolve_token: str | None = field(repr=False)
+    gateway_token_ttl_seconds: int
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -194,6 +240,7 @@ class Settings:
         if sweep_interval < 0:
             raise RuntimeError("STALE_SESSION_SWEEP_INTERVAL_SECONDS must be non-negative")
 
+        gateway_origin = _gateway_public_origin()
         return cls(
             database_url=_require_env("DATABASE_URL"),
             jwt_secret=_require_env("JWT_SECRET"),
@@ -223,6 +270,9 @@ class Settings:
             renterd_s3_secret_key=_require_first_s3_key(
                 "S3_SECRET_KEY", "RENTERD_S3_SECRET_KEY"
             ),
+            gateway_public_origin=gateway_origin,
+            gateway_resolve_token=_gateway_resolve_token(gateway_origin),
+            gateway_token_ttl_seconds=_gateway_token_ttl_seconds(),
         )
 
 

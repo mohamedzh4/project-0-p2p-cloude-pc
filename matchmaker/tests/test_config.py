@@ -34,6 +34,9 @@ def _required_env(monkeypatch) -> None:
     monkeypatch.delenv("S3_GUEST_ENDPOINT", raising=False)
     monkeypatch.delenv("HOST_AGENT_PROVISION_URL", raising=False)
     monkeypatch.delenv("HEADSCALE_EXIT_NODE", raising=False)
+    monkeypatch.delenv("GATEWAY_PUBLIC_ORIGIN", raising=False)
+    monkeypatch.delenv("GATEWAY_RESOLVE_TOKEN", raising=False)
+    monkeypatch.delenv("GATEWAY_TOKEN_TTL_SECONDS", raising=False)
 
 
 def test_credits_per_minute_is_required(monkeypatch) -> None:
@@ -264,3 +267,56 @@ def test_renterd_guest_endpoint_defaults_to_s3_endpoint(monkeypatch) -> None:
     monkeypatch.setenv("RENTERD_S3_GUEST_ENDPOINT", "http://guest.renterd.test.invalid")
     settings = Settings.from_env()
     assert settings.renterd_s3_guest_endpoint == "http://guest.renterd.test.invalid"
+
+
+def test_gateway_origin_and_token_default_unset(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    settings = Settings.from_env()
+    assert settings.gateway_public_origin is None
+    assert settings.gateway_resolve_token is None
+    assert settings.gateway_token_ttl_seconds == 43200
+
+
+def test_gateway_origin_requires_https_and_resolve_token(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.setenv("GATEWAY_PUBLIC_ORIGIN", "http://gateway.test.example")
+    try:
+        Settings.from_env()
+        raise AssertionError("expected GATEWAY_PUBLIC_ORIGIN to fail fast")
+    except RuntimeError as exc:
+        assert "GATEWAY_PUBLIC_ORIGIN must be an https URL" in str(exc)
+
+    monkeypatch.setenv("GATEWAY_PUBLIC_ORIGIN", "https://gateway.test.example")
+    try:
+        Settings.from_env()
+        raise AssertionError("expected GATEWAY_RESOLVE_TOKEN to fail fast")
+    except RuntimeError as exc:
+        assert "GATEWAY_RESOLVE_TOKEN is required" in str(exc)
+
+    monkeypatch.setenv("GATEWAY_RESOLVE_TOKEN", "short")
+    try:
+        Settings.from_env()
+        raise AssertionError("expected GATEWAY_RESOLVE_TOKEN length to fail fast")
+    except RuntimeError as exc:
+        assert "GATEWAY_RESOLVE_TOKEN must be at least 16 characters" in str(exc)
+
+    monkeypatch.setenv("GATEWAY_RESOLVE_TOKEN", "test-gateway-resolve-token")
+    settings = Settings.from_env()
+    assert settings.gateway_public_origin == "https://gateway.test.example"
+    assert settings.gateway_resolve_token == "test-gateway-resolve-token"
+    dumped = repr(settings)
+    assert "test-gateway-resolve-token" not in dumped
+
+
+def test_gateway_token_ttl_must_be_positive(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.setenv("GATEWAY_TOKEN_TTL_SECONDS", "0")
+    try:
+        Settings.from_env()
+        raise AssertionError("expected GATEWAY_TOKEN_TTL_SECONDS to fail fast")
+    except RuntimeError as exc:
+        assert "GATEWAY_TOKEN_TTL_SECONDS must be positive" in str(exc)
+

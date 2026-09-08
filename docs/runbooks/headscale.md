@@ -39,10 +39,19 @@ Headscale 0.26.1 uses `acls` (not `grants`). Policy usernames need a trailing
 | Matchmaker coordination | `tag:guest` | `tag:matchmaker` (and reverse) |
 | Matchmaker coordination | `tag:user` | `tag:matchmaker` (and reverse) |
 | Assigned user ↔ VM | `tag:user` | `tag:guest` (and reverse) |
+| Public HTTPS ingress | `tag:gateway` | `tag:guest` (and reverse) |
 | Guest egress via platform exit | `tag:guest` | `tag:exit` and `autogroup:internet` |
 
 **Denied** (no accept rule): guest → host, guest ↔ guest, host ↔ host,
-host → `autogroup:internet`. Exit-node auto-approval is `tag:exit` only.
+host → `autogroup:internet`, **gateway → host**, gateway → user,
+gateway → matchmaker, gateway → exit, gateway → `autogroup:internet`.
+Exit-node auto-approval is `tag:exit` only.
+
+**Headscale 0.26 leftover (unchanged):** file policy cannot mint pairwise
+`tag:session-<uuid>` owners. Every `tag:user` **and** every `tag:gateway`
+may still reach every `tag:guest`. The public URL is scoped by a
+Matchmaker ingress token, not by a unique ACL tag. See
+`docs/runbooks/gateway.md`.
 
 Reload Headscale after editing the policy (`docker compose restart headscale`
 or SIGHUP). The file is bind-mounted read-only.
@@ -196,3 +205,15 @@ Never pass `--advertise-exit-node` or `--exit-node` on the Host Agent.
 
 Until a guest image actually runs step 6.3, assume guest internet still
 exits via the host path. Software-complete ≠ live desktop.
+
+## 7. Public gateway (`tag:gateway`)
+
+Zero-install Standard Lab needs a browser on the public internet, not a
+Tailscale client. That node is **not** a volunteer host. Mint:
+
+```bash
+docker compose exec headscale headscale preauthkeys create --user 1 --tags tag:gateway
+```
+
+Put the key in `gateway/.env` as `HEADSCALE_GATEWAY_AUTHKEY`. Policy grant
+is `tag:gateway` ↔ `tag:guest` only. Full steps: `docs/runbooks/gateway.md`.

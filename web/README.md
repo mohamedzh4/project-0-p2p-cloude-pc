@@ -7,7 +7,9 @@ mesh hostname/tags/exit-node). It is **not** the product: no payment
 processor, no Kasm iframe (a live Standard desktop opens in a new tab).
 Pro uses Moonlight as the desktop client; a live Sunshine URL is the
 guest web UI, not an iframe. Seed and mock-provision URLs use the
-`.invalid` TLD. Hardware is implemented in code, not yet run on physical
+`.invalid` TLD. When Matchmaker sets `GATEWAY_PUBLIC_ORIGIN`, the href is
+the public `https://…/s/<token>/` gateway URL (browser-only; no Tailscale
+install). Hardware is implemented in code, not yet run on physical
 hardware. Open desktop / Open Sunshine web UI stay hidden until a live
 URL exists (`SEED_HOST_KASM_URL` remains `https://example.invalid/kasm`
 for the seed command). Preauth keys are not shown. Matching stays

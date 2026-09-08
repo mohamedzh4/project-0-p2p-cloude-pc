@@ -9,9 +9,12 @@
 // Identities are tag-based. Matchmaker mints Host Agent nodes as `tag:host`
 // (non-ephemeral). Each session mints ephemeral preauth keys tagged
 // `tag:guest` (the VM) and `tag:user` (the renter client), with unique
-// hostnames `dcl-guest-<sessionId>` / `dcl-user-<sessionId>`. Headscale 0.26
-// has no policy API to insert pairwise session tags, so ACL grants stay
-// role-based: every `tag:user` may reach every `tag:guest`. That leftover is
+// hostnames `dcl-guest-<sessionId>` / `dcl-user-<sessionId>`. The public
+// HTTPS ingress (phase 35) joins as `tag:gateway` (operator VPS, CLI mint —
+// not a volunteer host). Headscale 0.26 has no policy API to insert pairwise
+// session tags, so ACL grants stay role-based: every `tag:user` and every
+// `tag:gateway` may reach every `tag:guest`. Session scope for the gateway
+// is the short-lived ingress token, not a unique ACL tag. That leftover is
 // documented in PROJECT_STATUS.md. `tag:matchmaker` is reserved for a later
 // control-plane node.
 //
@@ -19,10 +22,15 @@
 //   1. Matchmaker coordination: tag:host ↔ tag:matchmaker,
 //      tag:guest ↔ tag:matchmaker, tag:user ↔ tag:matchmaker
 //   2. Assigned user ↔ VM: tag:user ↔ tag:guest
-//   3. Guest internet via platform exit nodes only:
+//   3. Public gateway ↔ VM: tag:gateway ↔ tag:guest
+//      (same role-based limitation as tag:user; Headscale 0.26 still cannot
+//      mint pairwise tag:session-<uuid> owners)
+//   4. Guest internet via platform exit nodes only:
 //      tag:guest → tag:exit and tag:guest → autogroup:internet
 // Not granted (and therefore denied):
 //   - guest → host (no guest→host LAN / volunteer Tailscale IP)
+//   - gateway → host, gateway → user, gateway → matchmaker, gateway → exit
+//   - gateway → autogroup:internet (public HTTPS is the VPS NIC, not mesh)
 //   - guest ↔ guest, host ↔ host, host → autogroup:internet
 //   - volunteer hosts as exit nodes (autoApprovers.exitNode is tag:exit only)
 
@@ -35,7 +43,8 @@
     "tag:guest": ["group:operators"],
     "tag:user": ["group:operators"],
     "tag:matchmaker": ["group:operators"],
-    "tag:exit": ["group:operators"]
+    "tag:exit": ["group:operators"],
+    "tag:gateway": ["group:operators"]
   },
   "autoApprovers": {
     "exitNode": ["tag:exit"]
@@ -80,6 +89,16 @@
       "action": "accept",
       "src": ["tag:guest"],
       "dst": ["tag:user:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:gateway"],
+      "dst": ["tag:guest:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:guest"],
+      "dst": ["tag:gateway:*"]
     },
     {
       "action": "accept",

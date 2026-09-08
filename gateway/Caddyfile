@@ -1,0 +1,8 @@
+{
+	email {$GATEWAY_ACME_EMAIL}
+}
+
+{$GATEWAY_DOMAIN} {
+	encode gzip
+	reverse_proxy 127.0.0.1:7843
+}

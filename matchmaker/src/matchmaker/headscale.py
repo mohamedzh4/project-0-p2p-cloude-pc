@@ -27,9 +27,11 @@ _SESSION_PREAUTH_TTL = timedelta(hours=4)
 HOST_ACL_TAG = "tag:host"
 GUEST_ACL_TAG = "tag:guest"
 USER_ACL_TAG = "tag:user"
+GATEWAY_ACL_TAG = "tag:gateway"
 HOST_ACL_TAGS = (HOST_ACL_TAG,)
 GUEST_ACL_TAGS = (GUEST_ACL_TAG,)
 USER_ACL_TAGS = (USER_ACL_TAG,)
+GATEWAY_ACL_TAGS = (GATEWAY_ACL_TAG,)
 DEFAULT_EXIT_NODE = "dcl-platform-exit"
 
 

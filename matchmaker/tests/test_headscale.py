@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from matchmaker.deps import get_headscale_client
 from matchmaker.headscale import (
     DEFAULT_EXIT_NODE,
+    GATEWAY_ACL_TAG,
     GUEST_ACL_TAG,
     GUEST_ACL_TAGS,
     HOST_ACL_TAG,
@@ -279,15 +280,33 @@ def test_acl_policy_is_default_deny_with_architecture_grants() -> None:
     assert ("tag:matchmaker", "tag:guest") in pairs
     assert ("tag:user", "tag:guest") in pairs
     assert ("tag:guest", "tag:user") in pairs
+    assert ("tag:gateway", "tag:guest") in pairs
+    assert ("tag:guest", "tag:gateway") in pairs
+    assert (GATEWAY_ACL_TAG, GUEST_ACL_TAG) in pairs
     assert ("tag:guest", "tag:exit") in pairs
     assert ("tag:guest", "autogroup:internet") in pairs
     assert ("tag:guest", "tag:host") not in pairs
     assert ("tag:host", "tag:guest") not in pairs
     assert ("tag:host", "autogroup:internet") not in pairs
+    assert ("tag:gateway", "tag:host") not in pairs
+    assert ("tag:host", "tag:gateway") not in pairs
+    assert ("tag:gateway", "tag:user") not in pairs
+    assert ("tag:user", "tag:gateway") not in pairs
+    assert ("tag:gateway", "tag:matchmaker") not in pairs
+    assert ("tag:matchmaker", "tag:gateway") not in pairs
+    assert ("tag:gateway", "tag:exit") not in pairs
+    assert ("tag:gateway", "autogroup:internet") not in pairs
     assert ("*", "*") not in pairs
 
     owners = policy["tagOwners"]
-    for tag in ("tag:host", "tag:guest", "tag:user", "tag:matchmaker", "tag:exit"):
+    for tag in (
+        "tag:host",
+        "tag:guest",
+        "tag:user",
+        "tag:matchmaker",
+        "tag:exit",
+        "tag:gateway",
+    ):
         assert owners[tag] == ["group:operators"]
     assert policy["groups"]["group:operators"] == ["dcl@"]
     assert policy["autoApprovers"]["exitNode"] == ["tag:exit"]

@@ -39,6 +39,14 @@ describe("isLiveConnectionUrl", () => {
     expect(isLiveConnectionUrl(undefined)).toBe(false);
   });
 
+  it("accepts a public gateway locator (https origin + /s/<token>/)", () => {
+    expect(
+      isLiveConnectionUrl(
+        "https://gateway.test.example/s/abcdefghijklmnopqrstuvwxyz012345/",
+      ),
+    ).toBe(true);
+  });
+
   it("accepts phase-31 Kasm mesh locators (https host, path /)", () => {
     expect(isLiveConnectionUrl("https://dcl-guest-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/")).toBe(
       true,

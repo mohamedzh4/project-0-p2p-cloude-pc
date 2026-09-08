@@ -1,0 +1,64 @@
+# Public HTTPS ingress (phase 35). Linux VPS you operate — not a volunteer host.
+# Copy .env.example to .env in this directory. Compose fails if GATEWAY_DOMAIN,
+# GATEWAY_ACME_EMAIL, GATEWAY_RESOLVE_TOKEN, MATCHMAKER_URL, or the Headscale
+# gateway preauth are missing.
+#
+# Do not invent a domain. Confirm you control DNS before setting GATEWAY_DOMAIN.
+# Same box as the platform exit node, or a separate VPS — your choice (ask
+# before assuming). Docker Desktop on macOS is not this path.
+#
+#   docker compose up -d
+#
+# See docs/runbooks/gateway.md.
+
+services:
+  tailscale:
+    image: docker.io/tailscale/tailscale:v1.84.2
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      TS_AUTHKEY: ${HEADSCALE_GATEWAY_AUTHKEY:?HEADSCALE_GATEWAY_AUTHKEY is required}
+      TS_HOSTNAME: dcl-gateway
+      TS_USERSPACE: "false"
+      TS_EXTRA_ARGS: --login-server=${HEADSCALE_LOGIN_SERVER:?HEADSCALE_LOGIN_SERVER is required} --accept-dns=false --accept-routes=false
+    volumes:
+      - gateway_tailscale:/var/lib/tailscale
+
+  gateway:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - tailscale
+    environment:
+      MATCHMAKER_URL: ${MATCHMAKER_URL:?MATCHMAKER_URL is required}
+      GATEWAY_RESOLVE_TOKEN: ${GATEWAY_RESOLVE_TOKEN:?GATEWAY_RESOLVE_TOKEN is required}
+      GATEWAY_PUBLIC_ORIGIN: ${GATEWAY_PUBLIC_ORIGIN:-}
+      GATEWAY_LISTEN_HOST: "127.0.0.1"
+      GATEWAY_LISTEN_PORT: "7843"
+      GATEWAY_FAIL_LIMIT: ${GATEWAY_FAIL_LIMIT:-20}
+      GATEWAY_FAIL_WINDOW_SECONDS: ${GATEWAY_FAIL_WINDOW_SECONDS:-60}
+
+  caddy:
+    image: docker.io/caddy:2.9-alpine
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - gateway
+    environment:
+      GATEWAY_DOMAIN: ${GATEWAY_DOMAIN:?GATEWAY_DOMAIN is required}
+      GATEWAY_ACME_EMAIL: ${GATEWAY_ACME_EMAIL:?GATEWAY_ACME_EMAIL is required}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  gateway_tailscale:
+  caddy_data:
+  caddy_config:

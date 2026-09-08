@@ -14,6 +14,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from matchmaker.ingress import expire_session_ingress
 from matchmaker.ledger import settle_ended_session
 from matchmaker.matching import HostSelector, heartbeat_freshness_cutoff
 from matchmaker.config import get_settings
@@ -57,6 +58,7 @@ def reclaim_stale_sessions(
                 expire_session_mesh(headscale, session_id=session_id)
             except HeadscaleError:
                 pass
+        expire_session_ingress(db, session_id=session_id)
         _rematch_user(
             db,
             user_id=user_id,

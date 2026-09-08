@@ -10,6 +10,9 @@ Bringing up renterd does not boot a guest. See `PROJECT_STATUS.md`.
 `SEED_HOST_KASM_URL` stays `https://example.invalid/kasm`.
 
 Implemented storage (human decision 2026-09-05): **renterd, not Storj.**
+Compose stays on the **zen testnet** (`RENTERD_NETWORK=zen`). Do not
+switch to mainnet until you fund a wallet — checklist only:
+`docs/runbooks/sia-mainnet.md`.
 
 ## What this does / does not do
 

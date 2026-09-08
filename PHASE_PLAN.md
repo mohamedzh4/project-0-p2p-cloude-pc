@@ -39,8 +39,8 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 33: pytest 166, cargo test --lib 328, vitest 52, guest-images
-  unittest 12.
+  Counts after phase 35: pytest 178, cargo test --lib 328, vitest 53, guest-images
+  unittest 12, gateway pytest 10.
 
 ## Contracts to keep stable
 
@@ -63,8 +63,9 @@ Matchmaker JSON is camelCase.
 | POST | `/v1/hosts/{id}/mesh/preauth` | Host bootstrap Bearer; `{ loginServer, preauthKey, user, reusable, ephemeral, expiresAt }`. Headscale mint tagged `tag:host`. Not a guest/user identity. |
 | POST | `/v1/storage` | User Bearer; issue per-user renterd bucket `dcl-<uuid>` + prefix `files/`. 201 new, 200 existing. `{ provider, bucket, prefix, endpoint, region, objects, pathStyle, mountInsideGuest, rclone, rcloneArgs, envAuth }`. No access keys. |
 | GET | `/v1/storage` | User Bearer; 200 same shape or 404 if never issued. |
+| POST | `/v1/gateway/resolve` | Gateway Bearer (`GATEWAY_RESOLVE_TOKEN`); body `{ token }`. 200 `{ sessionId, targetUrl, streamer }` or 404. Never a default session. |
 
-Session response: `{ sessionId, hostId, labTier, startedAt, connection, storage, mesh }` where `storage` is the same locator object as `/v1/storage` (no access keys). `mesh` is `{ loginServer, exitNode, exitNodeApplied, guest, user }` with ephemeral Headscale preauth keys tagged `tag:guest` / `tag:user` and guest `tailscaleUp` including `--exit-node` when `HEADSCALE_EXIT_NODE` is set (default `dcl-platform-exit`). Host Agent join stays the preauth route (`tag:host`, never `--exit-node`). Standard `connection` is `{ streamer: "kasm", kasmUrl, kasmToken, sunshineUrl: null, moonlight: null, gpuExclusive: false }`. Pro `connection` is `{ streamer: "sunshine", kasmUrl: null, kasmToken: null, sunshineUrl, moonlight: { host, app }, gpuExclusive: true }` — not Kasm renamed. Locators still live in `hosts.kasm_url`. Pro-GPU: implemented in code, not yet
+Session response: `{ sessionId, hostId, labTier, startedAt, connection, storage, mesh }` where `storage` is the same locator object as `/v1/storage` (no access keys). `mesh` is `{ loginServer, exitNode, exitNodeApplied, guest, user }` with ephemeral Headscale preauth keys tagged `tag:guest` / `tag:user` and guest `tailscaleUp` including `--exit-node` when `HEADSCALE_EXIT_NODE` is set (default `dcl-platform-exit`). Host Agent join stays the preauth route (`tag:host`, never `--exit-node`). Standard `connection` is `{ streamer: "kasm", kasmUrl, kasmToken, sunshineUrl: null, moonlight: null, gpuExclusive: false }`. Pro `connection` is `{ streamer: "sunshine", kasmUrl: null, kasmToken: null, sunshineUrl, moonlight: { host, app }, gpuExclusive: true }` — not Kasm renamed. Locators still live in `hosts.kasm_url` (mesh address). When `GATEWAY_PUBLIC_ORIGIN` is set, session JSON `kasmUrl` / `sunshineUrl` are `https://<origin>/s/<token>/` (public gateway); Moonlight `host` stays the mesh hostname. `POST /v1/gateway/resolve` (gateway Bearer) maps that token to the mesh locator or 404s. Pro-GPU: implemented in code, not yet
 run on physical hardware. After a successful invoke or GPU apply, provision
 returns a live Kasm/Sunshine locator (mesh hostname, ports 443 / 47990) or
 fails; it does not occupy a host with `.invalid`. There is still no live
@@ -275,7 +276,7 @@ Software MVP is the control-plane loop with stubs. Cahier FR1–FR16:
 | FR6 logout final save + “saved as of” | Missing in the guest UI | rclone argv/plan exists; needs a booted guest |
 | FR7 session history + billing/credits | Internal ledger + `GET /v1/sessions` | Phase 11 done; no payouts |
 | FR8 declare CPU/RAM slice + exclusive GPU | Implemented except availability schedule | Schedule can wait; do not break `sharedGpuId` |
-| FR9 auto mesh join + signed image pull | Partial: signed digest+sig verify; host preauth mint + Rust join (`tag:host`, no Tailscale SaaS). Session book mints ephemeral `tag:guest` + `tag:user`. Guest join plan includes `--exit-node` from `HEADSCALE_EXIT_NODE`. ACL file is still role-based (not pairwise session tags). Storage is renterd S3, not Storj | Live guest Tailscale/rclone still need a guest image |
+| FR9 auto mesh join + signed image pull | Partial: signed digest+sig verify; host preauth mint + Rust join (`tag:host`, no Tailscale SaaS). Session book mints ephemeral `tag:guest` + `tag:user`. Guest join plan includes `--exit-node` from `HEADSCALE_EXIT_NODE`. Public HTTPS gateway (`tag:gateway`) wraps session locators when `GATEWAY_PUBLIC_ORIGIN` is set (implemented in code, not yet run across real networks). ACL file is still role-based (not pairwise session tags). Storage is renterd S3, not Storj | Live guest Tailscale/rclone still need a guest image; TAP (phase 34); human cross-network gateway test |
 | FR10 tray status (idle / in-session / earnings) | Window + Rust tray; earnings from ledger | Accrued, not paid out |
 | FR11 pause/stop sharing | Immediate local `sharingEnabled`; heartbeats skip | After 45s Matchmaker treats skip as silence (interrupts). No pause field |
 | FR12 real-time inventory (resources, load, reliability) | Partial: caps + `lastSeenAt`; ranking uses declared caps; no load/score | Later telemetry |
@@ -845,10 +846,47 @@ set `HOST_AGENT_URL`. Guest images stay Packer (`guest-images/scripts/build.sh`)
 Not yet run on physical hardware. See
 `docs/phase-logs/phase-33-host-agent-binary.md`.
 
-**Next:** leftover paper (TAP/guest net so Kasm/Sunshine answers on metal,
-pairwise ACLs, measured latency). No further numbered software phase is
-required for “copy the agent, set env, leave it running.” Hardware lines
-stay open until a human reports a live session on metal.
+**Next:** leftover paper after 33 is TAP/guest net (phase 34), pairwise ACLs,
+measured latency, and a human metal confirmation. Phase 35 (public gateway)
+is the zero-install browser ingress — implemented in code, not yet run
+across real networks. Hardware lines stay open until a human reports a live
+session on metal.
+
+### Phase 34 — TAP / guest networking
+
+**Not this session.** Host-to-guest connectivity on a single machine so
+Kasm/Sunshine can answer after Firecracker/QEMU invoke. Still required
+regardless of distance. Not superseded by the public gateway (phase 35).
+
+### Phase 35 — Public gateway / internet ingress (Network plane)
+
+**Why next:** Cahier usability requires zero-install Standard Lab (browser
+only). Kasm/Sunshine locators are Headscale mesh addresses, which a public
+browser cannot reach without joining the tailnet.
+
+**Do:** Operator-run gateway that joins as `tag:gateway`, terminates TLS,
+and reverse-proxies `https://<domain>/s/<token>/` to that session’s mesh
+Kasm (443) or Sunshine (47990) URL. Matchmaker mints scoped short-lived
+tokens (architecture §9 item 9) and returns the public URL on session JSON.
+ACL: `tag:gateway` ↔ `tag:guest` only; Headscale 0.26 still cannot do
+pairwise `tag:session-<uuid>`. Do not invent a domain. Do not switch
+`RENTERD_NETWORK` off zen. Do not change Standard vs Pro provisioner
+selection.
+
+**Do not:** Close TAP (phase 34). Do not claim a cross-city or
+“confirmed over the internet” test. Do not weaken default-deny for
+`tag:host`. Do not iframe Kasm.
+
+**Exit:** Gateway + Matchmaker resolve tests without live infra; ACL file
+asserts gateway cannot reach `tag:host`; session JSON wraps when
+`GATEWAY_PUBLIC_ORIGIN` is set; suites green.
+
+Done as a **software contract** (2026-09-08). Compose in `gateway/`
+(Caddy + Tailscale `tag:gateway` + loopback proxy). Matchmaker
+`POST /v1/gateway/resolve`. Mainnet Sia is a checklist only
+(`docs/runbooks/sia-mainnet.md`). Implemented in code, not yet run across
+real networks. See `docs/phase-logs/phase-35-public-gateway.md` and
+`docs/runbooks/gateway.md`.
 
 ## Handoff template
 

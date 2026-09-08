@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-07, after phase 33 Host Agent binary
+# Project Status — last updated: 2026-09-08, after phase 35 public gateway
 
 ## Hardware (this Mac cannot host)
 
@@ -22,7 +22,7 @@ command. Successful provision no longer stores that placeholder. Pointers:
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
   keypairs, guest rclone argv). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–33 on local `main` (not pushed):
+- Execution phases 1–33 and 35 on local `main` (not pushed):
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -179,7 +179,11 @@ command. Successful provision no longer stores that placeholder. Pointers:
     `HttpHostProvisioner` stores a live locator even when
     `hypervisorInvoked` is true, rejects `.invalid`, and the session router
     deletes the occupancy row (502) if provision fails while the host row is
-    still a placeholder. **166/166** pytest. Session JSON still
+    still a placeholder. **Phase 35:** when `GATEWAY_PUBLIC_ORIGIN` is set,
+    session JSON `kasmUrl`/`sunshineUrl` are `https://<origin>/s/<token>/`
+    (scoped ingress token; host row still stores the mesh locator).
+    `POST /v1/gateway/resolve` (gateway Bearer) maps the token or 404s.
+    **178/178** pytest. Session JSON still
     has no `intent` field. No latency/reliability columns. No Matchmaker
     pause field. No payment processor. No image CDN / multi-GB download. No
     live Sia network in unit tests. No live Headscale in unit tests.
@@ -192,12 +196,19 @@ command. Successful provision no longer stores that placeholder. Pointers:
     End/history/credits come from Matchmaker (`POST .../end`, `GET /v1/sessions`).
     Optional storage locator (endpoint/bucket only — not secrets), mesh
     hostname/tags/exit-node (not the preauth secret). GPU exclusivity copy
-    stays. **52/52** vitest; `npm run typecheck` passed.
+    stays. **53/53** vitest; `npm run typecheck` passed.
   - Headscale compose in `headscale/` (image `0.26.1`) with checked-in
-    default-deny `acl.hujson`. Guest-path exit-node overlay
-    `docker-compose.exit-node.yml` (`TS_HOSTNAME: dcl-platform-exit`). renterd
+    default-deny `acl.hujson` including **`tag:gateway` ↔ `tag:guest`**
+    (phase 35; still role-based — Headscale 0.26 cannot pairwise-isolate
+    sessions). Guest-path exit-node overlay
+    `docker-compose.exit-node.yml` (`TS_HOSTNAME: dcl-platform-exit`). Public
+    HTTPS gateway compose in `gateway/` (Caddy TLS + Tailscale `tag:gateway`
+    + loopback reverse proxy). **Implemented in code, not yet run across
+    real networks.** renterd
     compose in `renterd/` (image `ghcr.io/siafoundation/renterd:2.9.3`, zen
     testnet, S3 on loopback **8081**). No Tailscale cloud account. No Storj.
+    Mainnet Sia is a checklist only (`docs/runbooks/sia-mainnet.md`) — do
+    not switch `RENTERD_NETWORK` without a funded-wallet go-ahead.
   - Guest image **build** (phase 26): `guest-images/` Packer qemu `disk_image`
     from the pinned Ubuntu 24.04 cloud image (not in git). Standard provisioner
     runs Kasm `install.sh --accept-eula --admin-password --user-password`.
@@ -208,26 +219,35 @@ command. Successful provision no longer stores that placeholder. Pointers:
 
 ## In Progress
 
-- None. Numbered software phases 1–33 are on local `main`. Hardware is
-  implemented in code, not yet run on physical hardware.
+- None. Numbered software phases 1–33 and 35 are on local `main`. Phase 34
+  (TAP/guest net) is leftover paper. Hardware is implemented in code, not
+  yet run on physical hardware. The public gateway is implemented in code,
+  not yet run across real networks.
 
 ## Up Next
 
-Leftover paper (not a numbered software phase). Operator path:
-`docs/phase-logs/phase-33-host-agent-binary.md` and `host-agent/README.md`
-(build on Linux/Windows, env, Packer images, kernel, UAC, Hyper-V VM name).
-Do not switch matching to manual host browsing.
+Operator path for the agent: `docs/phase-logs/phase-33-host-agent-binary.md`
+and `host-agent/README.md`. Gateway deploy needs a domain you control and a
+VPS choice: `docs/runbooks/gateway.md`. Do not switch matching to manual
+host browsing.
 
 Leftover paper:
 
 1. Pairwise mesh ACLs — Headscale 0.26 file policy cannot mint
-   `tag:session-<uuid>` owners; every `tag:user` may still reach every
-   `tag:guest`.
+   `tag:session-<uuid>` owners; every `tag:user` **and** every `tag:gateway`
+   may still reach every `tag:guest`. Session scope on the public URL is
+   the ingress token.
 2. Live guest Tailscale/rclone — join/mount plans exist; the Packer image
    installs the clients; they still need a booted guest with a network.
 3. FR13 latency ranking waits on a measured value — do not fake `latency_ms`.
-4. TAP/net so Kasm/Sunshine is reachable on metal, jailer, QEMU VFIO attach
-   after bind. The Host Agent window stays plan-only for GPU bind.
+4. **Phase 34** TAP/net so Kasm/Sunshine is reachable on metal, jailer, QEMU
+   VFIO attach after bind. The Host Agent window stays plan-only for GPU
+   bind. Not superseded by the public gateway.
+5. Human cross-location test of the gateway (host and client on genuinely
+   different networks). Do not mark “confirmed over the internet” until
+   that report.
+6. Sia mainnet — checklist in `docs/runbooks/sia-mainnet.md`. Stay on zen
+   until a funded-wallet go-ahead.
 
 ## Known Risks / Open Items
 
@@ -237,12 +257,16 @@ Leftover paper:
   for the seed command. Successful provision overwrites the host locator
   with a reachable URL or fails the book. Do not invent lab output. Never
   write “confirmed working” without a human metal report.
+- **Public gateway: implemented in code, not yet run across real networks.**
+  Needs a domain you control DNS for and a Linux VPS (same as the platform
+  exit node, or separate). Do not invent a domain. Do not write “confirmed
+  over the internet” without a human cross-location report.
 - **Phase 15 race (2026-09-05):** `0a59f68` issued renterd S3 keys on session
   JSON; `9f69179` kept keys in env and locators-only on
   `POST`/`GET /v1/storage`. Phase 16–17 kept the locators-only contract.
   An unused `0007_host_latency_ms` draft from a parallel agent was **not**
-  applied.
-- Local `main` is ahead of `origin/main` (planning + phases 1–33). Nothing was
+  applied. Alembic **0007** in-tree is `0007_session_ingress_tokens`.
+- Local `main` is ahead of `origin/main` (planning + phases 1–33 + 35). Nothing was
   pushed this session.
 - Host register/heartbeat/provision/earnings/mesh-preauth auth uses a shared
   `HOST_BOOTSTRAP_TOKEN`. Per-host tokens are not in this MVP.
@@ -251,7 +275,8 @@ Leftover paper:
   `IMAGE_*` digest/signature pairs, `HEADSCALE_*`, and `S3_*` (or
   `RENTERD_S3_*` aliases) or uvicorn fails at startup. `HEADSCALE_EXIT_NODE`
   defaults to `dcl-platform-exit` if unset (`off` disables guest `--exit-node`).
-  Pytest overwrites Headscale and renterd env to `.invalid` so a local `.env`
+  Optional `GATEWAY_PUBLIC_ORIGIN` (https only) plus `GATEWAY_RESOLVE_TOKEN`
+  wrap session locators; pytest pops them. Pytest overwrites Headscale and renterd env to `.invalid` so a local `.env`
   cannot point tests at a live instance. Do not commit `.env`, renterd seeds,
   or `renterd/data/`. Copy fixture `IMAGE_*` values from `.env.example` for
   local stub verify; they are not a production key. After a real Packer
@@ -323,7 +348,8 @@ Leftover paper:
 - **Tailscale SaaS is not used.** Self-hosted Headscale mint+join is in.
   Default-deny ACLs are `headscale/acl.hujson`. Host mint is `tag:host`.
   Session mint is ephemeral `tag:guest` + `tag:user` with unique hostnames.
-  ACL grants stay role-based (not pairwise).
+  ACL grants stay role-based (not pairwise). `tag:gateway` ↔ `tag:guest` is
+  the public ingress; it does not reach `tag:host`.
 - **Architecture §9 item 5 — software-applied on the guest join plan, not
   live-verified.** Guest `tailscaleUp` includes `--exit-node` from
   `HEADSCALE_EXIT_NODE` (default overlay hostname `dcl-platform-exit`). Host
@@ -341,12 +367,14 @@ Leftover paper:
 
 ## Notes for next agent/session
 
-- Execution **phase 33 is done** (on-target Host Agent build + packaged
-  `.env` + fail-fast `HOST_AGENT_URL` when listen is `0.0.0.0`). Hardware
-  lines above are **not** “confirmed working”. No further numbered software
-  phase is required to copy the agent onto a host PC. Leftover is metal
-  (TAP/net, Packer disk, kernel, UAC, Hyper-V VM, human confirmation).
-  Do not start Storj. Do not invent lab output, a live metal session, or `latency_ms`. Do not treat renterd compose-up
+- Execution **phase 35 is done** (public HTTPS gateway + Matchmaker scoped
+  tokens + `tag:gateway` ACL). **Implemented in code, not yet run across
+  real networks.** Phase 34 TAP/guest net is leftover. Hardware lines are
+  **not** “confirmed working”. Ask the human for a real domain and VPS
+  choice before DNS/compose. Do not switch `RENTERD_NETWORK` off zen
+  without a funded-wallet go-ahead (`docs/runbooks/sia-mainnet.md`).
+  Do not start Storj. Do not invent lab output, a live metal session,
+  a cross-city confirmation, or `latency_ms`. Do not treat renterd compose-up
   as a live desktop. Do not weaken HostSelector, occupancy indexes, GPU
   exclusivity copy, OS-conditional backends, or CSP. Do not switch matching
   to a host catalog unless a later product decision says so — flag it, do
