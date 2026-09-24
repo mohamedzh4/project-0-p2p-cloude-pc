@@ -101,7 +101,12 @@ export interface GuestImageStatus {
   imageBooted: boolean;
 }
 
-export type LaunchBackend = "firecracker" | "qemu-whpx" | "qemu-vfio" | "hyperv-gpu";
+export type LaunchBackend =
+  | "qemu-kvm"
+  | "firecracker"
+  | "qemu-whpx"
+  | "qemu-vfio"
+  | "hyperv-gpu";
 
 /** Generated hypervisor document. Never a running VM. */
 export interface LaunchConfig {

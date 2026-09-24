@@ -31,8 +31,8 @@ does these things and nothing else:
    applies Hyper-V DDA (preferred) or exclusive GPU-P (rollback on failure)
    when the probe offers Pro. The settings window stays plan-only
    (`apply: false`, `hyperv: None`) so opening it does not steal the GPU.
-   The Hyper-V VM `dcl-pro-guest` must already exist and be powered off;
-   this agent does not create or `Start-VM` it. After a successful invoke or
+   The Hyper-V VM `dcl-pro-guest` must already exist;
+   this agent does not create it. After DDA/GPU-P it runs `Start-VM`. After a successful invoke or
    GPU apply, provision polls for a reachable Kasm (`https://{meshHost}/`,
    443) or Sunshine (`https://{meshHost}:47990/`) locator and returns that
    URL, or 400 if the streamer never answers. Tests inject loopback HTTP.
@@ -139,6 +139,36 @@ Artifacts:
 
 Copy one artifact to the volunteer PC. Cross-compile from macOS is not used.
 
+### Volunteer Windows kit (friend double-clicks)
+
+Pack a folder on this Mac, send it, and the volunteer only handles things
+software cannot do (BIOS virtualization, UAC Yes, home-router / CGNAT).
+
+```bash
+cd host-agent
+chmod +x scripts/pack-friend-kit.sh
+# Windows NSIS exe from a Windows build or GitHub Actions artifact:
+./scripts/pack-friend-kit.sh /path/to/Host_Agent_x64-setup.exe
+```
+
+`scripts/pack-friend-kit.sh` writes `dist-friend/` (`setup.cmd`, the
+bootstrap script, gitignored `friend.env`, optional `rootfs.qcow2` if
+`IMAGE_QCOW2` or `~/dcl-standard-rootfs.qcow2` exists). Zip that folder
+and send it.
+
+The volunteer double-clicks `setup.cmd`. It self-elevates, enables WHPX,
+opens TCP 7842, installs Tailscale (does not log into tailscale.com),
+installs pinned Weilnetz QEMU, converts/verifies `rootfs.qcow2`, installs
+Host Agent, writes `%APPDATA%\com.distributedcomputelab.hostagent\.env`,
+tries UPnP, disables sleep on AC, and starts the app. Reboot for WHPX
+resumes via RunOnce.
+
+They still must: enable VT-x/AMD-V in firmware if the script says so;
+click Yes on UAC; forward TCP 7842 if UPnP cannot; keep the PC plugged in.
+You still approve the host on Matchmaker.
+
+This Mac cannot produce `host-agent-setup.exe`.
+
 ### Env on the volunteer PC
 
 Packaged apps do not see `host-agent/.env` from this repo. Put the same keys
@@ -180,7 +210,7 @@ OS hypervisor binary and signed guest image → you save sharing caps and
 register (pending until approved) → heartbeats every 10s while sharing is
 on → Matchmaker `POST /v1/provision` → Linux Standard InstanceStart /
 Windows Standard `-accel whpx` / Linux Pro VFIO apply / Windows Pro
-Hyper-V DDA or GPU-P → poll Kasm `:443` or Sunshine `:47990` on the guest
+Hyper-V DDA or GPU-P → poll KasmVNC `:8443` or Sunshine `:47990` on the guest
 mesh hostname → return that URL or 400. The window never asks which
 backend. GPU bind from the window stays plan-only.
 
@@ -203,7 +233,7 @@ spawned from Rust, not the Tauri shell plugin (capabilities stay narrow).
 - [ ] Windows Standard: accept UAC for Weilnetz QEMU; WHPX available
 - [ ] Windows Pro: Hyper-V enabled, agent elevated, VM `dcl-pro-guest` exists and is off
 - [ ] Linux Pro: IOMMU + second display path
-- [ ] Guest net/TAP still needed on metal for Kasm/Sunshine to answer the locator poll
+- [ ] Guest net/TAP is in software (`dcl-tap0` / QEMU SLIRP); metal still has to exist for Kasm/Sunshine to answer the locator poll
 
 Restart Matchmaker after pulling recent commits if `GET /v1/sessions` is 405
 (stale uvicorn). That is not a web harness method mismatch (`POST` books,
@@ -437,8 +467,9 @@ Local `sharingEnabled` is not a Matchmaker field. Pause stops heartbeats on the
 next tick; after 45s of silence the Matchmaker will not select this host and
 will interrupt an occupied session (same as disconnect). Occupancy on the
 Matchmaker stays on session indexes. The window and tray can still show
-in-session after a successful stub provision — Matchmaker silence teardown does
-not call the agent, so the local occupancy flag is not cleared.
+in-session after a successful stub provision. Matchmaker silence teardown
+POSTs `/v1/teardown` (host bootstrap Bearer) so the local occupancy flag
+is cleared.
 
 ## Platform support
 
@@ -454,10 +485,11 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 33 finished the **on-target build + operator env path**. Leftover paper
-  is TAP/guest net, pairwise ACLs, measured latency, and a human metal
-  confirmation. Do not invent a live desktop. Hardware is implemented in
-  code, not yet run on physical hardware.
+- Phase 34 finished TAP/SLIRP, Linux Pro QEMU+VFIO attach, Windows Pro
+  `Start-VM`, `/v1/teardown`, and QEMU fw_cfg bootstrap. Leftover paper is
+  pairwise ACLs, measured latency, Hyper-V guest bootstrap channel, and a
+  human metal confirmation. Do not invent a live desktop. Hardware is
+  implemented in code, not yet run on physical hardware.
 - Phase 23 insufficient-resource UX is in: the window shows Standard/Pro as
   **Available** or **Not available** with a reason from the probe, the
   2 vCPU / 4 GiB / 50 GiB floor, or a refused VFIO/DDA plan. A blocked tier
@@ -470,8 +502,8 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   Phase 30 applies Windows Hyper-V DDA (preferred) or exclusive GPU-P from
   Matchmaker provision through an injectable runner (production PowerShell;
   tests refuse live `powershell.exe`; rollback on mid-step failure). The VM
-  `dcl-pro-guest` must already exist and be powered off; this agent does not
-  `Start-VM`. Firecracker is never used for Pro.
+  `dcl-pro-guest` must already exist; this agent does not create it and
+  now `Start-VM`s after GPU assign. Firecracker is never used for Pro.
   Session guest/user tags live on Matchmaker JSON; this agent still joins as
   `tag:host` and never passes `--advertise-exit-node` or `--exit-node`.
   Complete provision locators return `guestRclone` argv (`--s3-env-auth`).
@@ -480,7 +512,7 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   is renterd S3, not Storj. On
   macOS, `POST /v1/provision` is 400 (not offered / unsupported OS);
   Matchmaker then keeps the seeded locator. Local in-session occupancy is
-  still not cleared when Matchmaker interrupts a session (no teardown port).
+  cleared on `POST /v1/teardown` (Matchmaker end/silence).
   Real host payouts are not in this agent. This agent never reads
   `HEADSCALE_API_KEY` or renterd S3 secrets. Do not fake latency. Phase 24
   (leftover **19b**) runs the QEMU NSIS installer with `/S` `/D=`; UAC
@@ -492,7 +524,8 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   `dcl-pro-guest`. Phase 26
   Packer pipeline produces signed guest disks. Phase 27 InstanceStarts
   Firecracker on Linux Standard HTTP provision; phase 28 spawns QEMU
-  `-accel whpx` on Windows Standard; locators stay `.invalid` (no TAP).
+  `-accel whpx` on Windows Standard; Firecracker uses TAP `dcl-tap0`;
+  QEMU uses SLIRP user-net.
   Operator kernel is `FIRECRACKER_KERNEL` (Packer does not invent vmlinux).
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`

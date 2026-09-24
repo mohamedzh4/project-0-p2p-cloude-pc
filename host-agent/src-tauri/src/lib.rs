@@ -1,8 +1,8 @@
 //! Detect the machine, persist local sharing caps, register those caps with
 //! the Matchmaker from Rust, ping while sharing is on, and optionally join
-//! self-hosted Headscale from Rust. Linux Standard provision starts Firecracker
-//! when the probe offers it and the binary, kernel, and verified rootfs are
-//! present. Windows Standard provision starts QEMU with `-accel whpx` when the
+//! self-hosted Headscale from Rust. Linux Standard provision starts QEMU+KVM
+//! when the probe offers it and a verified disk is present. Windows Standard
+//! provision starts QEMU with `-accel whpx` when the
 //! probe offers it and the binary plus a verified disk are present. Linux Pro
 //! provision applies vfio-pci bind when the probe offers Pro; Windows Pro
 //! provision applies Hyper-V DDA/GPU-P when the probe offers Pro (window stays
@@ -20,6 +20,7 @@ mod env_file;
 mod firecracker;
 mod gpu;
 mod gpu_bind;
+mod guest_net;
 mod hardware;
 mod host_capabilities;
 mod hypervisor;
@@ -33,6 +34,8 @@ mod models;
 mod provision;
 mod provision_http;
 mod qemu;
+mod qemu_kvm;
+mod qemu_linux;
 mod storage;
 mod tray;
 
@@ -158,27 +161,25 @@ fn spawn_provision_listener(app: &tauri::App) {
                     let sharing = config_dir
                         .as_ref()
                         .and_then(|dir| crate::config::load_for_hardware(dir, &hardware).ok());
-                    let firecracker = if os == HostOs::Linux && capabilities.standard.offered {
-                        Some(provision_http::FirecrackerBoot {
-                            binary: hypervisor
-                                .path
-                                .as_deref()
-                                .map(std::path::PathBuf::from)
-                                .unwrap_or_default(),
+                    let qemu_kvm = if os == HostOs::Linux && capabilities.standard.offered {
+                        crate::qemu_kvm::resolve_binary(
+                            std::env::consts::ARCH,
+                            |key| std::env::var(key).ok(),
+                        )
+                        .ok()
+                        .map(|binary| provision_http::QemuKvmBoot {
+                            binary,
                             image_cache_dir: cache.clone(),
                             guest_image: guest_image.clone(),
-                            kernel_override: std::env::var(crate::firecracker::KERNEL_ENV)
-                                .ok()
-                                .map(std::path::PathBuf::from)
-                                .filter(|path| !path.as_os_str().is_empty()),
                             arch: std::env::consts::ARCH.to_string(),
                             runtime: std::sync::Arc::new(
-                                crate::firecracker::ProcessFirecrackerRuntime,
+                                crate::qemu_kvm::ProcessQemuKvmRuntime,
                             ),
                         })
                     } else {
                         None
                     };
+                    let firecracker = None;
                     let qemu = if os == HostOs::Windows && capabilities.standard.offered {
                         Some(provision_http::QemuBoot {
                             binary: hypervisor
@@ -187,9 +188,27 @@ fn spawn_provision_listener(app: &tauri::App) {
                                 .map(std::path::PathBuf::from)
                                 .unwrap_or_default(),
                             image_cache_dir: cache.clone(),
-                            guest_image,
+                            guest_image: guest_image.clone(),
                             arch: std::env::consts::ARCH.to_string(),
                             runtime: std::sync::Arc::new(crate::qemu::ProcessQemuRuntime),
+                        })
+                    } else {
+                        None
+                    };
+                    let linux_qemu = if os == HostOs::Linux && capabilities.pro.offered {
+                        crate::qemu_linux::resolve_binary(
+                            std::env::consts::ARCH,
+                            |key| std::env::var(key).ok(),
+                        )
+                        .ok()
+                        .map(|binary| provision_http::LinuxQemuBoot {
+                            binary,
+                            image_cache_dir: cache.clone(),
+                            guest_image: guest_image.clone(),
+                            arch: std::env::consts::ARCH.to_string(),
+                            runtime: std::sync::Arc::new(
+                                crate::qemu_linux::ProcessLinuxQemuRuntime,
+                            ),
                         })
                     } else {
                         None
@@ -220,9 +239,12 @@ fn spawn_provision_listener(app: &tauri::App) {
                         sharing,
                         spare_disk_bytes: crate::disk_space::available_bytes(&cache),
                         firecracker,
+                        qemu_kvm,
                         qemu,
                         vfio,
                         hyperv,
+                        linux_qemu,
+                        cleanup: provision_http::SessionCleanup::new(),
                         streamer: Some(crate::locator::StreamerWait::production()),
                     };
                     if let Err(error) =
@@ -242,7 +264,7 @@ pub fn run() {
     let hardware = hardware::detect();
     let os = HostOs::current();
     let capabilities = host_capabilities::probe_live(os, &hardware.gpus);
-    let hypervisor = hypervisor::status_from_result(hypervisor::ensure_from_env(
+    let hypervisor = hypervisor::status_from_result(hypervisor::runtime_status_from_env(
         os,
         &capabilities,
         std::env::consts::ARCH,

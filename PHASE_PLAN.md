@@ -39,8 +39,8 @@ Handoffs for the next agent: `docs/phase-logs/`.
 - Keep the Matchmaker pytest suite, Host Agent `cargo test` suite, and web
   vitest + typecheck green unless you are deliberately changing behavior they
   cover — and if so, say so in the commit, the handoff, and `PROJECT_STATUS.md`.
-  Counts after phase 35: pytest 178, cargo test --lib 328, vitest 53, guest-images
-  unittest 12, gateway pytest 10.
+  Counts after phase 34: pytest 185, cargo test --lib 344, vitest 54, guest-images
+  unittest 14, gateway pytest 10.
 
 ## Contracts to keep stable
 
@@ -64,8 +64,10 @@ Matchmaker JSON is camelCase.
 | POST | `/v1/storage` | User Bearer; issue per-user renterd bucket `dcl-<uuid>` + prefix `files/`. 201 new, 200 existing. `{ provider, bucket, prefix, endpoint, region, objects, pathStyle, mountInsideGuest, rclone, rcloneArgs, envAuth }`. No access keys. |
 | GET | `/v1/storage` | User Bearer; 200 same shape or 404 if never issued. |
 | POST | `/v1/gateway/resolve` | Gateway Bearer (`GATEWAY_RESOLVE_TOKEN`); body `{ token }`. 200 `{ sessionId, targetUrl, streamer }` or 404. Never a default session. |
+| POST | `/v1/guest/bootstrap` | Guest bootstrap Bearer (not a user JWT, not host bootstrap). 200 `{ loginServer, preauthKey, hostname, exitNode, aclTags, tailscaleUp, storage }` where `storage` includes rclone argv **and** `accessKeyId` / `secretAccessKey`. 401/404 otherwise. Never on session JSON or provision POST. |
+| POST | `/v1/guest/saved-as-of` | Same guest bootstrap Bearer. Body `{ savedAsOf? }`. Writes `sessions.saved_as_of` (FR6). |
 
-Session response: `{ sessionId, hostId, labTier, startedAt, connection, storage, mesh }` where `storage` is the same locator object as `/v1/storage` (no access keys). `mesh` is `{ loginServer, exitNode, exitNodeApplied, guest, user }` with ephemeral Headscale preauth keys tagged `tag:guest` / `tag:user` and guest `tailscaleUp` including `--exit-node` when `HEADSCALE_EXIT_NODE` is set (default `dcl-platform-exit`). Host Agent join stays the preauth route (`tag:host`, never `--exit-node`). Standard `connection` is `{ streamer: "kasm", kasmUrl, kasmToken, sunshineUrl: null, moonlight: null, gpuExclusive: false }`. Pro `connection` is `{ streamer: "sunshine", kasmUrl: null, kasmToken: null, sunshineUrl, moonlight: { host, app }, gpuExclusive: true }` — not Kasm renamed. Locators still live in `hosts.kasm_url` (mesh address). When `GATEWAY_PUBLIC_ORIGIN` is set, session JSON `kasmUrl` / `sunshineUrl` are `https://<origin>/s/<token>/` (public gateway); Moonlight `host` stays the mesh hostname. `POST /v1/gateway/resolve` (gateway Bearer) maps that token to the mesh locator or 404s. Pro-GPU: implemented in code, not yet
+Session response: `{ sessionId, hostId, labTier, startedAt, connection, storage, mesh }` where `storage` is the same locator object as `/v1/storage` (no access keys) plus `savedAsOf` (null until the guest POSTs `/v1/guest/saved-as-of`). `mesh` is `{ loginServer, exitNode, exitNodeApplied, guest, user }` with ephemeral Headscale preauth keys tagged `tag:guest` / `tag:user` and guest `tailscaleUp` including `--exit-node` when `HEADSCALE_EXIT_NODE` is set (default `dcl-platform-exit`). Host Agent join stays the preauth route (`tag:host`, never `--exit-node`). Guest Headscale preauth and S3 keys for the **VM** come from `POST /v1/guest/bootstrap`, not from provision JSON. Standard `connection` is `{ streamer: "kasm", kasmUrl, kasmToken, sunshineUrl: null, moonlight: null, gpuExclusive: false }`. Pro `connection` is `{ streamer: "sunshine", kasmUrl: null, kasmToken: null, sunshineUrl, moonlight: { host, app }, gpuExclusive: true }` — not Kasm renamed. Locators still live in `hosts.kasm_url` (mesh address). When `GATEWAY_PUBLIC_ORIGIN` is set, session JSON `kasmUrl` / `sunshineUrl` are `https://<origin>/s/<token>/` (public gateway); Moonlight `host` stays the mesh hostname. `POST /v1/gateway/resolve` (gateway Bearer) maps that token to the mesh locator or 404s. Pro-GPU: implemented in code, not yet
 run on physical hardware. After a successful invoke or GPU apply, provision
 returns a live Kasm/Sunshine locator (mesh hostname, ports 443 / 47990) or
 fails; it does not occupy a host with `.invalid`. There is still no live
@@ -829,9 +831,9 @@ placeholder. Login restores an active Matchmaker session; end/history/credits
 come from `POST .../end` and `GET /v1/sessions`. Not yet run on physical
 hardware. See `docs/phase-logs/phase-32-web-full-loop.md`.
 
-**Next:** Host Agent on-target binary (phase 33, done). Leftover paper after 33
-is TAP/guest net, pairwise ACLs, measured latency, and a human metal
-confirmation.
+**Next:** Host Agent on-target binary (phase 33, done). Phase 34 TAP/guest
+net is done as a software contract. Leftover paper is pairwise ACLs,
+measured latency, and a human metal confirmation.
 
 ### Phase 33 — Host Agent copyable binary
 
@@ -854,9 +856,18 @@ session on metal.
 
 ### Phase 34 — TAP / guest networking
 
-**Not this session.** Host-to-guest connectivity on a single machine so
-Kasm/Sunshine can answer after Firecracker/QEMU invoke. Still required
-regardless of distance. Not superseded by the public gateway (phase 35).
+Done as a **software contract** (2026-09-11). Firecracker Standard uses TAP
+`dcl-tap0` + static `ip=` cmdline. QEMU Standard/Linux Pro use SLIRP
+user-net (free; no TAP-Windows). Linux Pro QEMU+KVM attaches VFIO.
+Windows Pro `Start-VM` after DDA/GPU-P. `POST /v1/teardown` clears occupancy
+and rolls GPU bind back. Guest join script redeems Matchmaker bootstrap
+(never volunteer-disk preauth/S3 keys). FR6 `savedAsOf` is guest-reported.
+Implemented in code, not yet run on physical hardware. Hyper-V still has
+no fw_cfg channel for bootstrap (baked unit no-ops without cmdline).
+See `docs/phase-logs/phase-34-guest-net-and-runtime.md`.
+
+**Not closed:** pairwise Headscale ACLs, measured `latency_ms`, a human
+metal / cross-city confirmation, a real gateway domain, funded Sia mainnet.
 
 ### Phase 35 — Public gateway / internet ingress (Network plane)
 
@@ -873,9 +884,9 @@ pairwise `tag:session-<uuid>`. Do not invent a domain. Do not switch
 `RENTERD_NETWORK` off zen. Do not change Standard vs Pro provisioner
 selection.
 
-**Do not:** Close TAP (phase 34). Do not claim a cross-city or
-“confirmed over the internet” test. Do not weaken default-deny for
-`tag:host`. Do not iframe Kasm.
+**Do not:** Claim a cross-city or “confirmed over the internet” test. Do not
+weaken default-deny for `tag:host`. Do not iframe Kasm. TAP/guest net is
+phase 34 (software contract, not metal).
 
 **Exit:** Gateway + Matchmaker resolve tests without live infra; ACL file
 asserts gateway cannot reach `tag:host`; session JSON wraps when

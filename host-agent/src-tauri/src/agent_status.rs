@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Serialize;
 
 /// Process-wide occupancy for the provision listener thread (no Tauri types).
-/// Cleared only when a later teardown path exists (phase 12).
+/// Cleared by `POST /v1/teardown`.
 #[derive(Debug)]
 pub struct Occupancy {
     in_session: AtomicBool,
@@ -20,6 +20,10 @@ impl Occupancy {
 
     pub fn mark_in_session(&self) {
         self.in_session.store(true, Ordering::SeqCst);
+    }
+
+    pub fn clear_in_session(&self) {
+        self.in_session.store(false, Ordering::SeqCst);
     }
 
     pub fn is_in_session(&self) -> bool {
@@ -145,6 +149,12 @@ mod tests {
         assert_eq!(
             presence(true, occupancy.is_in_session()),
             SharingPresence::InSession
+        );
+        occupancy.clear_in_session();
+        assert!(!occupancy.is_in_session());
+        assert_eq!(
+            presence(true, occupancy.is_in_session()),
+            SharingPresence::Idle
         );
     }
 }

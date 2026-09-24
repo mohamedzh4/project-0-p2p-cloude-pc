@@ -1,11 +1,14 @@
-# Project Status — last updated: 2026-09-08, after phase 35 public gateway
+# Project Status — last updated: 2026-09-14, browser-cloud demo integration
 
-## Hardware (this Mac cannot host)
+## Hardware proof still required
 
 Never write “confirmed working” until a human reports a live session on metal.
 
-- Standard-Linux: Implemented in code. Not yet run on physical hardware.
-- Standard-Windows: Implemented in code. Not yet run on physical hardware.
+- Standard-Linux: QEMU+KVM, direct XFCE/KasmVNC desktop, and public gateway
+  integration are implemented and covered by non-metal tests. Not yet run on
+  a physical Linux KVM host.
+- Standard-Windows: QEMU+WHPX uses the same signed guest and direct browser
+  desktop. Not yet run on a physical Windows host.
 - Pro-GPU: Implemented in code. Not yet run on physical hardware.
 
 `SEED_HOST_KASM_URL` remains `https://example.invalid/kasm` for the seed
@@ -22,7 +25,9 @@ command. Successful provision no longer stores that placeholder. Pointers:
 - renterd operator runbook: `docs/runbooks/renterd.md` (compose, S3 v4
   keypairs, guest rclone argv). **Implemented storage is renterd, not Storj
   (human decision 2026-09-05).**
-- Execution phases 1–33 and 35 on local `main` (not pushed):
+- Execution phases 1–35 on local `main` (not pushed). **Phase 34** (guest
+  net, Linux Pro QEMU+VFIO attach, Windows Pro Start-VM, Host Agent
+  teardown, guest bootstrap/rclone/FR6) is a software contract — not metal.
   - Host Agent: CPU/RAM via sysinfo; NVIDIA GPUs via nvml-wrapper; config v2
     (`sharedGpuId`); CSP, `freezePrototype`, capabilities off `core:default`;
     Rust Matchmaker client (register/PUT + 10s heartbeats + earnings GET).
@@ -30,32 +35,34 @@ command. Successful provision no longer stores that placeholder. Pointers:
     pause writes `sharingEnabled` and skips heartbeats. Presence is paused /
     idle / in-session. Earnings copy is `{n} credits accrued (not paid out)`
     from the Matchmaker ledger (not a payout). Rust-side tray (tooltip +
-    pause/resume; no JS tray APIs). **Phase 27:** Linux Standard HTTP
-    provision starts the fetched Firecracker binary and PUTs boot-source,
-    drives/rootfs, machine-config, then `InstanceStart` over a Unix socket
-    (`firecracker.rs`). **Phase 28:** Windows Standard HTTP provision starts
+    pause/resume; no JS tray APIs). Linux Standard HTTP provision starts
+    distro QEMU with `-enable-kvm`, a q35 machine, and SLIRP networking
+    (`qemu_kvm.rs`; no TCG). **Phase 28:** Windows Standard HTTP provision starts
     the fetched Weilnetz `qemu-system-*.exe` with qemu.org `-accel whpx`
     (`qemu.rs`; no TCG, no Hyper-V Standard boot). `plan()` still never
-    invokes. After a successful Firecracker/QEMU invoke or VFIO/Hyper-V apply,
-    provision polls for a reachable Kasm (`https://{meshHost}/`, port 443) or
+    invokes. After a successful QEMU invoke or VFIO/Hyper-V apply,
+    provision polls for a reachable KasmVNC
+    (`https://{meshHost}:8443/`) or
     Sunshine (`https://{meshHost}:47990/`) locator and returns that URL, or
     400 if the streamer never answers. Tests inject loopback HTTP. Plan-only
     stubs may still return `.invalid`. **Phase 29:** Linux Pro HTTP
     provision applies vfio-pci against injectable sysfs (production: live
     `/sys`; `cfg(test)` refuses live `/sys`) with rollback. The window stays
     `apply: false`. After apply, provision polls Sunshine
-    (`https://{meshHost}:47990/`) the same way. QEMU
-    is not spawned with VFIO attached. **Phase 30:** Windows Pro HTTP
+    (`https://{meshHost}:47990/`) the same way. **Phase 34:** Linux Pro then
+    starts distro QEMU+KVM with `-device vfio-pci` when a binary is present
+    (`HOST_AGENT_QEMU_BIN` or `/usr/bin/qemu-system-*`). **Phase 30:** Windows Pro HTTP
     provision applies Hyper-V DDA (preferred) or exclusive GPU-P through an
     injectable runner (production: `powershell.exe -NoProfile
     -NonInteractive`, 30s kill; `cfg(test)` refuses live PowerShell) with
-    rollback. The window stays `apply: false` / `hyperv: None`. After apply,
-    provision polls Sunshine the same way (honest 400 if `dcl-pro-guest` is
-    not serving). `hypervisorInvoked` stays false on the Hyper-V apply path.
-    No `Start-VM`. VM `dcl-pro-guest` must already exist and be powered off.
+    rollback, then **Start-VM** on existing `dcl-pro-guest`. The window stays
+    `apply: false` / `hyperv: None`. After apply, provision polls Sunshine
+    the same way (honest 400 if the guest is not serving).
+    `hypervisorInvoked` stays false on the Hyper-V apply path.
     Missing kernel/binary/rootfs/WHPX/VFIO/Hyper-V
-    mid-step is 400, not a fake success. macOS/Linux/Pro do not spawn QEMU; macOS/
-    Windows/Pro do not spawn Firecracker. Tests inject a fake process (no
+    mid-step is 400, not a fake success. macOS does not spawn QEMU or
+    Firecracker; Linux Pro QEMU is distro/KVM, not Weilnetz; Windows Pro
+    does not spawn Firecracker. Tests inject a fake process (no
     `/dev/kvm`, no WHPX) and a mock PCI tree (no live `/sys`) and a fake
     Hyper-V runner (no `powershell.exe`). **Before** a stub
     boot, `image.rs` verifies Ed25519 over the SHA-256 digest against
@@ -74,10 +81,8 @@ command. Successful provision no longer stores that placeholder. Pointers:
     a stub enum on non-Windows, GPU list + second-display heuristic (iGPU or
     2+ GPUs), and Linux IOMMU sysfs (unknown off Linux). The window shows
     Standard/Pro **offered** in plain language and never asks which backend.
-    **Phase 19:** `hypervisor.rs` locates or fetches Firecracker on Linux
-    Standard (documented GitHub v1.16.1 tarball + published SHA-256) into a
-    user cache; checksum mismatch fails fast and does not install; this
-    module never executes the binary. Windows Standard fetches the pinned
+    **Phase 19:** `hypervisor.rs` resolves the distro
+    `qemu-system-x86_64` binary for Linux Standard. Windows Standard fetches the pinned
     Weilnetz NSIS installer (`qemu-w64-setup-20260811.exe` / ARM sibling),
     verifies the published SHA-512, and runs `/S` `/D=<user cache>` (phase 24
     / leftover **19b**). UAC consent is still manual (`qemu.nsi`
@@ -85,7 +90,7 @@ command. Successful provision no longer stores that placeholder. Pointers:
     inject a fetcher / installer / `file://` / loopback httptest (no live
     GitHub or Weilnetz in CI).     **Phase 20:**
     `image.rs` locates or fetches the signed guest image for the probed
-    backend into a user cache. Linux Standard fetches the Firecracker guest
+    backend into a user cache. Linux Standard fetches the QEMU guest
     image; Linux Pro (when offered) fetches the Pro image. Windows Standard
     fetches the QEMU disk the same way (phase 28). SHA-256 + Ed25519
     (`IMAGE_SIGNING_PUBLIC_KEY` + Matchmaker `IMAGE_*` digest/signature) run
@@ -94,7 +99,7 @@ command. Successful provision no longer stores that placeholder. Pointers:
     fetcher / `file://` / httptest (no multi-GB download). The webview does
     not fetch.
     **Phase 21:** `launch.rs` maps clamped v2 sliders to a launch-config JSON
-    for the stub backend (`firecracker` / `qemu-whpx` / `qemu-vfio` /
+    for the stub backend (`qemu-kvm` / `qemu-whpx` / `qemu-vfio` /
     `hyperv-gpu`). vCPU and memory come from the sliders. Standard omits GPU
     assignment. Pro includes `{ id, exclusive: true }` when `shareGpu` is on.
     Kernel/rootfs paths come from the phase-20 cache when present. Below
@@ -132,7 +137,7 @@ command. Successful provision no longer stores that placeholder. Pointers:
     NSIS installer, checksum, run `/S` `/D=`. Injected installer in tests.
     UAC is not automated. **Phase 25:** leftover **22b** Hyper-V DDA/GPU-P
     apply + rollback (injectable runner). **Phase 26:** Packer + QEMU guest
-    image pipeline in `guest-images/` (Standard = Kasm Workspaces in the
+    image pipeline in `guest-images/` (Standard = XFCE + KasmVNC in the
     guest; Pro = Sunshine in the guest). Operator build emits `rootfs.img` /
     `rootfs.qcow2` plus `.sha256` / `.sig` / `.manifest.json` using the same
     Ed25519-over-raw-SHA-256 contract Host Agent already verifies. Dev
@@ -211,18 +216,18 @@ command. Successful provision no longer stores that placeholder. Pointers:
     not switch `RENTERD_NETWORK` without a funded-wallet go-ahead.
   - Guest image **build** (phase 26): `guest-images/` Packer qemu `disk_image`
     from the pinned Ubuntu 24.04 cloud image (not in git). Standard provisioner
-    runs Kasm `install.sh --accept-eula --admin-password --user-password`.
+    installs checksum-pinned KasmVNC + XFCE and enables a direct systemd
+    desktop on mesh port 8443. Public authorization remains at the DCL
+    session-token gateway; QEMU SLIRP does not expose the listener to the LAN.
     Pro provisioner `dpkg -i` the official Sunshine Ubuntu 24.04 `.deb` and
     enables `app-dev.lizardbyte.app.Sunshine`. `scripts/sign_image.py` writes
-    checksum + Ed25519 sidecars. Firecracker `vmlinux` is an extra operator
-    input (`FIRECRACKER_KERNEL`); Packer does not invent one.
+    checksum + Ed25519 sidecars.
 
 ## In Progress
 
-- None. Numbered software phases 1–33 and 35 are on local `main`. Phase 34
-  (TAP/guest net) is leftover paper. Hardware is implemented in code, not
-  yet run on physical hardware. The public gateway is implemented in code,
-  not yet run across real networks.
+- Physical deployment proof. Software paths and public ingress are implemented;
+  a signed guest image still has to be built and booted on Linux KVM and
+  Windows WHPX hardware.
 
 ## Up Next
 
@@ -240,9 +245,8 @@ Leftover paper:
 2. Live guest Tailscale/rclone — join/mount plans exist; the Packer image
    installs the clients; they still need a booted guest with a network.
 3. FR13 latency ranking waits on a measured value — do not fake `latency_ms`.
-4. **Phase 34** TAP/net so Kasm/Sunshine is reachable on metal, jailer, QEMU
-   VFIO attach after bind. The Host Agent window stays plan-only for GPU
-   bind. Not superseded by the public gateway.
+4. Pro GPU metal validation. Standard uses QEMU SLIRP plus the guest's
+   outbound Headscale connection and does not require TAP.
 5. Human cross-location test of the gateway (host and client on genuinely
    different networks). Do not mark “confirmed over the internet” until
    that report.
@@ -287,7 +291,7 @@ Leftover paper:
   `IMAGE_STANDARD_SIGNATURE` and `HOST_AGENT_STANDARD_IMAGE_URL` (checksum
   metadata is the same Matchmaker `IMAGE_*` pairs). Public key only — never a
   signing secret in the agent or Matchmaker runtime. Linux Standard invoke
-  also needs `FIRECRACKER_KERNEL` (or `vmlinux` next to the verified rootfs).
+  also needs distro `qemu-system-x86_64` and read/write `/dev/kvm`.
   Windows Standard invoke also needs WHPX in the probe, Weilnetz QEMU
   installed, and a verified Standard disk (`HOST_AGENT_STANDARD_IMAGE_URL`).
 - A long-running Matchmaker on `:8000` from 2026-09-02 still has no
@@ -300,16 +304,10 @@ Leftover paper:
 - Pause is still local `sharingEnabled=false` (no Matchmaker field). Skipping
   heartbeats looks like disconnect: after 45s the occupied session is
   interrupted and may rematch.
-- Local Host Agent occupancy (in-session) is set on provision HTTP 200 (live
-  locator returned) and is
-  **not** cleared when Matchmaker interrupts — there is no teardown HTTP port
-  on the agent. Timeout 400 does not occupy. Resume after pause can still show in-session if a guest already
-  left. A successful Firecracker InstanceStart or QEMU `-accel whpx` spawn
-  also leaves the child detached with no teardown port. A successful Linux Pro
-  VFIO bind leaves the GPU on vfio-pci with no unbind teardown port. A
-  successful Windows Pro Hyper-V DDA/GPU-P assign leaves the GPU on the
-  guest VM with no unassign teardown port.
--   Linux Standard HTTP provision can InstanceStart. Windows Standard HTTP
+- Local Host Agent occupancy is set only after a live locator is returned.
+  Session end calls the agent teardown endpoint, which kills managed QEMU
+  children. Timeout 400 does not occupy.
+- Linux Standard HTTP provision can start QEMU+KVM. Windows Standard HTTP
   provision can spawn QEMU `-accel whpx`. Linux Pro HTTP provision can apply
   vfio-pci. Windows Pro HTTP provision can apply Hyper-V DDA/GPU-P. `plan()`
   stays a stub.
@@ -325,13 +323,10 @@ Leftover paper:
   if the host row is still a placeholder seed. Guest-image ensure, launch-config
   generation, and GPU bind on this Mac skip / fail as unsupported. Packer build
   needs Linux/KVM (or HVF) and is not run in CI.
-  Metal Firecracker still needs KVM, a real `rootfs.img`, operator `vmlinux`,
-  and TAP/net — InstanceStart plus locator poll still needs a reachable Kasm.
-  Metal QEMU+WHPX still needs WHPX, UAC for NSIS, a verified disk, and guest
-  net. Metal VFIO still needs IOMMU + a second display path, then QEMU attach.
-  Metal Hyper-V still needs the feature, elevation, and `dcl-pro-guest` —
-  DDA/GPU-P assign does not `Start-VM`; Sunshine poll fails honestly if the
-  guest is not serving.
+  Standard QEMU+KVM/WHPX uses SLIRP user networking (no TAP).
+  Metal VFIO still needs IOMMU + a second display path; QEMU attach is in
+  software when distro QEMU is installed. Metal Hyper-V still needs the
+  feature, elevation, and `dcl-pro-guest` — assign now also `Start-VM`.
 - Intent text stays in the harness. It is not persisted and is not on the
   session JSON. Keyword mapping is a smallest-slice heuristic (office/code →
   Standard; GPU/game/3D/training → Pro).
@@ -356,10 +351,10 @@ Leftover paper:
   Agent join never advertises `--advertise-exit-node` and never sets
   `--exit-node`. Until a guest image actually runs those args against a
   running exit node, guest internet can still egress via the host path.
-- **FR4/FR6 live mount is still paper.** Control-plane grant + argv/plan +
-  provision `guestRclone` exist. The Packer image installs rclone. rclone
-  inside a booted guest is still later. Session keys must not land on the
-  volunteer host disk.
+- **FR4/FR6 software path is in; live metal mount is not.** Control-plane
+  grant + argv + guest bootstrap S3 env keys + Packer `dcl-guest-join`
+  (rclone `--daemon`, then `savedAsOf`) exist. A booted guest on metal has
+  not been confirmed. Session keys must not land on the volunteer host disk.
 - Consumer GPU EULAs and ToS/liability still need legal review (architecture
   §9 items 10–11).
 - Aikido scan: MCP `namespaceStatus: error` this session (`mcp_auth` timed
@@ -367,26 +362,15 @@ Leftover paper:
 
 ## Notes for next agent/session
 
-- Execution **phase 35 is done** (public HTTPS gateway + Matchmaker scoped
-  tokens + `tag:gateway` ACL). **Implemented in code, not yet run across
-  real networks.** Phase 34 TAP/guest net is leftover. Hardware lines are
-  **not** “confirmed working”. Ask the human for a real domain and VPS
-  choice before DNS/compose. Do not switch `RENTERD_NETWORK` off zen
-  without a funded-wallet go-ahead (`docs/runbooks/sia-mainnet.md`).
-  Do not start Storj. Do not invent lab output, a live metal session,
-  a cross-city confirmation, or `latency_ms`. Do not treat renterd compose-up
-  as a live desktop. Do not weaken HostSelector, occupancy indexes, GPU
-  exclusivity copy, OS-conditional backends, or CSP. Do not switch matching
-  to a host catalog unless a later product decision says so — flag it, do
-  not silently implement. Do not fetch Firecracker,
-  QEMU, or a guest disk from `cargo test` (injected fetcher / installer /
-  file:// / httptest). Do not spawn a real Firecracker or QEMU from tests
-  (inject `FirecrackerRuntime` / `QemuRuntime`). Do not use Firecracker for
-  Pro. Do not bind live `/sys` from tests. Do not spawn live PowerShell from
-  tests (inject `HyperVGpuOps`). Do not commit Packer output, PEMs, or Kasm
-  passwords. Do not `Start-VM` as a Standard boot fallback or as a Hyper-V
-  attach step. Do not surprise-bind
-  from the settings window.
+- Execution **phase 34 is done** as a software contract (TAP, QEMU net,
+  VFIO attach, Start-VM, teardown, guest bootstrap, FR6). **Phase 35**
+  (public HTTPS gateway) was already done. Neither is confirmed on metal
+  or across real networks. Hardware lines are **not** “confirmed working”.
+  Ask the human for a real domain and VPS choice before DNS/compose, and
+  for `MATCHMAKER_PUBLIC_ORIGIN` reachable from the guest. Do not switch
+  `RENTERD_NETWORK` off zen without a funded-wallet go-ahead
+  (`docs/runbooks/sia-mainnet.md`). Do not start Storj. Do not invent lab
+  output, a live metal session, a cross-city confirmation, or `latency_ms`.
 - Session router uses `HostSelector` + `HostProvisioner` via Depends. Do not
   import `RankedHostSelector` in `sessions.py` or `silence.py`. Do not put
   Firecracker/QEMU/WHPX names there. Occupancy stays on session indexes.

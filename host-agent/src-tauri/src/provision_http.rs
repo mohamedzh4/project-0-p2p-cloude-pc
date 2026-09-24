@@ -1,13 +1,13 @@
 //! Inbound provision HTTP port. Verifies the signed image digest
 //! ([`crate::image::verify_image`]) **before** calling [`crate::provision::plan`].
-//! Linux Standard then starts Firecracker when the probe offered it and the
-//! binary, kernel, and verified rootfs are present. Windows Standard then
+//! Linux Standard starts QEMU+KVM when the probe offered it and the binary
+//! plus verified disk are present. Windows Standard then
 //! starts QEMU with `-accel whpx` when the probe offered it and the binary
 //! plus a verified disk are present. Linux Pro then applies vfio-pci bind
-//! against injectable (production: live) sysfs when the probe offered Pro.
-//! Windows Pro then applies Hyper-V DDA (preferred) or exclusive GPU-P
-//! through an injectable runner (production: PowerShell) when the probe
-//! offered Pro. After a successful invoke or GPU apply, the handler polls
+//! and, when gated, starts QEMU+KVM with VFIO attached. Windows Pro then
+//! applies Hyper-V DDA/GPU-P and `Start-VM` on the existing `dcl-pro-guest`.
+//! `POST /v1/teardown` kills guests, rolls GPU bind back, and clears occupancy.
+//! After a successful invoke or GPU apply, the handler polls
 //! for a reachable Kasm (Standard) or Sunshine (Pro) locator and returns
 //! that URL — never a `.invalid` placeholder claimed as live. The window
 //! stays plan-only. The Matchmaker POSTs here after host selection. The
@@ -16,7 +16,7 @@
 use std::io::Read;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -26,7 +26,10 @@ use crate::agent_status::Occupancy;
 use crate::eligibility::{self, EligibilityRequest};
 use crate::firecracker::{self, FirecrackerError, FirecrackerRuntime};
 use crate::gpu_bind::{self, GpuBindError, HyperVGpuOps, PciBindOps, PciSysfs};
+use crate::guest_net::TapOps;
 use crate::qemu::{self, QemuError, QemuRuntime};
+use crate::qemu_kvm::{self, QemuKvmError, QemuKvmRuntime};
+use crate::qemu_linux::{self, LinuxQemuError, LinuxQemuRuntime};
 use crate::host_capabilities::HostCapabilities;
 use crate::image::{
     trust_from_env, verify_image, GuestImageStatus, ImageError, ImageManifest, ImageTrust,
@@ -38,6 +41,7 @@ use crate::provision::{plan, HostOs, LabTier, ProvisionError, ProvisionPlan, Pro
 use crate::storage::GuestRcloneMount;
 
 const PROVISION_PATH: &str = "/v1/provision";
+const TEARDOWN_PATH: &str = "/v1/teardown";
 const BODY_MAX: usize = 16 * 1024;
 const STREAMER_KASM: &str = "kasm";
 const STREAMER_SUNSHINE: &str = "sunshine";
@@ -72,6 +76,10 @@ pub enum PlanHttpError {
     #[error("{0}")]
     Qemu(#[from] QemuError),
     #[error("{0}")]
+    QemuKvm(#[from] QemuKvmError),
+    #[error("{0}")]
+    LinuxQemu(#[from] LinuxQemuError),
+    #[error("{0}")]
     GpuBind(#[from] GpuBindError),
     #[error("{0}")]
     Locator(#[from] LocatorError),
@@ -87,6 +95,8 @@ pub struct ProvisionGate {
     pub spare_disk_bytes: Option<u64>,
     /// When set on Linux Standard, InstanceStart runs (or provision fails).
     pub firecracker: Option<FirecrackerBoot>,
+    /// Primary Linux Standard path: QEMU+KVM with unprivileged user networking.
+    pub qemu_kvm: Option<QemuKvmBoot>,
     /// When set on Windows Standard, QEMU `-accel whpx` runs (or provision fails).
     pub qemu: Option<QemuBoot>,
     /// When set on Linux Pro, vfio-pci apply runs against this sysfs (or provision fails).
@@ -98,6 +108,10 @@ pub struct ProvisionGate {
     /// uses [`gpu_bind::ProcessHyperVGpuOps`]. The window never sets this — it
     /// stays [`gpu_bind::WINDOW_GPU_BIND_APPLY`] with `hyperv: None`.
     pub hyperv: Option<HyperVAssign>,
+    /// When set on Linux Pro, QEMU+KVM+VFIO starts after vfio-pci bind.
+    pub linux_qemu: Option<LinuxQemuBoot>,
+    /// GPU/TAP rollback recorded after a successful apply (teardown).
+    pub cleanup: SessionCleanup,
     /// After invoke or GPU apply, wait for Kasm/Sunshine. Tests inject a
     /// loopback origin. Production uses [`StreamerWait::production`].
     pub streamer: Option<StreamerWait>,
@@ -127,6 +141,28 @@ impl std::fmt::Debug for FirecrackerBoot {
     }
 }
 
+/// Inputs for Linux Standard QEMU+KVM. Tests inject [`QemuKvmRuntime`].
+#[derive(Clone)]
+pub struct QemuKvmBoot {
+    pub binary: PathBuf,
+    pub image_cache_dir: PathBuf,
+    pub guest_image: GuestImageStatus,
+    pub arch: String,
+    pub runtime: Arc<dyn QemuKvmRuntime + Send + Sync>,
+}
+
+impl std::fmt::Debug for QemuKvmBoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QemuKvmBoot")
+            .field("binary", &self.binary)
+            .field("image_cache_dir", &self.image_cache_dir)
+            .field("guest_image", &self.guest_image)
+            .field("arch", &self.arch)
+            .field("runtime", &"QemuKvmRuntime")
+            .finish()
+    }
+}
+
 /// Inputs for a real QEMU+WHPX invoke. Tests inject [`QemuRuntime`].
 #[derive(Clone)]
 pub struct QemuBoot {
@@ -145,6 +181,28 @@ impl std::fmt::Debug for QemuBoot {
             .field("guest_image", &self.guest_image)
             .field("arch", &self.arch)
             .field("runtime", &"QemuRuntime")
+            .finish()
+    }
+}
+
+/// Inputs for Linux Pro QEMU+KVM+VFIO. Tests inject [`LinuxQemuRuntime`].
+#[derive(Clone)]
+pub struct LinuxQemuBoot {
+    pub binary: PathBuf,
+    pub image_cache_dir: PathBuf,
+    pub guest_image: GuestImageStatus,
+    pub arch: String,
+    pub runtime: Arc<dyn LinuxQemuRuntime + Send + Sync>,
+}
+
+impl std::fmt::Debug for LinuxQemuBoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LinuxQemuBoot")
+            .field("binary", &self.binary)
+            .field("image_cache_dir", &self.image_cache_dir)
+            .field("guest_image", &self.guest_image)
+            .field("arch", &self.arch)
+            .field("runtime", &"LinuxQemuRuntime")
             .finish()
     }
 }
@@ -169,8 +227,50 @@ impl std::fmt::Debug for VfioBind {
 #[derive(Clone)]
 pub struct HyperVAssign {
     pub ops: Arc<dyn HyperVGpuOps>,
-    /// Default [`gpu_bind::DEFAULT_HYPERV_VM`]. The VM is not created or started.
+    /// Default [`gpu_bind::DEFAULT_HYPERV_VM`]. The VM must already exist.
     pub vm_name: Option<String>,
+}
+
+/// GPU bind recorded so teardown can restore the volunteer display path.
+#[derive(Clone, Default)]
+pub struct SessionCleanup {
+    inner: Arc<Mutex<Option<CleanupPlan>>>,
+}
+
+enum CleanupPlan {
+    LinuxVfio {
+        sysfs: PciSysfs,
+        ops: Arc<dyn PciBindOps>,
+        bdf: String,
+        previous_driver: Option<String>,
+    },
+    WindowsHyperV {
+        ops: Arc<dyn HyperVGpuOps>,
+        vm_name: String,
+        target_driver: String,
+        instance_id: String,
+        pci_or_path: String,
+    },
+}
+
+impl std::fmt::Debug for SessionCleanup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionCleanup").finish_non_exhaustive()
+    }
+}
+
+impl SessionCleanup {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn remember(&self, plan: CleanupPlan) {
+        *self.inner.lock().expect("cleanup mutex") = Some(plan);
+    }
+
+    fn take(&self) -> Option<CleanupPlan> {
+        self.inner.lock().expect("cleanup mutex").take()
+    }
 }
 
 impl std::fmt::Debug for HyperVAssign {
@@ -225,7 +325,9 @@ pub struct ProvisionHttpRequest {
     pub storage_prefix: Option<String>,
     #[serde(default)]
     pub storage_region: Option<String>,
-    /// Guest mesh join hint (no preauth). Host Agent must not `tailscale up` these.
+    /// Guest mesh join hint (no Headscale preauth). Optional bootstrap token
+    /// is a Matchmaker capability the guest redeems; Host Agent must not
+    /// `tailscale up` these.
     #[serde(default)]
     pub guest_mesh: Option<GuestMeshHint>,
 }
@@ -238,6 +340,12 @@ pub struct GuestMeshHint {
     pub exit_node: Option<String>,
     #[serde(default)]
     pub acl_tags: Vec<String>,
+    /// Matchmaker origin the guest may call (`POST /v1/guest/bootstrap`).
+    #[serde(default)]
+    pub bootstrap_origin: Option<String>,
+    /// Single-use-until-session-end token. Not a Headscale preauth.
+    #[serde(default)]
+    pub bootstrap_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -302,8 +410,9 @@ where
 }
 
 /// Verify the advertised image, then select the OS-conditional backend.
-/// Linux Standard with [`ProvisionGate::firecracker`] starts Firecracker
-/// (InstanceStart) or fails clearly. Windows Standard with
+/// Linux Standard with [`ProvisionGate::qemu_kvm`] starts QEMU+KVM. The
+/// Firecracker gate remains a legacy fallback for existing installations.
+/// Windows Standard with
 /// [`ProvisionGate::qemu`] starts QEMU `-accel whpx` or fails clearly.
 /// Linux Pro with [`ProvisionGate::vfio`] applies vfio-pci or fails clearly.
 /// Windows Pro with [`ProvisionGate::hyperv`] applies DDA/GPU-P or fails
@@ -334,9 +443,12 @@ pub fn plan_http(
         },
     )?;
     if os == HostOs::Linux && lab_tier == LabTier::Standard {
-        if let Some(boot) = gate.and_then(|gate| gate.firecracker.as_ref()) {
+        if let Some(boot) = gate.and_then(|gate| gate.qemu_kvm.as_ref()) {
+            let gate = gate.expect("qemu kvm boot requires a gate");
+            planned = invoke_linux_standard_qemu(os, request, gate, boot, planned)?;
+        } else if let Some(boot) = gate.and_then(|gate| gate.firecracker.as_ref()) {
             let gate = gate.expect("firecracker boot requires a gate");
-            planned = invoke_linux_standard(os, request, gate, boot, planned)?;
+            planned = invoke_linux_standard_firecracker(os, request, gate, boot, planned)?;
         }
     }
     if os == HostOs::Windows && lab_tier == LabTier::Standard {
@@ -352,8 +464,33 @@ pub fn plan_http(
     if gpu_bind::linux_pro_provision_should_apply(os, lab_tier, pro_offered) {
         if let Some(vfio) = gate.and_then(|gate| gate.vfio.as_ref()) {
             let gate = gate.expect("vfio bind requires a gate");
-            apply_linux_pro_vfio(os, request, gate, vfio)?;
+            let status = apply_linux_pro_vfio(os, request, gate, vfio)?;
             gpu_applied = true;
+            if let Some(boot) = gate.linux_qemu.as_ref() {
+                let bdf = status.pci_address.as_deref().unwrap_or("");
+                match invoke_linux_pro_qemu(os, request, gate, boot, bdf, planned) {
+                    Ok(next) => planned = next,
+                    Err(error) => {
+                        if let Some(plan) = gate.cleanup.take() {
+                            if let CleanupPlan::LinuxVfio {
+                                sysfs,
+                                ops,
+                                bdf,
+                                previous_driver,
+                            } = plan
+                            {
+                                let _ = gpu_bind::release_linux_vfio(
+                                    &sysfs,
+                                    ops.as_ref(),
+                                    &bdf,
+                                    previous_driver.as_deref(),
+                                );
+                            }
+                        }
+                        return Err(error);
+                    }
+                }
+            }
         }
     }
     if gpu_bind::windows_pro_provision_should_apply(os, lab_tier, pro_offered) {
@@ -388,7 +525,47 @@ fn resolve_live_locator(
     Ok(locator::await_live_locator(kind, hostname, &wait)?)
 }
 
-fn invoke_linux_standard(
+fn invoke_linux_standard_qemu(
+    os: HostOs,
+    request: &ProvisionHttpRequest,
+    gate: &ProvisionGate,
+    boot: &QemuKvmBoot,
+    mut planned: ProvisionPlan,
+) -> Result<ProvisionPlan, PlanHttpError> {
+    let sharing = sharing_for_gate(gate, request);
+    let launch = launch::build(LaunchRequest {
+        os,
+        lab_tier: LabTier::Standard,
+        hardware: &gate.hardware,
+        sharing: &sharing,
+        image_cache_dir: Some(boot.image_cache_dir.as_path()),
+        guest_image: Some(&boot.guest_image),
+        capabilities: Some(&gate.capabilities),
+        spare_disk_bytes: gate.spare_disk_bytes,
+        kernel_override: None,
+    })?;
+    qemu_kvm::boot_from_launch_with_bootstrap(
+        os,
+        LabTier::Standard,
+        &gate.capabilities,
+        &launch,
+        &boot.binary,
+        boot.arch.as_str(),
+        request
+            .guest_mesh
+            .as_ref()
+            .and_then(|mesh| mesh.bootstrap_origin.as_deref()),
+        request
+            .guest_mesh
+            .as_ref()
+            .and_then(|mesh| mesh.bootstrap_token.as_deref()),
+        boot.runtime.as_ref(),
+    )?;
+    planned.hypervisor_invoked = true;
+    Ok(planned)
+}
+
+fn invoke_linux_standard_firecracker(
     os: HostOs,
     request: &ProvisionHttpRequest,
     gate: &ProvisionGate,
@@ -411,7 +588,7 @@ fn invoke_linux_standard(
         .kernel_override
         .as_ref()
         .map(|path| path.to_string_lossy().into_owned());
-    firecracker::boot_from_launch(
+    firecracker::boot_from_launch_with_bootstrap(
         os,
         LabTier::Standard,
         &gate.capabilities,
@@ -426,6 +603,14 @@ fn invoke_linux_standard(
         },
         &boot.image_cache_dir,
         boot.arch.as_str(),
+        request
+            .guest_mesh
+            .as_ref()
+            .and_then(|mesh| mesh.bootstrap_origin.as_deref()),
+        request
+            .guest_mesh
+            .as_ref()
+            .and_then(|mesh| mesh.bootstrap_token.as_deref()),
         boot.runtime.as_ref(),
     )?;
     planned.hypervisor_invoked = true;
@@ -451,13 +636,21 @@ fn invoke_windows_standard(
         spare_disk_bytes: gate.spare_disk_bytes,
         kernel_override: None,
     })?;
-    qemu::boot_from_launch(
+    qemu::boot_from_launch_with_bootstrap(
         os,
         LabTier::Standard,
         &gate.capabilities,
         &launch,
         &boot.binary,
         boot.arch.as_str(),
+        request
+            .guest_mesh
+            .as_ref()
+            .and_then(|mesh| mesh.bootstrap_origin.as_deref()),
+        request
+            .guest_mesh
+            .as_ref()
+            .and_then(|mesh| mesh.bootstrap_token.as_deref()),
         boot.runtime.as_ref(),
     )?;
     planned.hypervisor_invoked = true;
@@ -469,7 +662,7 @@ fn apply_linux_pro_vfio(
     request: &ProvisionHttpRequest,
     gate: &ProvisionGate,
     vfio: &VfioBind,
-) -> Result<(), PlanHttpError> {
+) -> Result<gpu_bind::GpuBindStatus, PlanHttpError> {
     let sharing = sharing_for_gate(gate, request);
     let gpu_id = request
         .shared_gpu_id
@@ -495,7 +688,57 @@ fn apply_linux_pro_vfio(
             status.log
         )));
     }
-    Ok(())
+    if let Some(bdf) = status.pci_address.clone() {
+        gate.cleanup.remember(CleanupPlan::LinuxVfio {
+            sysfs: vfio.sysfs.clone(),
+            ops: vfio.ops.clone(),
+            bdf,
+            previous_driver: status.previous_driver.clone(),
+        });
+    }
+    Ok(status)
+}
+
+fn invoke_linux_pro_qemu(
+    os: HostOs,
+    request: &ProvisionHttpRequest,
+    gate: &ProvisionGate,
+    boot: &LinuxQemuBoot,
+    pci_address: &str,
+    mut planned: ProvisionPlan,
+) -> Result<ProvisionPlan, PlanHttpError> {
+    let sharing = sharing_for_gate(gate, request);
+    let launch = launch::build(LaunchRequest {
+        os,
+        lab_tier: LabTier::Pro,
+        hardware: &gate.hardware,
+        sharing: &sharing,
+        image_cache_dir: Some(boot.image_cache_dir.as_path()),
+        guest_image: Some(&boot.guest_image),
+        capabilities: Some(&gate.capabilities),
+        spare_disk_bytes: gate.spare_disk_bytes,
+        kernel_override: None,
+    })?;
+    qemu_linux::boot_from_launch_with_bootstrap(
+        os,
+        LabTier::Pro,
+        &gate.capabilities,
+        &launch,
+        &boot.binary,
+        pci_address,
+        boot.arch.as_str(),
+        request
+            .guest_mesh
+            .as_ref()
+            .and_then(|mesh| mesh.bootstrap_origin.as_deref()),
+        request
+            .guest_mesh
+            .as_ref()
+            .and_then(|mesh| mesh.bootstrap_token.as_deref()),
+        boot.runtime.as_ref(),
+    )?;
+    planned.hypervisor_invoked = true;
+    Ok(planned)
 }
 
 fn apply_windows_pro_hyperv(
@@ -532,6 +775,16 @@ fn apply_windows_pro_hyperv(
             status.log
         )));
     }
+    gate.cleanup.remember(CleanupPlan::WindowsHyperV {
+        ops: hyperv.ops.clone(),
+        vm_name: hyperv
+            .vm_name
+            .clone()
+            .unwrap_or_else(|| gpu_bind::DEFAULT_HYPERV_VM.to_string()),
+        target_driver: status.target_driver.clone().unwrap_or_default(),
+        instance_id: gpu_id.unwrap_or("").to_string(),
+        pci_or_path: status.pci_address.clone().unwrap_or_default(),
+    });
     Ok(())
 }
 
@@ -771,6 +1024,17 @@ pub fn respond_and_track_with_gate(
     image_trust: &ImageTrust,
     gate: Option<&ProvisionGate>,
 ) -> HttpProvisionOutput {
+    let route = path.split('?').next().unwrap_or(path);
+    if method.eq_ignore_ascii_case("POST") && route == TEARDOWN_PATH {
+        if !bearer_matches(authorization, expected_token) {
+            return text(401, "Not authenticated");
+        }
+        teardown_session(occupancy, gate);
+        return HttpProvisionOutput {
+            status: 200,
+            body: "{\"teardown\":true}".to_string(),
+        };
+    }
     let output = respond_with_gate(
         method,
         path,
@@ -785,6 +1049,49 @@ pub fn respond_and_track_with_gate(
         occupancy.mark_in_session();
     }
     output
+}
+
+fn teardown_session(occupancy: &Occupancy, gate: Option<&ProvisionGate>) {
+    firecracker::kill_running();
+    qemu::kill_running();
+    qemu_kvm::kill_running();
+    qemu_linux::kill_running();
+    let _ = crate::guest_net::ProcessTapOps.teardown(crate::guest_net::TAP_DEV);
+    if let Some(gate) = gate {
+        if let Some(plan) = gate.cleanup.take() {
+            match plan {
+                CleanupPlan::LinuxVfio {
+                    sysfs,
+                    ops,
+                    bdf,
+                    previous_driver,
+                } => {
+                    let _ = gpu_bind::release_linux_vfio(
+                        &sysfs,
+                        ops.as_ref(),
+                        &bdf,
+                        previous_driver.as_deref(),
+                    );
+                }
+                CleanupPlan::WindowsHyperV {
+                    ops,
+                    vm_name,
+                    target_driver,
+                    instance_id,
+                    pci_or_path,
+                } => {
+                    gpu_bind::teardown_windows_pro(
+                        ops.as_ref(),
+                        &vm_name,
+                        &target_driver,
+                        &instance_id,
+                        &pci_or_path,
+                    );
+                }
+            }
+        }
+    }
+    occupancy.clear_in_session();
 }
 
 pub fn serve(
@@ -948,7 +1255,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
         assert_eq!(
             body["connectionUrl"],
-            format!("{STUB_CONNECTION_ORIGIN}/firecracker")
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-kvm")
         );
         assert_eq!(body["hypervisorInvoked"], false);
         assert_eq!(body["gpuExclusive"], false);
@@ -1249,7 +1556,7 @@ mod tests {
         assert_eq!(body["hypervisorInvoked"], false);
         assert_eq!(
             body["connectionUrl"],
-            format!("{STUB_CONNECTION_ORIGIN}/firecracker")
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-kvm")
         );
     }
 
@@ -1359,7 +1666,7 @@ mod tests {
         assert_eq!(body["hypervisorInvoked"], false);
         assert_eq!(
             body["connectionUrl"],
-            format!("{STUB_CONNECTION_ORIGIN}/firecracker")
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-kvm")
         );
         assert!(body.get("rclone").is_none());
         assert!(body.get("guestRclone").is_none());
@@ -1407,7 +1714,7 @@ mod tests {
         assert!(args.contains(&"--s3-env-auth"));
         assert!(args.contains(&"--s3-force-path-style"));
         assert_eq!(plan["envAuth"], true);
-        assert_eq!(plan["mountPoint"], "/home/user/Persistent");
+        assert_eq!(plan["mountPoint"], "/home/ubuntu/Persistent");
         assert!(body.get("secretAccessKey").is_none());
         assert!(body.get("accessKeyId").is_none());
         assert!(!output.body.contains("AWS_SECRET_ACCESS_KEY"));
@@ -1452,9 +1759,12 @@ mod tests {
             sharing: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             firecracker: None,
+            qemu_kvm: None,
             qemu: None,
             vfio: None,
             hyperv: None,
+            linux_qemu: None,
+            cleanup: SessionCleanup::new(),
             streamer: None,
         }
     }
@@ -1482,9 +1792,12 @@ mod tests {
             sharing: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             firecracker: None,
+            qemu_kvm: None,
             qemu: None,
             vfio: None,
             hyperv: None,
+            linux_qemu: None,
+            cleanup: SessionCleanup::new(),
             streamer: None,
         }
     }
@@ -1567,7 +1880,7 @@ mod tests {
         assert_eq!(body["hypervisorInvoked"], false);
         assert_eq!(
             body["connectionUrl"],
-            format!("{STUB_CONNECTION_ORIGIN}/firecracker")
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-kvm")
         );
     }
 
@@ -1656,7 +1969,7 @@ mod tests {
         assert_eq!(body["connectionUrl"], live_url);
         assert_ne!(
             body["connectionUrl"],
-            format!("{STUB_CONNECTION_ORIGIN}/firecracker")
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-kvm")
         );
         assert_eq!(body["streamer"], "kasm");
         assert!(occupancy.is_in_session());
@@ -1812,9 +2125,12 @@ mod tests {
             sharing: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             firecracker: None,
+            qemu_kvm: None,
             qemu: None,
             vfio: None,
             hyperv: None,
+            linux_qemu: None,
+            cleanup: SessionCleanup::new(),
             streamer: None,
         }
     }
@@ -2035,7 +2351,7 @@ mod tests {
         assert_eq!(body["hypervisorInvoked"], false);
         assert_eq!(
             body["connectionUrl"],
-            format!("{STUB_CONNECTION_ORIGIN}/firecracker")
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-kvm")
         );
         assert!(recorder.spawn_calls().is_empty());
     }
@@ -2330,7 +2646,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
         assert_eq!(
             body["connectionUrl"],
-            format!("{STUB_CONNECTION_ORIGIN}/firecracker")
+            format!("{STUB_CONNECTION_ORIGIN}/qemu-kvm")
         );
         assert!(vfio_control_lines(&sysfs.driver_dir("nvidia").join("unbind")).is_empty());
         assert!(vfio_control_lines(&sysfs.vfio_pci.join("bind")).is_empty());
@@ -2413,6 +2729,7 @@ mod tests {
                 "Dismount-VMHostAssignableDevice",
                 "Add-VMAssignableDevice",
                 "Get-VMAssignableDevice",
+                "Start-VM",
             ]
         );
         assert!(runner.dda_assigned());
@@ -2582,6 +2899,7 @@ mod tests {
                 "Add-VMGpuPartitionAdapter",
                 "Set-VMGpuPartitionAdapter",
                 "Get-VMGpuPartitionAdapter",
+                "Start-VM",
             ]
         );
         assert!(runner.gpu_p_assigned());
@@ -2647,5 +2965,78 @@ mod tests {
         );
         assert!(runner.names().is_empty());
         assert!(!runner.leftover_assigned());
+    }
+
+    #[test]
+    fn linux_pro_with_qemu_gate_attaches_vfio_device() {
+        use std::sync::Arc;
+
+        let live_url = spawn_live_streamer();
+        let (trust, body) = signed_pro();
+        let (_tree, sysfs) = crate::gpu_bind::mock_linux_vfio_sysfs();
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("qemu-system-x86_64");
+        let rootfs = dir.path().join("pro").join("rootfs.img");
+        std::fs::create_dir_all(rootfs.parent().unwrap()).unwrap();
+        std::fs::write(&binary, b"fake-qemu").unwrap();
+        std::fs::write(&rootfs, b"fake-rootfs").unwrap();
+        let recorder = Arc::new(crate::qemu_linux::RecordingLinuxQemu::succeeding());
+        let mut gate = with_live_streamer(linux_kvm_gate(), &live_url);
+        gate.vfio = Some(VfioBind {
+            sysfs: sysfs.clone(),
+            ops: Arc::new(crate::gpu_bind::SysfsBindOps),
+        });
+        gate.linux_qemu = Some(LinuxQemuBoot {
+            binary: binary.clone(),
+            image_cache_dir: dir.path().to_path_buf(),
+            guest_image: qemu_guest_ready(&rootfs),
+            arch: "x86_64".to_string(),
+            runtime: recorder.clone(),
+        });
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200, "{}", output.body);
+        let parsed: serde_json::Value = serde_json::from_str(&output.body).unwrap();
+        assert_eq!(parsed["hypervisorInvoked"], true);
+        assert_eq!(parsed["streamer"], "sunshine");
+        let spawns = recorder.spawn_calls();
+        assert_eq!(spawns.len(), 1);
+        assert!(spawns[0]
+            .1
+            .iter()
+            .any(|arg| arg.starts_with("vfio-pci,host=")));
+        assert!(occupancy.is_in_session());
+    }
+
+    #[test]
+    fn teardown_clears_occupancy() {
+        let (trust, body) = signed_standard();
+        let occupancy = Occupancy::new();
+        occupancy.mark_in_session();
+        let gate = linux_kvm_gate();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/teardown",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+            Some(&gate),
+        );
+        assert_eq!(output.status, 200);
+        assert!(output.body.contains("teardown"));
+        assert!(!occupancy.is_in_session());
     }
 }
