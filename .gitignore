@@ -11,6 +11,8 @@ __pycache__/
 
 # Build output
 dist/
+host-agent/dist-lan-test/
+lan-test-report-*.txt
 target/
 src-tauri/gen/schemas/
 
@@ -40,3 +42,7 @@ guest-images/.packer-ssh/
 Thumbs.db
 *.log
 .playwright-mcp/
+
+# Python build output
+gateway/build/
+matchmaker/build/

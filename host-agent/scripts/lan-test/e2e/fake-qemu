@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""Stand-in for qemu-system-x86_64: records argv, serves KasmVNC-like basic auth."""
+import base64, http.server, json, os, re, ssl, sys, time
+args = sys.argv[1:]
+json.dump(args, open("/tmp/qemu-argv.json", "w"))
+if os.environ.get("FAKE_QEMU_CRASH"):
+    print("qemu-system-x86_64: -accel kvm: failed to initialize kvm: Permission denied", file=sys.stderr)
+    sys.exit(1)
+fw = next(a for a in args if a.startswith("name=opt/org.dcl/lan-password,file="))
+password = open(fw.split("file=", 1)[1]).read()
+port = int(re.search(r"hostfwd=tcp:0\.0\.0\.0:(\d+)-:8443", " ".join(args)).group(1))
+serial = args[args.index("-serial") + 1].removeprefix("file:")
+open(serial, "w").write("fake guest console: booting\n")
+time.sleep(4)  # pretend to boot
+good = "Basic " + base64.b64encode(f"ubuntu:{password}".encode()).decode()
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.headers.get("Authorization") == good:
+            self.send_response(200); self.end_headers(); self.wfile.write(b"desktop")
+        else:
+            self.send_response(401); self.send_header("WWW-Authenticate", 'Basic realm="kasm"'); self.end_headers()
+    def log_message(self, *a): pass
+srv = http.server.HTTPServer(("0.0.0.0", port), H)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain("/tmp/cert.pem", "/tmp/key.pem")
+srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+srv.serve_forever()

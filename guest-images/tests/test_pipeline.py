@@ -50,6 +50,12 @@ class PackerTemplateTests(unittest.TestCase):
         self.assertIn("kasmvncserver.deb", kasm)
         self.assertIn("dcl-kasmvnc.service", kasm)
         self.assertIn("-disableBasicAuth", kasm)
+        # LAN test: fw_cfg password turns KasmVNC basic auth on.
+        self.assertIn("opt/org.dcl/lan-password", kasm)
+        self.assertIn("ExecStartPre=+/usr/local/sbin/dcl-kasmvnc-auth", kasm)
+        self.assertIn("-u ubuntu -wo", kasm)
+        # No LAN password: still create a user, or vncserver blocks on a prompt.
+        self.assertIn("head -c 48 /dev/urandom", kasm)
         self.assertIn("websocket_port: 8443", kasm)
         self.assertIn("startxfce4", kasm)
         self.assertNotIn("sunshine-ubuntu-24.04", kasm)
