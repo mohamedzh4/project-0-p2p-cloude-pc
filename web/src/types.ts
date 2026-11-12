@@ -35,6 +35,7 @@ export interface StorageMountInfo {
   rcloneArgs?: string[];
   envAuth?: boolean;
   objects: string[];
+  savedAsOf?: string | null;
 }
 
 export interface MeshPeerInfo {

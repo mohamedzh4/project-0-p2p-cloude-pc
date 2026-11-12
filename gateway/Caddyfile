@@ -4,5 +4,25 @@
 
 {$GATEWAY_DOMAIN} {
 	encode gzip
+
+	handle_path /api/* {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:7844
+	}
+}
+
+{$GATEWAY_DESKTOP_DOMAIN} {
+	encode gzip
 	reverse_proxy 127.0.0.1:7843
+}
+
+{$GATEWAY_STORAGE_DOMAIN} {
+	reverse_proxy 127.0.0.1:8081
+}
+
+{$GATEWAY_MESH_DOMAIN} {
+	reverse_proxy 127.0.0.1:8080
 }

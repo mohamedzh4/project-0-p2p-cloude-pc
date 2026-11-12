@@ -18,7 +18,7 @@ from matchmaker.schemas import StorageMountInfo
 
 USER_FILES_PREFIX = "files/"
 PROVISION_MARKER_KEY = f"{USER_FILES_PREFIX}.dcl/provisioned"
-DEFAULT_GUEST_MOUNT = "/home/user/Persistent"
+DEFAULT_GUEST_MOUNT = "/home/ubuntu/Persistent"
 GUEST_ENV_AUTH_VARS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
 
 
@@ -192,7 +192,11 @@ def ensure_user_storage(
     )
 
 
-def mount_info_from_grant(grant: StorageGrant) -> StorageMountInfo:
+def mount_info_from_grant(
+    grant: StorageGrant,
+    *,
+    saved_as_of: datetime | None = None,
+) -> StorageMountInfo:
     args = guest_rclone_args(
         bucket=grant.bucket,
         prefix=grant.prefix,
@@ -211,4 +215,5 @@ def mount_info_from_grant(grant: StorageGrant) -> StorageMountInfo:
         rclone_args=args,
         env_auth=True,
         objects=list(grant.objects),
+        saved_as_of=saved_as_of,
     )

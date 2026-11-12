@@ -154,6 +154,7 @@ class FakeHostProvisioner:
     calls: list[tuple[UUID, str]] = field(default_factory=list)
     storage_calls: list[GuestStorageLocators | None] = field(default_factory=list)
     mesh_calls: list[GuestMeshHint | None] = field(default_factory=list)
+    teardown_calls: list[UUID] = field(default_factory=list)
 
     def provision(
         self,
@@ -181,3 +182,6 @@ class FakeHostProvisioner:
             connection_token=self.connection_token,
             streamer=STREAMER_KASM,
         )
+
+    def teardown(self, host: Host) -> None:
+        self.teardown_calls.append(host.id)

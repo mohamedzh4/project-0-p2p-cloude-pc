@@ -17,10 +17,20 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 
+retry=0
+until apt-get update; do
+  retry=$((retry + 1))
+  if (( retry >= 36 )); then
+    echo "apt-get update failed after ${retry} attempts" >&2
+    exit 1
+  fi
+  echo "apt-get update retry ${retry}/36 (waiting for lock)" >&2
+  sleep 10
+done
+
 # A display session so Sunshine has something to capture. NVIDIA/AMD guest
 # drivers are *not* baked here — the Packer VM has no passthrough GPU.
 # On first Pro boot with VFIO/DDA, install the vendor driver in the guest.
-apt-get update
 apt-get install -y --no-install-recommends \
   xfce4 \
   xfce4-goodies \

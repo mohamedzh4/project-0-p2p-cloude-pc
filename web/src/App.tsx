@@ -141,13 +141,12 @@ export default function App() {
   return (
     <main className="app">
       <header className="reveal">
-        <p className="kicker">Matchmaker harness</p>
-        <h1>Lab session</h1>
+        <p className="kicker">Distributed Compute Lab</p>
+        <h1>Your cloud computer</h1>
         <p className="lede">
-          Sign in, say what you want to do, and Matchmaker auto-matches an
-          approved live host. Intent maps to Standard (CPU/RAM slice, Kasm) or
-          Pro (exclusive GPU, Sunshine / Moonlight). A live locator is not the{" "}
-          <code>.invalid</code> stub TLD. This is not the product UI.
+          Sign in, describe your work, and we will connect you to an available
+          computer. Standard sessions open in your browser; Pro sessions use
+          an exclusive host GPU with Sunshine and Moonlight.
         </p>
       </header>
 

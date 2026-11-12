@@ -1,0 +1,14 @@
+[Unit]
+Description=Distributed Compute Lab guest mesh join and persistent rclone
+After=network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/dcl-guest-join
+ExecStop=/usr/local/sbin/dcl-guest-join --flush
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

@@ -25,7 +25,7 @@ services:
       TS_AUTHKEY: ${HEADSCALE_GATEWAY_AUTHKEY:?HEADSCALE_GATEWAY_AUTHKEY is required}
       TS_HOSTNAME: dcl-gateway
       TS_USERSPACE: "false"
-      TS_EXTRA_ARGS: --login-server=${HEADSCALE_LOGIN_SERVER:?HEADSCALE_LOGIN_SERVER is required} --accept-dns=false --accept-routes=false
+      TS_EXTRA_ARGS: --login-server=${HEADSCALE_LOGIN_SERVER:?HEADSCALE_LOGIN_SERVER is required} --accept-dns=true --accept-routes=false
     volumes:
       - gateway_tailscale:/var/lib/tailscale
 
@@ -44,14 +44,26 @@ services:
       GATEWAY_FAIL_LIMIT: ${GATEWAY_FAIL_LIMIT:-20}
       GATEWAY_FAIL_WINDOW_SECONDS: ${GATEWAY_FAIL_WINDOW_SECONDS:-60}
 
+  web:
+    build:
+      context: ../web
+      args:
+        VITE_MATCHMAKER_URL: /api
+    restart: unless-stopped
+    network_mode: host
+
   caddy:
     image: docker.io/caddy:2.9-alpine
     restart: unless-stopped
     network_mode: host
     depends_on:
       - gateway
+      - web
     environment:
       GATEWAY_DOMAIN: ${GATEWAY_DOMAIN:?GATEWAY_DOMAIN is required}
+      GATEWAY_DESKTOP_DOMAIN: ${GATEWAY_DESKTOP_DOMAIN:?GATEWAY_DESKTOP_DOMAIN is required}
+      GATEWAY_STORAGE_DOMAIN: ${GATEWAY_STORAGE_DOMAIN:?GATEWAY_STORAGE_DOMAIN is required}
+      GATEWAY_MESH_DOMAIN: ${GATEWAY_MESH_DOMAIN:?GATEWAY_MESH_DOMAIN is required}
       GATEWAY_ACME_EMAIL: ${GATEWAY_ACME_EMAIL:?GATEWAY_ACME_EMAIL is required}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro

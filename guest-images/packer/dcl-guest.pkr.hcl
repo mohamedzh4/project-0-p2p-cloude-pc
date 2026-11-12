@@ -13,7 +13,7 @@ variable "lab_tier" {
   description = "standard (Kasm in the guest) or pro (Sunshine in the guest)."
   validation {
     condition     = contains(["standard", "pro"], var.lab_tier)
-    error_message = "lab_tier must be standard or pro."
+    error_message = "The lab_tier value must be standard or pro."
   }
 }
 
@@ -60,30 +60,18 @@ variable "cpus" {
 
 variable "disk_size" {
   type        = string
-  description = "Guest disk. Kasm single-server wants tens of GiB; 64G matches the architecture floor."
-  default     = "64G"
+  description = "Guest disk. Ubuntu + XFCE + KasmVNC fit in 16G for the demo image."
+  default     = "16G"
 }
 
-variable "kasm_tarball_url" {
+variable "kasm_vnc_deb_url" {
   type    = string
   default = ""
 }
 
-variable "kasm_tarball_sha256" {
+variable "kasm_vnc_deb_sha256" {
   type    = string
   default = ""
-}
-
-variable "kasm_admin_password" {
-  type      = string
-  default   = ""
-  sensitive = true
-}
-
-variable "kasm_user_password" {
-  type      = string
-  default   = ""
-  sensitive = true
 }
 
 variable "sunshine_deb_url" {
@@ -137,20 +125,37 @@ build {
 
   provisioner "shell" {
     script          = "${path.root}/../scripts/provision-base.sh"
-    execute_command = "chmod +x {{ .Path }}; sudo -n {{ .Path }}"
+    execute_command = "chmod +x {{ .Path }}; sudo -n {{ .Vars }} {{ .Path }}"
     timeout         = "30m"
+  }
+
+  provisioner "file" {
+    source      = "${path.root}/../scripts/dcl-guest-join.py"
+    destination = "/tmp/dcl-guest-join.py"
+  }
+
+  provisioner "file" {
+    source      = "${path.root}/../scripts/dcl-guest-join.service"
+    destination = "/tmp/dcl-guest-join.service"
+  }
+
+  provisioner "shell" {
+    execute_command = "chmod +x {{ .Path }}; sudo -n {{ .Vars }} {{ .Path }}"
+    inline = [
+      "install -m 0755 /tmp/dcl-guest-join.py /usr/local/sbin/dcl-guest-join",
+      "install -m 0644 /tmp/dcl-guest-join.service /etc/systemd/system/dcl-guest-join.service",
+      "systemctl enable dcl-guest-join.service",
+    ]
   }
 
   provisioner "shell" {
     script          = local.streamer_script
-    execute_command = "chmod +x {{ .Path }}; sudo -n {{ .Path }}"
+    execute_command = "chmod +x {{ .Path }}; sudo -n {{ .Vars }} {{ .Path }}"
     timeout         = "2h"
     environment_vars = [
       "LAB_TIER=${var.lab_tier}",
-      "KASM_TARBALL_URL=${var.kasm_tarball_url}",
-      "KASM_TARBALL_SHA256=${var.kasm_tarball_sha256}",
-      "DCL_KASM_ADMIN_PASSWORD=${var.kasm_admin_password}",
-      "DCL_KASM_USER_PASSWORD=${var.kasm_user_password}",
+      "KASM_VNC_DEB_URL=${var.kasm_vnc_deb_url}",
+      "KASM_VNC_DEB_SHA256=${var.kasm_vnc_deb_sha256}",
       "SUNSHINE_DEB_URL=${var.sunshine_deb_url}",
     ]
   }

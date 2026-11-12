@@ -1,4 +1,8 @@
 node_modules
+.tunnel/
+DCL-friend-host.zip
+dist-friend/
+dist-linux/
 dist
 dist-ssr
 *.local

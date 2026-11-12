@@ -54,12 +54,19 @@ class SessionMeshGrant:
 
 @dataclass(frozen=True)
 class GuestMeshHint:
-    """Provision-port hint for a guest image. No preauth key (not for the volunteer OS)."""
+    """Provision-port hint for a guest image. No preauth key (not for the volunteer OS).
+
+    `bootstrap_token` is a Matchmaker capability the guest redeems. It is not a
+    Headscale preauth and it is not an S3 key. Omit `bootstrap_origin` when the
+    operator has not set MATCHMAKER_PUBLIC_ORIGIN — then the guest cannot join.
+    """
 
     login_server: str
     hostname: str
     exit_node: str | None
     acl_tags: tuple[str, ...]
+    bootstrap_origin: str | None = None
+    bootstrap_token: str | None = None
 
 
 def guest_hostname(session_id: UUID) -> str:
@@ -90,7 +97,7 @@ def guest_tailscale_up_args(
         auth_key,
         "--hostname",
         hostname,
-        "--accept-dns=false",
+        "--accept-dns=true",
         "--accept-routes=false",
     ]
     if exit_node:
@@ -115,7 +122,7 @@ def user_tailscale_up_args(
         auth_key,
         "--hostname",
         hostname,
-        "--accept-dns=false",
+        "--accept-dns=true",
         "--accept-routes=false",
     ]
     _reject_forbidden(args)
@@ -168,12 +175,19 @@ def expire_session_mesh(client: HeadscaleClient, *, session_id: UUID) -> int:
     return client.expire_nodes_named((guest_hostname(session_id), user_hostname(session_id)))
 
 
-def guest_mesh_hint(grant: SessionMeshGrant) -> GuestMeshHint:
+def guest_mesh_hint(
+    grant: SessionMeshGrant,
+    *,
+    bootstrap_origin: str | None = None,
+    bootstrap_token: str | None = None,
+) -> GuestMeshHint:
     return GuestMeshHint(
         login_server=grant.login_server,
         hostname=grant.guest.hostname,
         exit_node=grant.exit_node,
         acl_tags=grant.guest.acl_tags,
+        bootstrap_origin=bootstrap_origin,
+        bootstrap_token=bootstrap_token,
     )
 
 

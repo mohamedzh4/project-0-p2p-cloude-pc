@@ -114,11 +114,15 @@ class LabSession(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    saved_as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="sessions")
     host: Mapped[Host] = relationship(back_populates="sessions")
     ledger_entries: Mapped[list[LedgerEntry]] = relationship(back_populates="session")
     ingress_tokens: Mapped[list[SessionIngressToken]] = relationship(back_populates="session")
+    guest_bootstraps: Mapped[list[SessionGuestBootstrap]] = relationship(
+        back_populates="session"
+    )
 
 
 class LedgerEntry(Base):
@@ -183,6 +187,43 @@ class SessionIngressToken(Base):
     )
 
     session: Mapped[LabSession] = relationship(back_populates="ingress_tokens")
+
+
+class SessionGuestBootstrap(Base):
+    """Guest-only Matchmaker grant (Headscale preauth + rclone locators).
+
+    The volunteer Host Agent receives a bootstrap *token*, never this row's
+    `guest_preauth_key` or S3 keys. The guest redeems `POST /v1/guest/bootstrap`.
+    """
+
+    __tablename__ = "session_guest_bootstrap"
+    __table_args__ = (
+        UniqueConstraint("session_id", name="session_guest_bootstrap_one_per_session"),
+        UniqueConstraint("token_hash", name="session_guest_bootstrap_token_hash_key"),
+        Index("ix_session_guest_bootstrap_expires_at", "expires_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    session_id: Mapped[UUID] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    login_server: Mapped[str] = mapped_column(Text, nullable=False)
+    hostname: Mapped[str] = mapped_column(Text, nullable=False)
+    exit_node: Mapped[str | None] = mapped_column(Text, nullable=True)
+    acl_tags: Mapped[str] = mapped_column(Text, nullable=False)
+    guest_preauth_key: Mapped[str] = mapped_column(Text, nullable=False)
+    storage_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    storage_bucket: Mapped[str] = mapped_column(Text, nullable=False)
+    storage_prefix: Mapped[str] = mapped_column(Text, nullable=False)
+    storage_region: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    session: Mapped[LabSession] = relationship(back_populates="guest_bootstraps")
 
 
 class UserStorage(Base):

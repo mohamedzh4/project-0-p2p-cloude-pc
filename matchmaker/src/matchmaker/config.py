@@ -102,6 +102,16 @@ def _headscale_exit_node() -> str | None:
     return value
 
 
+def _matchmaker_public_origin() -> str | None:
+    """Origin guests call for POST /v1/guest/bootstrap.
+
+    Unset omits bootstrapOrigin from the provision hint (honest: the guest
+    image cannot join). http is allowed — lab compose and TAP guests may not
+    have TLS. Do not invent a domain.
+    """
+    return _optional_http_url("MATCHMAKER_PUBLIC_ORIGIN")
+
+
 def _gateway_public_origin() -> str | None:
     """Public HTTPS origin the web app opens (zero-install Standard Lab).
 
@@ -204,6 +214,7 @@ class Settings:
     gateway_public_origin: str | None
     gateway_resolve_token: str | None = field(repr=False)
     gateway_token_ttl_seconds: int
+    matchmaker_public_origin: str | None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -273,6 +284,7 @@ class Settings:
             gateway_public_origin=gateway_origin,
             gateway_resolve_token=_gateway_resolve_token(gateway_origin),
             gateway_token_ttl_seconds=_gateway_token_ttl_seconds(),
+            matchmaker_public_origin=_matchmaker_public_origin(),
         )
 
 

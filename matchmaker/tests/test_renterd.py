@@ -233,7 +233,7 @@ def test_guest_rclone_command_does_not_embed_secrets() -> None:
     )
     assert args[0] == "mount"
     assert args[1] == ":s3:dcl-example/files"
-    assert args[2] == "/home/user/Persistent"
+    assert args[2] == "/home/ubuntu/Persistent"
     assert "--s3-env-auth" in args
     assert "--s3-force-path-style" in args
     assert "--s3-region" in args
@@ -241,7 +241,7 @@ def test_guest_rclone_command_does_not_embed_secrets() -> None:
     assert "--s3-chunk-size" in args
     assert "120MiB" in args
     assert "--fast-list" in args
-    assert command.startswith("rclone mount :s3:dcl-example/files /home/user/Persistent")
+    assert command.startswith("rclone mount :s3:dcl-example/files /home/ubuntu/Persistent")
     assert "--vfs-cache-mode full" in command
     assert TEST_SECRET not in command
     assert TEST_ACCESS not in command

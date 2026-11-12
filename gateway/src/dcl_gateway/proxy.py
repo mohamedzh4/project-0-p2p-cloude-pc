@@ -5,10 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from urllib.parse import urljoin, urlparse
 import logging
+import ssl
 
 import httpx
 from fastapi import Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
+
+from dcl_gateway.ssrf import target_is_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +28,27 @@ _HOP_BY_HOP = {
 }
 
 
-def join_backend(target_url: str, suffix: str, query: str) -> str:
+def join_backend(target_url: str, suffix: str, query: str) -> str | None:
+    parsed_target = urlparse(target_url)
+    if not parsed_target.scheme or not parsed_target.netloc:
+        return None
+    candidate = suffix.strip()
+    if candidate.startswith("//") or urlparse(candidate).scheme:
+        return None
+    path = candidate.lstrip("/")
+    if path.startswith("//") or urlparse(path).scheme:
+        return None
     base = target_url if target_url.endswith("/") else f"{target_url}/"
-    path = suffix.lstrip("/")
     joined = urljoin(base, path)
     if query:
         joiner = "&" if urlparse(joined).query else "?"
-        return f"{joined}{joiner}{query}"
+        joined = f"{joined}{joiner}{query}"
+    parsed_joined = urlparse(joined)
+    if (parsed_joined.scheme, parsed_joined.netloc) != (
+        parsed_target.scheme,
+        parsed_target.netloc,
+    ):
+        return None
     return joined
 
 
@@ -52,6 +69,24 @@ def _origin(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+_SESSION_COOKIE = "dcl_session"
+
+
+def _strip_named_cookie(header: str, name: str) -> str | None:
+    kept: list[str] = []
+    prefix = f"{name.lower()}="
+    for item in header.split(";"):
+        piece = item.strip()
+        if not piece:
+            continue
+        if piece.lower().startswith(prefix):
+            continue
+        kept.append(piece)
+    if not kept:
+        return None
+    return "; ".join(kept)
+
+
 def _forward_request_headers(headers: Mapping[str, str], target_url: str) -> dict[str, str]:
     parsed = urlparse(target_url)
     forwarded: dict[str, str] = {}
@@ -60,7 +95,9 @@ def _forward_request_headers(headers: Mapping[str, str], target_url: str) -> dic
         if lowered in _HOP_BY_HOP:
             continue
         if lowered == "cookie":
-            forwarded[key] = value
+            stripped = _strip_named_cookie(value, _SESSION_COOKIE)
+            if stripped:
+                forwarded[key] = stripped
             continue
         forwarded[key] = value
     if parsed.netloc:
@@ -106,8 +143,14 @@ async def proxy_http(
     suffix: str,
     public_prefix: str,
     client: httpx.AsyncClient,
+    allow_loopback: bool,
 ) -> Response:
     backend = join_backend(target_url, suffix, request.url.query)
+    if backend is None or not target_is_allowed(
+        backend, allow_loopback=allow_loopback
+    ):
+        logger.warning("gateway proxy: refused backend join")
+        return Response(status_code=400, content=b"")
     headers = _forward_request_headers(request.headers, target_url)
     body = await request.body()
     try:
@@ -141,6 +184,9 @@ async def proxy_websocket(
     import websockets
 
     backend = join_backend(target_url, suffix, query)
+    if backend is None:
+        await websocket.close(code=4400)
+        return
     parsed = urlparse(backend)
     if parsed.scheme == "https":
         ws_url = backend.replace("https://", "wss://", 1)
@@ -150,11 +196,19 @@ async def proxy_websocket(
         await websocket.close(code=4400)
         return
 
+    tls: ssl.SSLContext | None = None
+    if parsed.scheme == "https":
+        # Kasm/Sunshine use a mesh-internal self-signed certificate. The
+        # browser-facing connection is independently protected by Caddy TLS.
+        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        tls.check_hostname = False
+        tls.verify_mode = ssl.CERT_NONE
+
     await websocket.accept()
     try:
         async with websockets.connect(
             ws_url,
-            host=parsed.netloc,
+            ssl=tls,
             open_timeout=10,
         ) as backend_ws:
             async def client_to_backend() -> None:

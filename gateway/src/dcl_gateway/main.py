@@ -9,16 +9,17 @@ from typing import AsyncIterator
 
 import httpx
 from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from dcl_gateway.config import get_settings
 from dcl_gateway.proxy import proxy_http, proxy_websocket
 from dcl_gateway.rate_limit import FailClosedLimiter
 from dcl_gateway.resolve import resolve_token
-from dcl_gateway.ssrf import target_is_allowed
+from dcl_gateway.ssrf import origin_is_allowed, target_is_allowed
 
 logger = logging.getLogger("dcl_gateway")
 
+SESSION_COOKIE = "dcl_session"
 _limiter: FailClosedLimiter | None = None
 _http_client: httpx.AsyncClient | None = None
 
@@ -66,6 +67,8 @@ def create_app() -> FastAPI:
     async def http_ingress(
         request: Request, token: str, path: str = ""
     ) -> Response:
+        if request.method in {"GET", "HEAD"} and not path:
+            return await _bootstrap_http(request, token)
         return await _handle_http(request, token, path)
 
     @app.websocket("/s/{token}")
@@ -73,7 +76,51 @@ def create_app() -> FastAPI:
     async def ws_ingress(websocket: WebSocket, token: str, path: str = "") -> None:
         await _handle_ws(websocket, token, path)
 
+    @app.api_route("/", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+    @app.api_route(
+        "/{path:path}",
+        methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
+    async def cookie_http_ingress(request: Request, path: str = "") -> Response:
+        return await _handle_http(request, request.cookies.get(SESSION_COOKIE, ""), path)
+
+    @app.websocket("/")
+    @app.websocket("/{path:path}")
+    async def cookie_ws_ingress(websocket: WebSocket, path: str = "") -> None:
+        await _handle_ws(websocket, websocket.cookies.get(SESSION_COOKIE, ""), path)
+
     return app
+
+
+async def _bootstrap_http(request: Request, token: str) -> Response:
+    settings = get_settings()
+    limiter = _limiter
+    if limiter is None:
+        return JSONResponse({"detail": "unavailable"}, status_code=503)
+    ip = _client_ip(request)
+    if limiter.blocked(ip):
+        return JSONResponse({"detail": "Session not found"}, status_code=404)
+    resolved = await resolve_token(
+        matchmaker_url=settings.matchmaker_url,
+        resolve_token=settings.resolve_token,
+        grant_token=token,
+    )
+    if resolved is None or not target_is_allowed(
+        resolved.target_url, allow_loopback=settings.allow_loopback_target
+    ):
+        limiter.record_failure(ip)
+        return JSONResponse({"detail": "Session not found"}, status_code=404)
+
+    response = RedirectResponse(url="/", status_code=303)
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        secure=True,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return response
 
 
 async def _handle_http(request: Request, token: str, path: str) -> Response:
@@ -113,7 +160,7 @@ async def _handle_http(request: Request, token: str, path: str) -> Response:
         )
         return JSONResponse({"detail": "Session not found"}, status_code=404)
 
-    public_prefix = f"{settings.public_origin or ''}/s/{token}"
+    public_prefix = settings.public_origin or ""
     logger.info(
         "gateway allow token=%s session=%s ip=%s",
         _token_log_id(token),
@@ -126,6 +173,7 @@ async def _handle_http(request: Request, token: str, path: str) -> Response:
         suffix=path,
         public_prefix=public_prefix,
         client=client,
+        allow_loopback=settings.allow_loopback_target,
     )
 
 
@@ -133,6 +181,11 @@ async def _handle_ws(websocket: WebSocket, token: str, path: str) -> None:
     settings = get_settings()
     limiter = _limiter
     ip = websocket.client.host if websocket.client is not None else "unknown"
+    if not origin_is_allowed(
+        websocket.headers.get("origin"), settings.public_origin
+    ):
+        await websocket.close(code=4403)
+        return
     if limiter is not None and limiter.blocked(ip):
         await websocket.close(code=4404)
         return

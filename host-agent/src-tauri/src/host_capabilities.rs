@@ -4,9 +4,10 @@
 //! or Pro sessions can be offered. Selection is internal (OS + KVM / Windows
 //! hypervisor / IOMMU / GPUs). The UI must never ask which backend to use.
 //!
-//! Live Linux checks `/dev/kvm` and IOMMU sysfs. Live Windows returns WHPX as
-//! unknown (no QEMU spawn). Tests inject probe results so this Mac and
-//! Linux-without-KVM CI do not need real virtualization hardware.
+//! Live Linux checks `/dev/kvm` and IOMMU sysfs. Live Windows loads
+//! `WinHvPlatform.dll` and calls `WHvGetCapability` (no QEMU spawn). Tests
+//! inject probe results so this Mac and Linux-without-KVM CI do not need
+//! real virtualization hardware.
 
 use std::fs::OpenOptions;
 use std::path::Path;
@@ -53,6 +54,27 @@ pub enum WhpxCapability {
     Unavailable,
     Unknown,
     NotApplicable,
+}
+
+/// Result of a WHPX platform query. Production maps this through
+/// [`classify_whpx_probe`]; tests inject the variants without loading a DLL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhpxProbe {
+    HypervisorPresent,
+    HypervisorAbsent,
+    PlatformMissing,
+    QueryFailed,
+}
+
+/// Map a WHPX platform query to the capability enum. Missing platform or a
+/// present-but-off hypervisor is Unavailable. An unexpected API failure stays
+/// Unknown so Standard is not offered on a lie.
+pub fn classify_whpx_probe(probe: WhpxProbe) -> WhpxCapability {
+    match probe {
+        WhpxProbe::HypervisorPresent => WhpxCapability::Available,
+        WhpxProbe::HypervisorAbsent | WhpxProbe::PlatformMissing => WhpxCapability::Unavailable,
+        WhpxProbe::QueryFailed => WhpxCapability::Unknown,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,12 +217,73 @@ pub fn live_whpx(os: HostOs) -> WhpxCapability {
     }
     #[cfg(target_os = "windows")]
     {
-        // Do not spawn QEMU. Unknown until a later phase can prove WHPX.
-        WhpxCapability::Unknown
+        classify_whpx_probe(probe_whpx_winhv())
     }
     #[cfg(not(target_os = "windows"))]
     {
         WhpxCapability::NotApplicable
+    }
+}
+
+/// Query Windows Hypervisor Platform without starting QEMU.
+#[cfg(target_os = "windows")]
+fn probe_whpx_winhv() -> WhpxProbe {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut core::ffi::c_void;
+        fn GetProcAddress(
+            module: *mut core::ffi::c_void,
+            name: *const u8,
+        ) -> *mut core::ffi::c_void;
+        fn FreeLibrary(module: *mut core::ffi::c_void) -> i32;
+    }
+
+    type WHvGetCapability = unsafe extern "system" fn(
+        capability_code: u32,
+        capability_buffer: *mut u8,
+        capability_buffer_size_in_bytes: u32,
+        written_size_in_bytes: *mut u32,
+    ) -> i32;
+
+    const WHV_CAPABILITY_CODE_HYPERVISOR_PRESENT: u32 = 0;
+
+    let mut dll_name: Vec<u16> = "WinHvPlatform.dll".encode_utf16().collect();
+    dll_name.push(0);
+    let module = unsafe { LoadLibraryW(dll_name.as_ptr()) };
+    if module.is_null() {
+        return WhpxProbe::PlatformMissing;
+    }
+
+    let proc = unsafe { GetProcAddress(module, b"WHvGetCapability\0".as_ptr()) };
+    if proc.is_null() {
+        unsafe {
+            FreeLibrary(module);
+        }
+        return WhpxProbe::QueryFailed;
+    }
+
+    let get_capability: WHvGetCapability = unsafe { std::mem::transmute(proc) };
+    let mut buffer = [0u8; 32];
+    let mut written = 0u32;
+    let hr = unsafe {
+        get_capability(
+            WHV_CAPABILITY_CODE_HYPERVISOR_PRESENT,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            &mut written,
+        )
+    };
+    unsafe {
+        FreeLibrary(module);
+    }
+    if hr != 0 {
+        return WhpxProbe::QueryFailed;
+    }
+    let present = i32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
+    if present == 0 {
+        WhpxProbe::HypervisorAbsent
+    } else {
+        WhpxProbe::HypervisorPresent
     }
 }
 
@@ -565,6 +648,26 @@ mod tests {
         assert_eq!(live_kvm(HostOs::Windows), KvmAccess::NotApplicable);
         assert_eq!(live_iommu(HostOs::Windows), IommuStatus::Unknown);
         assert_eq!(live_iommu(HostOs::MacOs), IommuStatus::Unknown);
+    }
+
+    #[test]
+    fn classify_whpx_probe_offers_only_when_hypervisor_is_present() {
+        assert_eq!(
+            classify_whpx_probe(WhpxProbe::HypervisorPresent),
+            WhpxCapability::Available
+        );
+        assert_eq!(
+            classify_whpx_probe(WhpxProbe::HypervisorAbsent),
+            WhpxCapability::Unavailable
+        );
+        assert_eq!(
+            classify_whpx_probe(WhpxProbe::PlatformMissing),
+            WhpxCapability::Unavailable
+        );
+        assert_eq!(
+            classify_whpx_probe(WhpxProbe::QueryFailed),
+            WhpxCapability::Unknown
+        );
     }
 
     #[test]

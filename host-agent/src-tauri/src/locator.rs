@@ -11,9 +11,8 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-/// Kasm Workspaces single-server default: HTTPS on 443
-/// (`https://<WEBAPP_SERVER>` after install). Packer does not pass `-L`.
-pub const KASM_HTTPS_PORT: u16 = 443;
+/// KasmVNC browser desktop HTTPS listener in the Standard guest.
+pub const KASM_HTTPS_PORT: u16 = 8443;
 
 /// Sunshine HTTPS web UI. GameStream/Moonlight base port is 47989; the
 /// configuration UI is 47990 (exposed in LizardByte's documented port range).
@@ -21,8 +20,10 @@ pub const SUNSHINE_WEBUI_PORT: u16 = 47990;
 
 pub const MOONLIGHT_APP: &str = "Desktop";
 
-const PRODUCTION_TIMEOUT: Duration = Duration::from_secs(60);
-const PRODUCTION_INTERVAL: Duration = Duration::from_millis(500);
+// A cold browser-desktop guest can need several minutes to boot even after QEMU
+// starts successfully. The Matchmaker request timeout is longer than this.
+const PRODUCTION_TIMEOUT: Duration = Duration::from_secs(300);
+const PRODUCTION_INTERVAL: Duration = Duration::from_secs(1);
 const HTTP_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,7 +166,10 @@ pub fn wait_from_gate(wait: Option<&StreamerWait>) -> StreamerWait {
 }
 
 pub fn kasm_workspace_url(mesh_hostname: &str) -> String {
-    format!("https://{}/", host_for_url(mesh_hostname.trim()))
+    format!(
+        "https://{}:{KASM_HTTPS_PORT}/",
+        host_for_url(mesh_hostname.trim())
+    )
 }
 
 pub fn sunshine_web_url(mesh_hostname: &str) -> String {
@@ -193,7 +197,29 @@ pub fn await_live_locator(
         return Err(LocatorError::Placeholder(url));
     }
     await_reachable(&url, wait)?;
-    Ok(live_from_url(kind, url))
+    // Return a concrete tailnet IP when possible. The Host Agent has native
+    // Tailscale DNS, while the containerized public gateway may not inherit
+    // the host resolver even though it shares the Tailscale network stack.
+    let gateway_url = if wait.override_url.is_none() {
+        mesh_hostname
+            .and_then(|host| resolved_mesh_url(kind, host))
+            .unwrap_or(url)
+    } else {
+        url
+    };
+    Ok(live_from_url(kind, gateway_url))
+}
+
+fn resolved_mesh_url(kind: StreamerKind, mesh_hostname: &str) -> Option<String> {
+    let port = match kind {
+        StreamerKind::Kasm => KASM_HTTPS_PORT,
+        StreamerKind::Sunshine => SUNSHINE_WEBUI_PORT,
+    };
+    let mut addresses = (mesh_hostname.trim(), port).to_socket_addrs().ok()?;
+    let address = addresses
+        .find(|address| address.is_ipv4())
+        .or_else(|| addresses.next())?;
+    Some(format!("https://{}:{port}/", host_for_url(&address.ip().to_string())))
 }
 
 fn candidate_url(
@@ -381,12 +407,12 @@ mod tests {
     }
 
     #[test]
-    fn kasm_url_uses_mesh_hostname_and_https_443() {
+    fn kasm_url_uses_mesh_hostname_and_https_8443() {
         assert_eq!(
             kasm_workspace_url("dcl-guest-aaaa"),
-            "https://dcl-guest-aaaa/"
+            "https://dcl-guest-aaaa:8443/"
         );
-        assert_eq!(KASM_HTTPS_PORT, 443);
+        assert_eq!(KASM_HTTPS_PORT, 8443);
     }
 
     #[test]
@@ -416,10 +442,18 @@ mod tests {
             override_url: None,
         };
         let live = await_live_locator(StreamerKind::Kasm, Some("dcl-guest-cccc"), &wait).unwrap();
-        assert_eq!(live.connection_url, "https://dcl-guest-cccc/");
+        assert_eq!(live.connection_url, "https://dcl-guest-cccc:8443/");
         assert_eq!(live.streamer, StreamerKind::Kasm);
         assert!(live.sunshine_url.is_none());
         assert!(!locator_is_placeholder(&live.connection_url));
+    }
+
+    #[test]
+    fn resolved_mesh_locator_uses_a_concrete_ip_for_the_gateway() {
+        assert_eq!(
+            resolved_mesh_url(StreamerKind::Kasm, "127.0.0.1").as_deref(),
+            Some("https://127.0.0.1:8443/")
+        );
     }
 
     #[test]

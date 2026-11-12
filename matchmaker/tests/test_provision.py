@@ -206,6 +206,8 @@ def test_http_provisioner_posts_guest_locators_and_mesh_hint_without_secrets() -
     assert "secretAccessKey" not in body
     assert "accessKeyId" not in body
     assert "AWS_SECRET_ACCESS_KEY" not in json.dumps(body)
+    assert "bootstrapToken" not in json.dumps(body["guestMesh"])
+    assert "preauthKey" not in json.dumps(body["guestMesh"])
 
 
 def test_http_provisioner_advertises_signed_image_metadata() -> None:
@@ -254,6 +256,89 @@ def test_http_provisioner_advertises_signed_image_metadata() -> None:
         "imageDigest": STANDARD_DIGEST,
         "imageSignature": STANDARD_SIGNATURE,
     }
+
+
+def test_http_provisioner_posts_bootstrap_hint_without_preauth_or_s3_keys() -> None:
+    captured: dict[str, object] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            captured["body"] = json.loads(self.rfile.read(length))
+            payload = json.dumps(
+                {"connectionUrl": LIVE_KASM_URL, "hypervisorInvoked": False}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        provisioner = HttpHostProvisioner(bearer_token="test-host-bootstrap-token")
+        result = provisioner.provision(
+            _host(agent_url=origin),
+            lab_tier="standard",
+            guest_mesh=GuestMeshHint(
+                login_server="http://headscale.test.invalid",
+                hostname="dcl-guest-example",
+                exit_node="dcl-platform-exit",
+                acl_tags=("tag:guest",),
+                bootstrap_origin="http://matchmaker.test.invalid",
+                bootstrap_token="guest-bootstrap-token-value-not-preauth",
+            ),
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert result is not None
+    body = captured["body"]
+    assert isinstance(body, dict)
+    mesh = body["guestMesh"]
+    assert mesh["bootstrapOrigin"] == "http://matchmaker.test.invalid"
+    assert mesh["bootstrapToken"] == "guest-bootstrap-token-value-not-preauth"
+    dumped = json.dumps(body)
+    assert "preauthKey" not in dumped
+    assert "secretAccessKey" not in dumped
+    assert "accessKeyId" not in dumped
+    assert "tskey-auth" not in dumped
+
+
+def test_http_provisioner_posts_teardown_with_bootstrap_bearer() -> None:
+    captured: dict[str, object] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            captured["path"] = self.path
+            captured["authorization"] = self.headers.get("Authorization")
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        origin = f"http://127.0.0.1:{server.server_address[1]}"
+        provisioner = HttpHostProvisioner(bearer_token="test-host-bootstrap-token")
+        provisioner.teardown(_host(agent_url=origin))
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert captured["path"] == "/v1/teardown"
+    assert captured["authorization"] == "Bearer test-host-bootstrap-token"
 
 
 def test_http_provisioner_uses_fallback_origin_when_host_has_none() -> None:

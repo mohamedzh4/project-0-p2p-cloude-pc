@@ -88,7 +88,7 @@ export function SessionPanel({
             {live
               ? isPro
                 ? "Live Sunshine locator — desktop is Moonlight, not Kasm"
-                : "Live session URL — opens on the host PC"
+                : "Live browser desktop — protected by your session link"
               : "Connection URL is a placeholder, not a live desktop"}
           </span>
           <dl>
@@ -128,6 +128,12 @@ export function SessionPanel({
                   {session.storage.endpoint} / {session.storage.bucket} — mount
                   inside the guest only
                 </dd>
+                <dt>saved as of</dt>
+                <dd>
+                  {session.storage.savedAsOf
+                    ? session.storage.savedAsOf
+                    : "updates inside the guest after rclone flush"}
+                </dd>
               </>
             ) : null}
             {session.mesh ? (
@@ -161,7 +167,7 @@ export function SessionPanel({
             <p className="hint">
               {isPro
                 ? "Sunshine's HTTPS page is the guest web UI. Use Moonlight for the desktop. Selkies-GStreamer is a documented browser alternative, not this API. Do not iframe the stream here."
-                : "Kasm is not embedded here (iframes are usually blocked). Open desktop uses a new tab. Paste any token into Kasm if it asks."}
+                : "Open desktop launches the VM's XFCE desktop in a new browser tab. The short-lived DCL session link handles access; there is no second desktop login."}
             </p>
           ) : (
             <p className="hint">

@@ -17,12 +17,13 @@ Operator inputs (minimal):
                              If unset, Packer downloads the pinned URL in versions.env.
   PACKER_ACCELERATOR         kvm (Linux default), hvf (macOS default), whpx, none.
                              "none" is TCG — fine for *building*, not for hosting.
+  PACKER_MEMORY_MB           Packer VM RAM (default 8192). Use 4096 on a 8 GiB builder.
+  PACKER_CPUS                Packer VM vCPUs (default 4). Use 2 on a 2 vCPU builder.
 
 Optional:
   UBUNTU_CLOUDIMG_URL / UBUNTU_CLOUDIMG_SHA256  override versions.env
-  DCL_KASM_ADMIN_PASSWORD / DCL_KASM_USER_PASSWORD
-      Standard only. If unset, build.sh generates them into
-      output/standard/kasm-credentials.txt (gitignored).
+  KASM_VNC_DEB_URL / KASM_VNC_DEB_SHA256
+      Override the pinned Standard KasmVNC package.
   SUNSHINE_DEB_URL  override the official latest Ubuntu 24.04 .deb
   FIRECRACKER_KERNEL  Linux only; copied next to rootfs as vmlinux after convert.
 
@@ -102,22 +103,7 @@ SSH_PUB="$(cat "$SSH_DIR/id_ed25519.pub")"
 
 OUT="$ROOT/output/$LAB_TIER"
 rm -rf "$OUT"
-mkdir -p "$OUT"
-
-if [[ "$LAB_TIER" == "standard" ]]; then
-  if [[ -z "${DCL_KASM_ADMIN_PASSWORD:-}" || -z "${DCL_KASM_USER_PASSWORD:-}" ]]; then
-    DCL_KASM_ADMIN_PASSWORD="$(openssl rand -base64 18)"
-    DCL_KASM_USER_PASSWORD="$(openssl rand -base64 18)"
-    umask 077
-    cat > "$OUT/kasm-credentials.txt" <<EOF
-admin@kasm.local
-$DCL_KASM_ADMIN_PASSWORD
-user@kasm.local
-$DCL_KASM_USER_PASSWORD
-EOF
-    echo "wrote $OUT/kasm-credentials.txt (gitignored; do not commit)" >&2
-  fi
-fi
+mkdir -p "$(dirname "$OUT")"
 
 export PACKER_LOG="${PACKER_LOG:-0}"
 packer init "$ROOT/packer"
@@ -129,10 +115,10 @@ packer build \
   -var "ssh_private_key_file=$SSH_DIR/id_ed25519" \
   -var "output_dir=$OUT" \
   -var "accelerator=$ACCEL" \
-  -var "kasm_tarball_url=${KASM_TARBALL_URL:-}" \
-  -var "kasm_tarball_sha256=${KASM_TARBALL_SHA256:-}" \
-  -var "kasm_admin_password=${DCL_KASM_ADMIN_PASSWORD:-}" \
-  -var "kasm_user_password=${DCL_KASM_USER_PASSWORD:-}" \
+  -var "memory_mb=${PACKER_MEMORY_MB:-8192}" \
+  -var "cpus=${PACKER_CPUS:-4}" \
+  -var "kasm_vnc_deb_url=${KASM_VNC_DEB_URL:-}" \
+  -var "kasm_vnc_deb_sha256=${KASM_VNC_DEB_SHA256:-}" \
   -var "sunshine_deb_url=${SUNSHINE_DEB_URL:-}" \
   "$ROOT/packer"
 
@@ -154,4 +140,3 @@ python3 "$ROOT/scripts/sign_image.py" sign \
   --lab-tier "$LAB_TIER"
 
 echo "signed $OUT/rootfs.img — copy env.snippet into Matchmaker/Host Agent .env" >&2
-echo "Host Agent still does not boot this disk in phase 26." >&2

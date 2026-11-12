@@ -157,12 +157,16 @@ pub fn build(request: LaunchRequest<'_>) -> Result<LaunchConfig, LaunchError> {
         request.image_cache_dir,
         request.guest_image,
     );
-    let kernel_path = resolve_kernel(
-        request.lab_tier,
-        request.image_cache_dir,
-        rootfs_path.as_deref(),
-        request.kernel_override,
-    );
+    let kernel_path = (plan.backend == ComputeBackend::Firecracker)
+        .then(|| {
+            resolve_kernel(
+                request.lab_tier,
+                request.image_cache_dir,
+                rootfs_path.as_deref(),
+                request.kernel_override,
+            )
+        })
+        .flatten();
 
     let gpu = match plan.shared_gpu_id {
         Some(id) => Some(GpuAssignment {
@@ -281,7 +285,7 @@ mod tests {
         GuestImageStatus {
             action: ImageEnsureAction::SkippedPresent,
             lab_tier: Some(lab_tier.to_string()),
-            backend: ImageBackend::Firecracker,
+            backend: ImageBackend::Qemu,
             path: Some(path.to_string()),
             digest: None,
             log: "test".to_string(),
@@ -302,13 +306,13 @@ mod tests {
         .unwrap();
         let json = serde_json::to_value(&config).unwrap();
 
-        assert_eq!(config.backend, ComputeBackend::Firecracker);
+        assert_eq!(config.backend, ComputeBackend::QemuKvm);
         assert_eq!(config.lab_tier, LabTier::Standard);
         assert_eq!(config.vcpu_count, 4);
         assert_eq!(config.memory_mib, 8192);
         assert!(config.gpu.is_none());
         assert!(!config.hypervisor_invoked);
-        assert_eq!(json["backend"], "firecracker");
+        assert_eq!(json["backend"], "qemu-kvm");
         assert_eq!(json["labTier"], "standard");
         assert_eq!(json["vcpuCount"], 4);
         assert_eq!(json["memoryMib"], 8192);
@@ -390,7 +394,7 @@ mod tests {
         .unwrap();
         let json = serde_json::to_value(&config).unwrap();
 
-        assert_eq!(config.backend, ComputeBackend::Firecracker);
+        assert_eq!(config.backend, ComputeBackend::QemuKvm);
         assert!(config.gpu.is_none());
         assert!(json.get("gpu").is_none());
     }
@@ -580,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn includes_kernel_and_rootfs_from_phase20_cache_when_present() {
+    fn qemu_kvm_uses_rootfs_but_not_an_external_kernel() {
         let hardware = hardware();
         let sharing = sharing(4, 8 * BYTES_PER_GIB, false, None);
         let cache = TempDir::new().unwrap();
@@ -608,16 +612,13 @@ mod tests {
             config.rootfs_path.as_deref(),
             Some(rootfs.to_str().unwrap())
         );
-        assert_eq!(
-            config.kernel_path.as_deref(),
-            Some(kernel.to_str().unwrap())
-        );
         assert_eq!(json["rootfsPath"], rootfs.to_str().unwrap());
-        assert_eq!(json["kernelPath"], kernel.to_str().unwrap());
+        assert!(config.kernel_path.is_none());
+        assert!(json["kernelPath"].is_null());
     }
 
     #[test]
-    fn firecracker_kernel_override_wins_when_the_file_exists() {
+    fn qemu_kvm_ignores_a_firecracker_kernel_override() {
         let hardware = hardware();
         let sharing = sharing(4, 8 * BYTES_PER_GIB, false, None);
         let dir = TempDir::new().unwrap();
@@ -635,10 +636,7 @@ mod tests {
             kernel_override: Some(override_kernel.as_path()),
         })
         .unwrap();
-        assert_eq!(
-            config.kernel_path.as_deref(),
-            Some(override_kernel.to_str().unwrap())
-        );
+        assert!(config.kernel_path.is_none());
     }
 
     #[test]
@@ -664,12 +662,12 @@ mod tests {
         let linux_pro = build(request(HostOs::Linux, LabTier::Pro, &hardware, &pro)).unwrap();
         let win_pro = build(request(HostOs::Windows, LabTier::Pro, &hardware, &pro)).unwrap();
 
-        assert_eq!(linux_std.backend, ComputeBackend::Firecracker);
+        assert_eq!(linux_std.backend, ComputeBackend::QemuKvm);
         assert_eq!(win_std.backend, ComputeBackend::QemuWhpx);
         assert_eq!(linux_pro.backend, ComputeBackend::QemuVfio);
         assert_eq!(win_pro.backend, ComputeBackend::HyperVGpu);
         assert_ne!(linux_std.backend, win_std.backend);
-        assert_ne!(linux_pro.backend, ComputeBackend::Firecracker);
+        assert_ne!(linux_pro.backend, ComputeBackend::QemuKvm);
         assert!(!linux_std.hypervisor_invoked);
         assert!(!win_std.hypervisor_invoked);
         assert!(!linux_pro.hypervisor_invoked);

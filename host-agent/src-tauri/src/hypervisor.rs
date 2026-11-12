@@ -573,6 +573,40 @@ pub fn ensure_from_env(
     ensure(os, caps, &cache, &firecracker, &qemu, fetcher, installer)
 }
 
+/// Runtime status used by the packaged agent. Linux Standard uses the distro
+/// QEMU binary so the signed Ubuntu disk can boot its own kernel and use
+/// unprivileged SLIRP networking. The legacy `ensure` function remains for
+/// existing Firecracker cache compatibility and tests.
+pub fn runtime_status_from_env(
+    os: HostOs,
+    caps: &HostCapabilities,
+    arch: &str,
+    getenv: impl Fn(&str) -> Option<String>,
+    fetcher: &dyn BinaryFetcher,
+    installer: &dyn QemuInstaller,
+) -> Result<HypervisorStatus, HypervisorError> {
+    if os != HostOs::Linux {
+        return ensure_from_env(os, caps, arch, getenv, fetcher, installer);
+    }
+    if !caps.standard.offered {
+        return Err(HypervisorError::StandardNotOffered {
+            reason: caps.standard.reason.clone(),
+        });
+    }
+    let path = crate::qemu_kvm::resolve_binary(arch, |key| getenv(key))
+        .map_err(|error| HypervisorError::Install(error.to_string()))?;
+    Ok(HypervisorStatus::success(
+        EnsureAction::SkippedPresent,
+        HypervisorName::Qemu,
+        None,
+        Some(path.clone()),
+        format!(
+            "skipped because present; Linux Standard uses QEMU+KVM at {}",
+            path.display()
+        ),
+    ))
+}
+
 pub fn status_from_result(result: Result<HypervisorStatus, HypervisorError>) -> HypervisorStatus {
     match result {
         Ok(status) => {
@@ -620,7 +654,7 @@ pub fn status_from_result(result: Result<HypervisorStatus, HypervisorError>) -> 
 fn skip_unsupported(os: HostOs, caps: &HostCapabilities) -> HypervisorStatus {
     let log = match os {
         HostOs::MacOs => format!(
-            "skipped: this Mac cannot host; Firecracker is Linux-only and is not fetched. {}",
+            "skipped: this Mac cannot host; a KVM/WHPX hypervisor is not fetched. {}",
             caps.standard.reason
         ),
         _ => format!(

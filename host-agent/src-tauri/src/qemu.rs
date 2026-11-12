@@ -12,7 +12,8 @@
 //! -device usb-kbd -device usb-tablet -hda DISK`
 //!
 //! Size is the clamped slider mapped to a QEMU `-m` suffix (`NG` when the
-//! value is whole GiB, otherwise `NM`). TCG is not a Standard Windows product
+//! value is whole GiB, otherwise `NM`). Guest net is SLIRP `-netdev user`
+//! (free, no TAP-Windows driver). TCG is not a Standard Windows product
 //! fallback. Hyper-V is not a Standard boot path (Hyper-V is the
 //! Pro GPU backend). Tests inject a fake process so CI never execs QEMU or
 //! needs WHPX. Production spawn is refused under `cfg(test)` and off Windows.
@@ -46,6 +47,9 @@ pub const AARCH64_BIOS: &str = "edk2-aarch64-code.fd";
 pub const RAMFB: &str = "ramfb";
 pub const USB_XHCI: &str = "nec-usb-xhci";
 pub const USB_KBD: &str = "usb-kbd";
+pub const NETDEV_ARG: &str = "-netdev";
+pub const NETDEV_USER: &str = "user,id=net0";
+pub const VIRTIO_NET: &str = "virtio-net-pci,netdev=net0";
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum QemuError {
@@ -91,6 +95,8 @@ pub struct InvokeRequest<'a> {
     pub vcpu_count: u32,
     pub memory_mib: u64,
     pub arch: &'a str,
+    pub bootstrap_origin: Option<&'a str>,
+    pub bootstrap_token: Option<&'a str>,
 }
 
 pub trait QemuChild: Send {
@@ -144,6 +150,15 @@ impl QemuSpawner for ProcessSpawner {
     }
 }
 
+/// Kill QEMU guests detached after a successful spawn.
+pub fn kill_running() {
+    let mut running = RUNNING.lock().expect("qemu running mutex");
+    for child in running.drain(..) {
+        let mut child = child;
+        child.kill();
+    }
+}
+
 struct ProcessChild(#[allow(dead_code)] Option<std::process::Child>);
 
 impl QemuChild for ProcessChild {
@@ -170,12 +185,22 @@ pub fn memory_flag(memory_mib: u64) -> String {
     }
 }
 
-/// Documented WHPX argv (no TCG, no `-enable-kvm`, no Hyper-V).
+/// SLIRP user net so the Ubuntu guest gets DHCP without a host TAP device.
+pub fn net_argv() -> Vec<String> {
+    vec![
+        NETDEV_ARG.to_string(),
+        NETDEV_USER.to_string(),
+        DEVICE_ARG.to_string(),
+        VIRTIO_NET.to_string(),
+    ]
+}
+
+/// Documented WHPX argv (no TCG, no `-enable-kvm`, no Hyper-V) plus user net.
 pub fn argv(arch: &str, vcpu_count: u32, memory_mib: u64, disk: &Path) -> Vec<String> {
     let smp = format!("cores={vcpu_count}");
     let memory = memory_flag(memory_mib);
     let disk = disk.to_string_lossy().into_owned();
-    if is_aarch64(arch) {
+    let mut args = if is_aarch64(arch) {
         vec![
             ACCEL_ARG.to_string(),
             ACCEL_WHPX.to_string(),
@@ -217,7 +242,9 @@ pub fn argv(arch: &str, vcpu_count: u32, memory_mib: u64, disk: &Path) -> Vec<St
             HDA_ARG.to_string(),
             disk,
         ]
-    }
+    };
+    args.extend(net_argv());
+    args
 }
 
 /// Start QEMU from a phase-21 launch document. Never used for Pro or Linux.
@@ -251,6 +278,46 @@ pub fn boot_from_launch(
         vcpu_count: launch.vcpu_count,
         memory_mib: launch.memory_mib,
         arch,
+        bootstrap_origin: None,
+        bootstrap_token: None,
+    })
+}
+
+/// Same as [`boot_from_launch`], with Matchmaker origin+token on QEMU fw_cfg.
+pub fn boot_from_launch_with_bootstrap(
+    os: HostOs,
+    lab_tier: LabTier,
+    capabilities: &HostCapabilities,
+    launch: &LaunchConfig,
+    binary: &Path,
+    arch: &str,
+    bootstrap_origin: Option<&str>,
+    bootstrap_token: Option<&str>,
+    runtime: &dyn QemuRuntime,
+) -> Result<InvokeResult, QemuError> {
+    if os != HostOs::Windows {
+        return Err(QemuError::WindowsOnly(os));
+    }
+    if lab_tier != LabTier::Standard {
+        return Err(QemuError::StandardOnly(lab_tier.as_str()));
+    }
+    let disk = launch
+        .rootfs_path
+        .as_deref()
+        .map(Path::new)
+        .filter(|path| path.is_file())
+        .ok_or(QemuError::DiskMissing)?;
+    runtime.invoke(&InvokeRequest {
+        os,
+        lab_tier,
+        capabilities,
+        binary,
+        disk,
+        vcpu_count: launch.vcpu_count,
+        memory_mib: launch.memory_mib,
+        arch,
+        bootstrap_origin,
+        bootstrap_token,
     })
 }
 
@@ -278,12 +345,16 @@ pub fn invoke(
         return Err(QemuError::InvalidVcpu(request.vcpu_count));
     }
 
-    let args = argv(
+    let mut args = argv(
         request.arch,
         request.vcpu_count,
         request.memory_mib,
         request.disk,
     );
+    args.extend(crate::guest_net::qemu_fw_cfg_argv(
+        request.bootstrap_origin,
+        request.bootstrap_token,
+    ));
     debug_assert!(
         !args.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")),
         "Standard Windows must not pass TCG"
@@ -404,6 +475,8 @@ mod tests {
             vcpu_count: 4,
             memory_mib: 8192,
             arch: "x86_64",
+            bootstrap_origin: None,
+            bootstrap_token: None,
         }
     }
 
@@ -418,30 +491,35 @@ mod tests {
         let spawns = recorder.spawn_calls();
         assert_eq!(spawns.len(), 1);
         assert_eq!(spawns[0].0, binary);
-        assert_eq!(
-            spawns[0].1,
-            vec![
-                ACCEL_ARG.to_string(),
-                ACCEL_WHPX.to_string(),
-                MACHINE_ARG.to_string(),
-                MACHINE_PC.to_string(),
-                SMP_ARG.to_string(),
-                "cores=4".to_string(),
-                MEMORY_ARG.to_string(),
-                "8G".to_string(),
-                DEVICE_ARG.to_string(),
-                USB_EHCI.to_string(),
-                DEVICE_ARG.to_string(),
-                USB_TABLET.to_string(),
-                HDA_ARG.to_string(),
-                disk.to_string_lossy().into_owned(),
-            ]
-        );
+        assert_eq!(spawns[0].1, argv("x86_64", 4, 8192, &disk));
         assert_eq!(result.argv, spawns[0].1);
+        assert!(spawns[0].1.windows(2).any(|w| {
+            w[0] == NETDEV_ARG && w[1] == NETDEV_USER
+        }));
+        assert!(spawns[0].1.iter().any(|arg| arg == VIRTIO_NET));
         assert!(!spawns[0].1.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));
         assert!(!spawns[0].1.iter().any(|arg| arg.contains("Start-VM")));
         assert_eq!(spawns[0].1[0], ACCEL_ARG);
         assert_eq!(spawns[0].1[1], ACCEL_WHPX);
+    }
+
+    #[test]
+    fn windows_standard_fw_cfg_carries_bootstrap_not_preauth() {
+        let caps = windows_standard_caps();
+        let (_dir, binary, disk) = fixture_tree();
+        let recorder = RecordingQemu::succeeding();
+        let mut req = request(&caps, &binary, &disk);
+        req.bootstrap_origin = Some("http://mm.test");
+        req.bootstrap_token = Some("guest-token");
+        let result = invoke(&req, &recorder).unwrap();
+        assert!(result.argv.windows(2).any(|w| {
+            w[0] == "-fw_cfg" && w[1].contains("opt/org.dcl/matchmaker") && w[1].contains("http://mm.test")
+        }));
+        assert!(result.argv.windows(2).any(|w| {
+            w[0] == "-fw_cfg" && w[1].contains("opt/org.dcl/bootstrap") && w[1].contains("guest-token")
+        }));
+        assert!(!result.argv.iter().any(|arg| arg.contains("tskey-auth")));
+        assert!(!result.argv.iter().any(|arg| arg.contains("AWS_SECRET")));
     }
 
     #[test]
@@ -452,33 +530,10 @@ mod tests {
         let mut req = request(&caps, &binary, &disk);
         req.arch = "aarch64";
         let result = invoke(&req, &recorder).unwrap();
-        assert_eq!(
-            result.argv,
-            vec![
-                ACCEL_ARG.to_string(),
-                ACCEL_WHPX.to_string(),
-                MACHINE_ARG.to_string(),
-                MACHINE_VIRT.to_string(),
-                CPU_ARG.to_string(),
-                CPU_HOST.to_string(),
-                SMP_ARG.to_string(),
-                "cores=4".to_string(),
-                MEMORY_ARG.to_string(),
-                "8G".to_string(),
-                BIOS_ARG.to_string(),
-                AARCH64_BIOS.to_string(),
-                DEVICE_ARG.to_string(),
-                RAMFB.to_string(),
-                DEVICE_ARG.to_string(),
-                USB_XHCI.to_string(),
-                DEVICE_ARG.to_string(),
-                USB_KBD.to_string(),
-                DEVICE_ARG.to_string(),
-                USB_TABLET.to_string(),
-                HDA_ARG.to_string(),
-                disk.to_string_lossy().into_owned(),
-            ]
-        );
+        assert_eq!(result.argv, argv("aarch64", 4, 8192, &disk));
+        assert!(result.argv.windows(2).any(|w| {
+            w[0] == NETDEV_ARG && w[1] == NETDEV_USER
+        }));
         assert_eq!(result.argv[1], ACCEL_WHPX);
         assert!(!result.argv.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));
     }

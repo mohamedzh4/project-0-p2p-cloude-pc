@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from dcl_gateway.config import get_settings
 from dcl_gateway.main import app
-from dcl_gateway.proxy import join_backend, rewrite_location
+from dcl_gateway.proxy import join_backend, rewrite_location, _forward_request_headers
 from dcl_gateway.rate_limit import FailClosedLimiter
 from dcl_gateway.resolve import ResolvedSession
 
@@ -24,6 +24,30 @@ def test_join_backend_strips_gateway_prefix() -> None:
         join_backend("https://dcl-guest.test.example/", "", "x=1")
         == "https://dcl-guest.test.example/?x=1"
     )
+
+
+def test_join_backend_rejects_absolute_and_protocol_relative_paths() -> None:
+    target = "https://dcl-guest.test.example/"
+    assert join_backend(target, "https://127.0.0.1/", "") is None
+    assert join_backend(target, "//evil.example/steal", "") is None
+    assert join_backend(target, "https://evil.example/login", "x=1") is None
+
+
+def test_proxy_strips_gateway_session_cookie() -> None:
+    forwarded = _forward_request_headers(
+        {
+            "Cookie": "dcl_session=secret-token; kasm_session=guest",
+            "Accept": "text/html",
+        },
+        "https://100.64.0.12:8443/",
+    )
+    assert forwarded["Cookie"] == "kasm_session=guest"
+    assert "dcl_session" not in forwarded["Cookie"]
+    stripped = _forward_request_headers(
+        {"Cookie": "dcl_session=secret-token"},
+        "https://100.64.0.12:8443/",
+    )
+    assert "Cookie" not in stripped
 
 
 def test_rewrite_location_stays_on_public_prefix() -> None:

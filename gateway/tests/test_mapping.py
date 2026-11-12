@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from dcl_gateway.config import get_settings
 from dcl_gateway.main import app
 from dcl_gateway.resolve import ResolvedSession
-from dcl_gateway.ssrf import target_is_allowed
+from dcl_gateway.ssrf import origin_is_allowed, target_is_allowed
 
 
 GOOD_TOKEN = "abcdefghijklmnopqrstuvwxyz012345"
@@ -31,6 +31,29 @@ def test_target_allows_https_mesh_and_rejects_placeholders() -> None:
     assert not target_is_allowed(
         "https://user:pass@dcl-guest.example/", allow_loopback=False
     )
+    assert target_is_allowed("https://100.64.1.20:8443/", allow_loopback=False)
+    assert not target_is_allowed("https://8.8.8.8/", allow_loopback=False)
+    assert not target_is_allowed("https://10.0.0.5/", allow_loopback=False)
+
+
+def test_websocket_origin_must_match_desktop_origin() -> None:
+    assert origin_is_allowed(None, None) is True
+    assert origin_is_allowed("https://evil.example", None) is True
+    assert (
+        origin_is_allowed(
+            "https://desktop.lab.example.com",
+            "https://desktop.lab.example.com",
+        )
+        is True
+    )
+    assert (
+        origin_is_allowed(
+            "https://storage.lab.example.com",
+            "https://desktop.lab.example.com",
+        )
+        is False
+    )
+    assert origin_is_allowed(None, "https://desktop.lab.example.com") is False
 
 
 def test_default_target_env_does_not_make_a_backend(monkeypatch) -> None:
@@ -64,6 +87,25 @@ def test_unknown_token_is_404_not_a_default_session(gateway_client: TestClient) 
     assert response.status_code == 404
     assert response.json()["detail"] == "Session not found"
     assert "dcl-guest" not in response.text
+
+
+def test_valid_token_bootstraps_secure_desktop_cookie(gateway_client: TestClient) -> None:
+    response = gateway_client.get(f"/s/{GOOD_TOKEN}/", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+    cookie = response.headers["set-cookie"]
+    assert f"dcl_session={GOOD_TOKEN}" in cookie
+    assert "HttpOnly" in cookie
+    assert "Secure" in cookie
+    assert "SameSite=lax" in cookie
+
+    # The fake mesh backend is intentionally unreachable, but the cookie was
+    # accepted and resolved; an unknown/missing token would have returned 404.
+    proxied = gateway_client.get(
+        "/api/__healthcheck",
+        headers={"Cookie": f"dcl_session={GOOD_TOKEN}"},
+    )
+    assert proxied.status_code == 502
 
 
 def test_rate_limit_failed_lookups_still_fail_closed(gateway_client: TestClient) -> None:

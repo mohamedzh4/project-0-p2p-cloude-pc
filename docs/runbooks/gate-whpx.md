@@ -26,8 +26,8 @@ Unattended blockers. Meeting them does not close the hardware line.
 3. Verified Standard disk (phase 20 fetch / phase 26 Packer
    `guest-images/output/standard/rootfs.img`). Host Agent cache name is
    `rootfs.img`; `-hda` accepts raw or qcow2 content.
-4. TAP/guest network is **not** in this runbook. A successful spawn plus
-   locator poll still needs a reachable Kasm on the mesh hostname. Timeout
-   is 400, not a `.invalid` success.
-5. Teardown HTTP is unused (occupancy is not cleared when Matchmaker
-   interrupts).
+4. Guest net is QEMU SLIRP user-net (no TAP-Windows). A successful spawn
+   plus locator poll still needs a reachable Kasm on the mesh hostname.
+   Timeout is 400, not a `.invalid` success.
+5. Matchmaker session end/silence POSTs `/v1/teardown` (host bootstrap
+   Bearer) to kill QEMU and clear occupancy.

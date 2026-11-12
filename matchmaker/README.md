@@ -226,6 +226,8 @@ HTTP; they do not start Docker or talk to a live Sia network.
 | POST | `/v1/storage` | User Bearer | issue per-user renterd bucket. 201 new, 200 existing. Locators only (no access keys). |
 | GET | `/v1/storage` | User Bearer | same locators, or 404 if never issued. rclone **inside the guest**. |
 | GET | `/v1/images/{labTier}` | no | `{ labTier, digestSha256, signature, algorithm: ed25519, digestAlgorithm: sha256 }` for `standard` or `pro`. Checksums only; not a disk download. |
+| POST | `/v1/guest/bootstrap` | Guest bootstrap Bearer | Headscale preauth + rclone locators **and** S3 env keys for the VM. Not a user JWT. Never on session JSON or provision POST. |
+| POST | `/v1/guest/saved-as-of` | Guest bootstrap Bearer | FR6 stamp on the session (`storage.savedAsOf`). |
 
 JSON is camelCase. Passwords and host tokens are never returned. Host inventory
 does not include `kasmToken`. Host responses include `lastSeenAt` (null until a
@@ -234,6 +236,8 @@ heartbeat) and `agentUrl` (null until the agent advertises a listen origin).
 Optional Matchmaker env: `HOST_AGENT_PROVISION_URL` (http/https origin, no path)
 when the booked host has no `agentUrl`. Not required; missing means fallback to
 the host row `kasmUrl`. Invalid non-empty values fail fast at startup.
+Optional `MATCHMAKER_PUBLIC_ORIGIN` (http/https origin guests call for
+bootstrap). Unset omits `bootstrapOrigin` from the provision hint.
 `CREDITS_PER_MINUTE` is required (non-negative integer). It is a ledger rate,
 not a payment-processor key. Optional
 `STALE_SESSION_SWEEP_INTERVAL_SECONDS` (default 15, `0` disables the
@@ -267,7 +271,8 @@ The Host Agent provision listener (not this process) is `POST /v1/provision`
 with the host bootstrap Bearer. The JSON body includes `imageDigest` and
 `imageSignature` from this registry, optional storage locators (endpoint /
 bucket / prefix / region — no keys), and optional `guestMesh` (login-server,
-hostname, exit node, tags — **no preauthKey**). It is not fetched from the
+hostname, exit node, tags — **no preauthKey**; optional `bootstrapOrigin` /
+`bootstrapToken`). It is not fetched from the
 webview.
 
 ## Out of scope

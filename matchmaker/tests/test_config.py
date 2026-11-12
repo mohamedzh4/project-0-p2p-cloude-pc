@@ -37,6 +37,7 @@ def _required_env(monkeypatch) -> None:
     monkeypatch.delenv("GATEWAY_PUBLIC_ORIGIN", raising=False)
     monkeypatch.delenv("GATEWAY_RESOLVE_TOKEN", raising=False)
     monkeypatch.delenv("GATEWAY_TOKEN_TTL_SECONDS", raising=False)
+    monkeypatch.delenv("MATCHMAKER_PUBLIC_ORIGIN", raising=False)
 
 
 def test_credits_per_minute_is_required(monkeypatch) -> None:
@@ -276,6 +277,7 @@ def test_gateway_origin_and_token_default_unset(monkeypatch) -> None:
     assert settings.gateway_public_origin is None
     assert settings.gateway_resolve_token is None
     assert settings.gateway_token_ttl_seconds == 43200
+    assert settings.matchmaker_public_origin is None
 
 
 def test_gateway_origin_requires_https_and_resolve_token(monkeypatch) -> None:
@@ -308,6 +310,18 @@ def test_gateway_origin_requires_https_and_resolve_token(monkeypatch) -> None:
     assert settings.gateway_resolve_token == "test-gateway-resolve-token"
     dumped = repr(settings)
     assert "test-gateway-resolve-token" not in dumped
+
+
+def test_matchmaker_public_origin_allows_http_and_https(monkeypatch) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("CREDITS_PER_MINUTE", "1")
+    monkeypatch.setenv("MATCHMAKER_PUBLIC_ORIGIN", "http://matchmaker.test.invalid")
+    settings = Settings.from_env()
+    assert settings.matchmaker_public_origin == "http://matchmaker.test.invalid"
+
+    monkeypatch.setenv("MATCHMAKER_PUBLIC_ORIGIN", "https://mm.example")
+    settings = Settings.from_env()
+    assert settings.matchmaker_public_origin == "https://mm.example"
 
 
 def test_gateway_token_ttl_must_be_positive(monkeypatch) -> None:

@@ -1,13 +1,13 @@
 //! OS-conditional provisioner contract (stubs).
 //!
-//! Standard Lab backends are peers chosen by host OS: Linux → Firecracker,
+//! Standard Lab backends are peers chosen by host OS: Linux → QEMU+KVM,
 //! Windows → QEMU+WHPX. Pro is a *different* target (QEMU+VFIO or Hyper-V GPU
 //! assignment), not Firecracker with a GPU bolted on. GPU assignment is
 //! exclusive for the session; CPU/RAM stay a concurrent slice.
 //!
 //! The HTTP port in `provision_http` verifies the signed image digest
 //! ([`crate::image::verify_image`]) **before** calling [`plan`]. Linux Standard
-//! provision may then start Firecracker (phase 27). Windows Standard may then
+//! provision may then start QEMU with KVM. Windows Standard may then
 //! start QEMU with `-accel whpx` (phase 28). `plan` itself never invokes a
 //! hypervisor — it only selects the backend. Do not put Firecracker/QEMU
 //! details in the session router.
@@ -89,6 +89,7 @@ impl LabTier {
 /// Peer compute backends. None of these is a default the others special-case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComputeBackend {
+    QemuKvm,
     Firecracker,
     QemuWhpx,
     QemuVfio,
@@ -98,6 +99,7 @@ pub enum ComputeBackend {
 impl ComputeBackend {
     pub fn slug(self) -> &'static str {
         match self {
+            Self::QemuKvm => "qemu-kvm",
             Self::Firecracker => "firecracker",
             Self::QemuWhpx => "qemu-whpx",
             Self::QemuVfio => "qemu-vfio",
@@ -114,6 +116,7 @@ impl ComputeBackend {
 impl fmt::Display for ComputeBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::QemuKvm => "QEMU+KVM",
             Self::Firecracker => "Firecracker",
             Self::QemuWhpx => "QEMU+WHPX",
             Self::QemuVfio => "QEMU+VFIO",
@@ -192,6 +195,9 @@ pub trait Provisioner {
 pub struct FirecrackerStub;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QemuKvmStub;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QemuWhpxStub;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +209,16 @@ pub struct HyperVGpuStub;
 impl Provisioner for FirecrackerStub {
     fn backend(&self) -> ComputeBackend {
         ComputeBackend::Firecracker
+    }
+
+    fn plan(&self, request: &ProvisionRequest) -> Result<ProvisionPlan, ProvisionError> {
+        standard_plan(self.backend(), request)
+    }
+}
+
+impl Provisioner for QemuKvmStub {
+    fn backend(&self) -> ComputeBackend {
+        ComputeBackend::QemuKvm
     }
 
     fn plan(&self, request: &ProvisionRequest) -> Result<ProvisionPlan, ProvisionError> {
@@ -244,6 +260,7 @@ impl Provisioner for HyperVGpuStub {
 /// a Linux path with a Windows `if`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StubProvisioner {
+    QemuKvm(QemuKvmStub),
     Firecracker(FirecrackerStub),
     QemuWhpx(QemuWhpxStub),
     QemuVfio(QemuVfioStub),
@@ -253,7 +270,7 @@ pub enum StubProvisioner {
 impl StubProvisioner {
     pub fn select(os: HostOs, lab_tier: LabTier) -> Result<Self, ProvisionError> {
         match (os, lab_tier) {
-            (HostOs::Linux, LabTier::Standard) => Ok(Self::Firecracker(FirecrackerStub)),
+            (HostOs::Linux, LabTier::Standard) => Ok(Self::QemuKvm(QemuKvmStub)),
             (HostOs::Windows, LabTier::Standard) => Ok(Self::QemuWhpx(QemuWhpxStub)),
             (HostOs::Linux, LabTier::Pro) => Ok(Self::QemuVfio(QemuVfioStub)),
             (HostOs::Windows, LabTier::Pro) => Ok(Self::HyperVGpu(HyperVGpuStub)),
@@ -265,6 +282,7 @@ impl StubProvisioner {
 impl Provisioner for StubProvisioner {
     fn backend(&self) -> ComputeBackend {
         match self {
+            Self::QemuKvm(inner) => inner.backend(),
             Self::Firecracker(inner) => inner.backend(),
             Self::QemuWhpx(inner) => inner.backend(),
             Self::QemuVfio(inner) => inner.backend(),
@@ -274,6 +292,7 @@ impl Provisioner for StubProvisioner {
 
     fn plan(&self, request: &ProvisionRequest) -> Result<ProvisionPlan, ProvisionError> {
         match self {
+            Self::QemuKvm(inner) => inner.plan(request),
             Self::Firecracker(inner) => inner.plan(request),
             Self::QemuWhpx(inner) => inner.plan(request),
             Self::QemuVfio(inner) => inner.plan(request),
@@ -283,8 +302,8 @@ impl Provisioner for StubProvisioner {
 }
 
 /// Phase 6 entry point: choose the OS-conditional backend and return a plan.
-/// Never starts Firecracker, QEMU, Kasm, Sunshine, or VFIO. Linux Standard
-/// invoke lives in [`crate::firecracker`] via the provision HTTP port.
+/// Never starts a hypervisor, Kasm, Sunshine, or VFIO. Linux Standard
+/// invoke lives in [`crate::qemu_kvm`] via the provision HTTP port.
 /// Windows Standard invoke lives in [`crate::qemu`]. Linux Pro vfio-pci apply
 /// and Windows Pro Hyper-V DDA/GPU-P apply live in [`crate::gpu_bind`] via
 /// the same HTTP port (not `plan()`).
@@ -363,12 +382,12 @@ mod tests {
     const GPU_ID: &str = "GPU-TEST-4070";
 
     #[test]
-    fn linux_standard_selects_firecracker() {
+    fn linux_standard_selects_qemu_kvm() {
         let selected = StubProvisioner::select(HostOs::Linux, LabTier::Standard).unwrap();
         let planned = selected.plan(&ProvisionRequest::standard()).unwrap();
 
-        assert_eq!(selected.backend(), ComputeBackend::Firecracker);
-        assert_eq!(planned.backend, ComputeBackend::Firecracker);
+        assert_eq!(selected.backend(), ComputeBackend::QemuKvm);
+        assert_eq!(planned.backend, ComputeBackend::QemuKvm);
         assert_eq!(planned.lab_tier, LabTier::Standard);
         assert!(!planned.gpu_exclusive);
         assert!(planned.shared_gpu_id.is_none());
@@ -376,7 +395,7 @@ mod tests {
         assert!(!planned.hypervisor_invoked);
         assert_eq!(
             planned.connection_url,
-            "https://provision.invalid/firecracker"
+            "https://provision.invalid/qemu-kvm"
         );
     }
 
@@ -400,7 +419,7 @@ mod tests {
         let linux = StubProvisioner::select(HostOs::Linux, LabTier::Standard).unwrap();
         let windows = StubProvisioner::select(HostOs::Windows, LabTier::Standard).unwrap();
 
-        assert_eq!(linux.backend(), ComputeBackend::Firecracker);
+        assert_eq!(linux.backend(), ComputeBackend::QemuKvm);
         assert_eq!(windows.backend(), ComputeBackend::QemuWhpx);
         assert_ne!(linux.backend(), windows.backend());
         assert!(!linux.backend().assigns_gpu_exclusively());
@@ -408,14 +427,14 @@ mod tests {
     }
 
     #[test]
-    fn linux_pro_is_qemu_vfio_not_firecracker_with_a_gpu() {
+    fn linux_pro_is_qemu_vfio_not_standard_qemu_kvm() {
         let standard = StubProvisioner::select(HostOs::Linux, LabTier::Standard).unwrap();
         let pro = StubProvisioner::select(HostOs::Linux, LabTier::Pro).unwrap();
         let planned = pro.plan(&ProvisionRequest::pro(GPU_ID)).unwrap();
 
-        assert_eq!(standard.backend(), ComputeBackend::Firecracker);
+        assert_eq!(standard.backend(), ComputeBackend::QemuKvm);
         assert_eq!(pro.backend(), ComputeBackend::QemuVfio);
-        assert_ne!(pro.backend(), ComputeBackend::Firecracker);
+        assert_ne!(pro.backend(), ComputeBackend::QemuKvm);
         assert!(pro.backend().assigns_gpu_exclusively());
         assert_eq!(planned.backend, ComputeBackend::QemuVfio);
         assert!(planned.gpu_exclusive);
@@ -481,14 +500,14 @@ mod tests {
         };
         let planned = plan(HostOs::Linux, &request).unwrap();
 
-        assert_eq!(planned.backend, ComputeBackend::Firecracker);
+        assert_eq!(planned.backend, ComputeBackend::QemuKvm);
         assert!(!planned.gpu_exclusive);
         assert!(planned.shared_gpu_id.is_none());
         assert!(planned.exclusivity_warning.is_none());
     }
 
     #[test]
-    fn macos_does_not_pretend_to_be_firecracker() {
+    fn macos_does_not_pretend_to_be_a_linux_host() {
         let error = StubProvisioner::select(HostOs::MacOs, LabTier::Standard).unwrap_err();
 
         assert_eq!(error, ProvisionError::UnsupportedHostOs(HostOs::MacOs));

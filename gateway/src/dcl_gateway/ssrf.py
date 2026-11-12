@@ -6,6 +6,10 @@ from urllib.parse import urlparse
 import ipaddress
 import os
 
+# Headscale assigns Tailscale CGNAT / ULA addresses to mesh nodes. The
+# gateway must not follow a locator to an arbitrary public or RFC1918 host.
+_TAILSCALE_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+_TAILSCALE_IPV6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 # Never honor a configured default backend. A missing/expired token must not
 # fall through to GATEWAY_DEFAULT_TARGET or similar.
 _IGNORED_DEFAULT_ENV = "GATEWAY_DEFAULT_TARGET"
@@ -43,7 +47,18 @@ def target_is_allowed(url: str, *, allow_loopback: bool) -> bool:
         return False
     if ip == ipaddress.ip_address("169.254.169.254"):
         return False
-    return True
+    if ip in _TAILSCALE_CGNAT or ip in _TAILSCALE_IPV6:
+        return parsed.scheme == "https"
+    return False
+
+
+def origin_is_allowed(origin: str | None, public_origin: str | None) -> bool:
+    """Browser WebSockets must come from the configured desktop origin."""
+    if public_origin is None:
+        return True
+    if origin is None or not origin.strip():
+        return False
+    return origin.strip().rstrip("/") == public_origin.rstrip("/")
 
 
 def _is_loopback_host(host: str) -> bool:

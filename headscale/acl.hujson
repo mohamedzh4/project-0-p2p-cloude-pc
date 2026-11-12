@@ -25,7 +25,8 @@
 //   3. Public gateway ↔ VM: tag:gateway ↔ tag:guest
 //      (same role-based limitation as tag:user; Headscale 0.26 still cannot
 //      mint pairwise tag:session-<uuid> owners)
-//   4. Guest internet via platform exit nodes only:
+//   4. Host Agent → VM streamer health checks on KasmVNC/Sunshine ports.
+//   5. Guest internet via platform exit nodes only:
 //      tag:guest → tag:exit and tag:guest → autogroup:internet
 // Not granted (and therefore denied):
 //   - guest → host (no guest→host LAN / volunteer Tailscale IP)
@@ -94,6 +95,11 @@
       "action": "accept",
       "src": ["tag:gateway"],
       "dst": ["tag:guest:*"]
+    },
+    {
+      "action": "accept",
+      "src": ["tag:host"],
+      "dst": ["tag:guest:8443", "tag:guest:47990"]
     },
     {
       "action": "accept",

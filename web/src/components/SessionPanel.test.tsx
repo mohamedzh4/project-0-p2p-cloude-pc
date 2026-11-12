@@ -138,4 +138,41 @@ describe("SessionPanel live locator", () => {
     expect(html).not.toContain("Browse hosts");
     expect(html).not.toContain("Pick a host");
   });
+
+  it("shows saved-as-of from session storage or the guest-flush copy", () => {
+    const pending = renderPanel(
+      session({
+        storage: {
+          provider: "renterd",
+          endpoint: "http://renterd.test.invalid",
+          region: "us-east-1",
+          bucket: "dcl-example",
+          prefix: "files/",
+          pathStyle: true,
+          mountInsideGuest: true,
+          rclone: "rclone mount",
+          objects: [],
+        },
+      }),
+    );
+    expect(pending).toContain("updates inside the guest after rclone flush");
+    const stamped = renderPanel(
+      session({
+        storage: {
+          provider: "renterd",
+          endpoint: "http://renterd.test.invalid",
+          region: "us-east-1",
+          bucket: "dcl-example",
+          prefix: "files/",
+          pathStyle: true,
+          mountInsideGuest: true,
+          rclone: "rclone mount",
+          objects: [],
+          savedAsOf: "2026-09-11T21:00:00.000Z",
+        },
+      }),
+    );
+    expect(stamped).toContain("2026-09-11T21:00:00.000Z");
+    expect(stamped).not.toContain("updates inside the guest after rclone flush");
+  });
 });

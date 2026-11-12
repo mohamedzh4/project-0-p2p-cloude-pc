@@ -9,7 +9,7 @@ use std::fmt;
 
 use thiserror::Error;
 
-const DEFAULT_MOUNT_POINT: &str = "/home/user/Persistent";
+const DEFAULT_MOUNT_POINT: &str = "/home/ubuntu/Persistent";
 const DEFAULT_REGION: &str = "us-east-1";
 
 #[derive(Debug, Error, PartialEq, Eq)]

@@ -19,6 +19,8 @@ VERSIONS = ROOT / "versions.env"
 KASM = SCRIPTS / "provision-kasm.sh"
 SUNSHINE = SCRIPTS / "provision-sunshine.sh"
 BASE = SCRIPTS / "provision-base.sh"
+JOIN = SCRIPTS / "dcl-guest-join.py"
+JOIN_UNIT = SCRIPTS / "dcl-guest-join.service"
 USER_DATA = ROOT / "cloud-init" / "user-data.pkrtpl"
 SIGNER = SCRIPTS / "sign_image.py"
 
@@ -45,10 +47,11 @@ class PackerTemplateTests(unittest.TestCase):
     def test_standard_and_pro_scripts_are_distinct(self) -> None:
         kasm = _read(KASM)
         sunshine = _read(SUNSHINE)
-        self.assertIn("kasm_release/install.sh", kasm)
-        self.assertIn("--accept-eula", kasm)
-        self.assertIn("--admin-password", kasm)
-        self.assertIn("--user-password", kasm)
+        self.assertIn("kasmvncserver.deb", kasm)
+        self.assertIn("dcl-kasmvnc.service", kasm)
+        self.assertIn("-disableBasicAuth", kasm)
+        self.assertIn("websocket_port: 8443", kasm)
+        self.assertIn("startxfce4", kasm)
         self.assertNotIn("sunshine-ubuntu-24.04", kasm)
         self.assertNotIn("kasm_release", sunshine)
         self.assertIn("sunshine-ubuntu-24.04", sunshine)
@@ -74,13 +77,132 @@ class PackerTemplateTests(unittest.TestCase):
         self.assertIn("tailscale", base)
         self.assertIn("not Tailscale SaaS", base)
         self.assertIn("not Storj", base)
+        self.assertIn("cloud-init status --wait", base)
         self.assertNotRegex(base, r"(?m)^[^#]*tailscale up")
+
+    def test_guest_join_unit_is_in_packer_and_does_not_advertise_exit(self) -> None:
+        hcl = _read(PACKER)
+        self.assertIn("dcl-guest-join.py", hcl)
+        self.assertIn("dcl-guest-join.service", hcl)
+        self.assertGreaterEqual(hcl.count("sudo -n {{ .Vars }} {{ .Path }}"), 3)
+        join = _read(JOIN)
+        unit = _read(JOIN_UNIT)
+        self.assertIn("/v1/guest/bootstrap", join)
+        self.assertIn("/v1/guest/saved-as-of", join)
+        self.assertIn("dcl.matchmaker", join)
+        self.assertIn("opt/org.dcl", join)
+        self.assertIn("--s3-env-auth", join)
+        self.assertIn("AWS_ACCESS_KEY_ID", join)
+        self.assertIn("advertise-exit-node", join)
+        self.assertIn("ExecStart=/usr/local/sbin/dcl-guest-join", unit)
+        self.assertNotIn("storj", join.lower())
+
+    def test_guest_join_redeems_bootstrap_without_live_tailscale(self) -> None:
+        import http.server
+        import socketserver
+        import tempfile
+        import threading
+
+        captured: dict[str, object] = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+                return
+
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length", "0"))
+                captured[self.path] = {
+                    "authorization": self.headers.get("Authorization"),
+                    "body": self.rfile.read(length).decode("utf-8"),
+                }
+                if self.path.endswith("/v1/guest/bootstrap"):
+                    payload = json.dumps(
+                        {
+                            "loginServer": "http://headscale.test.invalid",
+                            "preauthKey": "tskey-auth-test-guest",
+                            "hostname": "dcl-guest-example",
+                            "exitNode": "dcl-platform-exit",
+                            "aclTags": ["tag:guest"],
+                            "tailscaleUp": [
+                                "up",
+                                "--login-server",
+                                "http://headscale.test.invalid",
+                                "--authkey",
+                                "tskey-auth-test-guest",
+                                "--hostname",
+                                "dcl-guest-example",
+                                "--exit-node=dcl-platform-exit",
+                            ],
+                            "storage": {
+                                "endpoint": "http://renterd.test.invalid",
+                                "region": "us-east-1",
+                                "bucket": "dcl-example",
+                                "prefix": "files/",
+                                "rcloneArgs": [
+                                    "mount",
+                                    ":s3:dcl-example/files",
+                                    "/home/ubuntu/Persistent",
+                                    "--s3-env-auth",
+                                ],
+                                "accessKeyId": "guest-access",
+                                "secretAccessKey": "guest-secret-key",
+                            },
+                        }
+                    ).encode()
+                else:
+                    payload = json.dumps({"sessionId": "11111111-1111-1111-1111-1111111111", "savedAsOf": "2026-09-11T21:00:00Z"}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        with socketserver.TCPServer(("127.0.0.1", 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                origin = f"http://127.0.0.1:{server.server_address[1]}"
+                with tempfile.TemporaryDirectory() as tmp:
+                    cmdline = Path(tmp) / "cmdline"
+                    saved = Path(tmp) / "saved-as-of"
+                    cmdline.write_text(
+                        f"console=ttyS0 dcl.matchmaker={origin} dcl.bootstrap=guest-token-value\n",
+                        encoding="utf-8",
+                    )
+                    env = os.environ.copy()
+                    env["DCL_CMDLINE_FILE"] = str(cmdline)
+                    env["DCL_SAVED_AS_OF_PATH"] = str(saved)
+                    env["DCL_GUEST_DRY_RUN"] = "1"
+                    result = subprocess.run(
+                        [sys.executable, str(JOIN)],
+                        cwd=str(ROOT),
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                    self.assertIn("tailscale up", result.stdout)
+                    self.assertIn("--authkey", result.stdout)
+                    self.assertIn("rclone mount", result.stdout)
+                    self.assertIn("--daemon", result.stdout)
+                    self.assertNotIn("--advertise-exit-node", result.stdout)
+                    self.assertTrue(saved.is_file())
+            finally:
+                server.shutdown()
+        self.assertIn("/v1/guest/bootstrap", captured)
+        self.assertEqual(
+            captured["/v1/guest/bootstrap"]["authorization"],
+            "Bearer guest-token-value",
+        )
 
     def test_pinned_kasm_and_ubuntu_checksums(self) -> None:
         versions = _load_versions()
         self.assertEqual(len(versions["UBUNTU_CLOUDIMG_SHA256"]), 64)
-        self.assertEqual(len(versions["KASM_TARBALL_SHA256"]), 64)
-        self.assertIn("kasm_release_1.19.0.tar.gz", versions["KASM_TARBALL_URL"])
+        self.assertEqual(len(versions["KASM_VNC_DEB_SHA256"]), 64)
+        self.assertIn(
+            "kasmvncserver_noble_1.3.4_amd64.deb",
+            versions["KASM_VNC_DEB_URL"],
+        )
         self.assertIn("cloudimg-amd64.img", versions["UBUNTU_CLOUDIMG_URL"])
         self.assertIn("sunshine-ubuntu-24.04-amd64.deb", versions["SUNSHINE_DEB_URL"])
 
@@ -93,7 +215,7 @@ class PackerTemplateTests(unittest.TestCase):
         self.assertIn("NOPASSWD:ALL", rendered)
 
     def test_no_private_keys_in_templates(self) -> None:
-        for path in (PACKER, USER_DATA, KASM, SUNSHINE, BASE, VERSIONS):
+        for path in (PACKER, USER_DATA, KASM, SUNSHINE, BASE, VERSIONS, JOIN, JOIN_UNIT):
             text = _read(path)
             self.assertNotIn("-----BEGIN", text)
             self.assertNotIn("PRIVATE KEY", text)

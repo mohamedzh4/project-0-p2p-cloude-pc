@@ -14,8 +14,9 @@ Linux Pro **vfio-pci apply** and Windows Pro **Hyper-V DDA/GPU-P apply**
 run when Matchmaker POSTs `POST /v1/provision` and the capability probe
 offered Pro.
 
-This phase does **not** attach the bound GPU to a QEMU boot and does
-**not** `Start-VM`. After GPU apply, provision polls Sunshine on
+This phase **attaches** the bound GPU to a QEMU+KVM boot when distro QEMU
+is installed, and **does** `Start-VM` on Windows Pro after DDA/GPU-P.
+After GPU apply, provision polls Sunshine on
 `https://{guestMesh.hostname}:47990/` (web UI; GameStream base is 47989)
 and returns that URL, or 400 if it never answers. Tests inject loopback
 HTTP. Metal still needs a guest that is actually serving Sunshine.
@@ -65,8 +66,13 @@ GPU-P (only when DDA has no location path and partition count 1 is valid):
 
 GPU-P rollback: `Remove-VMGpuPartitionAdapter` → restore partition count.
 
-No `Start-VM`. Default VM name `dcl-pro-guest` must already exist and be
-powered off.
+After a successful DDA or GPU-P verify, provision runs `Start-VM`.
+Default VM name `dcl-pro-guest` must already exist. Teardown is
+`Stop-VM -Force -TurnOff` then GPU rollback.
+
+Linux Pro QEMU attach (phase 34) uses distro `qemu-system-*` with
+`-device vfio-pci,host=<BDF>` and SLIRP user-net. Set `HOST_AGENT_QEMU_BIN`
+or install the package (free). Weilnetz NSIS is Windows-only.
 
 ## Metal leftovers (not confirmed working)
 
@@ -74,5 +80,7 @@ powered off.
   path so the host keeps a screen.
 - Windows: Hyper-V feature, elevated agent (UAC; `Disable-PnpDevice` /
   `Dismount-VMHostAssignableDevice` need admin; this agent does not
-  auto-elevate), existing powered-off VM `dcl-pro-guest`.
-- A later phase still needs QEMU VFIO attach, live Sunshine locators, and TAP/net.
+  auto-elevate), existing VM `dcl-pro-guest`.
+- Guest join on Hyper-V has no fw_cfg; the baked unit no-ops without
+  `dcl.matchmaker` / `dcl.bootstrap`. Live Sunshine on metal is still a
+  human report.

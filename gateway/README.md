@@ -21,7 +21,8 @@ rate-limit failed lookups; join the tailnet as `tag:gateway`.
   (same leftover as `tag:user`). The token mapping is the session scope.
 - Reach `tag:host` (no ACL grant). The process must only dial the resolved URL.
 - Switch Sia to mainnet.
-- Close TAP/guest net (phase 34 leftover).
+- Close TAP/guest net on **metal**. Phase 34 is a software contract
+  (`dcl-tap0` / QEMU SLIRP); it is not a live desktop confirmation.
 
 ## Env
 

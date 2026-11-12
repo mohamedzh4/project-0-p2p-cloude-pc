@@ -6,14 +6,15 @@
 //! the way Firecracker v1.16.1 documents:
 //!
 //! 1. `firecracker --api-sock <sock> --enable-pci`
-//! 2. `PUT /boot-source`
+//! 2. `PUT /boot-source` (kernel cmdline includes a static TAP address)
 //! 3. `PUT /drives/rootfs`
 //! 4. `PUT /machine-config` (clamped vCPU/RAM; defaults are 1 vCPU / 128 MiB)
-//! 5. `PUT /actions` with `InstanceStart`
+//! 5. `PUT /network-interfaces/eth0` (TAP `dcl-tap0`)
+//! 6. `PUT /actions` with `InstanceStart`
 //!
-//! Jailer, TAP/vsock, and a live Kasm URL are not this phase. Tests inject a
-//! fake process and a fake API so CI never execs Firecracker or needs
-//! `/dev/kvm`. Production spawn is refused under `cfg(test)` and off Linux.
+//! Jailer is unused. Tests inject a fake process, TAP, and API so CI never
+//! execs Firecracker, `ip`, or needs `/dev/kvm`. Production spawn is refused
+//! under `cfg(test)` and off Linux.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -24,6 +25,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::guest_net::{self, TapError, TapOps, GUEST_MAC, HOST_IP, TAP_DEV, TAP_PREFIX};
 use crate::host_capabilities::HostCapabilities;
 use crate::image::cached_kernel_path;
 use crate::launch::LaunchConfig;
@@ -37,7 +39,9 @@ pub const ENABLE_PCI_ARG: &str = "--enable-pci";
 pub const ROOTFS_DRIVE_ID: &str = "rootfs";
 pub const INSTANCE_START: &str = "InstanceStart";
 /// Firecracker v1.16.1 swagger: successful PUT /actions, /boot-source, /drives,
-/// /machine-config return 204.
+/// /machine-config, /network-interfaces/{id} return 204.
+pub const NETWORK_IFACE_ID: &str = "eth0";
+pub const NETWORK_IFACE_PATH: &str = "/network-interfaces/eth0";
 pub const API_SUCCESS_STATUS: u16 = 204;
 /// Firecracker v1.16.1 `vcpu_count` maximum.
 pub const MAX_VCPU: u32 = 32;
@@ -48,11 +52,12 @@ const SOCKET_WAIT: Duration = Duration::from_secs(2);
 const SOCKET_POLL: Duration = Duration::from_millis(20);
 const API_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Locked API order for v1.16.1: configure, then `InstanceStart`.
-pub const API_PATH_ORDER: [&str; 4] = [
+/// Locked API order for v1.16.1: configure (including TAP), then `InstanceStart`.
+pub const API_PATH_ORDER: [&str; 5] = [
     "/boot-source",
     "/drives/rootfs",
     "/machine-config",
+    NETWORK_IFACE_PATH,
     "/actions",
 ];
 
@@ -88,6 +93,8 @@ pub enum FirecrackerError {
     ApiIo { path: String, detail: String },
     #[error("Firecracker spawn is disabled in tests; inject a fake process and API")]
     RefusedInTests,
+    #[error("{0}")]
+    Tap(TapError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +124,10 @@ pub struct InvokeRequest<'a> {
     pub memory_mib: u64,
     pub api_sock: &'a Path,
     pub arch: &'a str,
+    /// Matchmaker origin the guest may call (no Headscale preauth).
+    pub bootstrap_origin: Option<&'a str>,
+    /// One-time guest bootstrap token (not a Headscale preauth, not S3 keys).
+    pub bootstrap_token: Option<&'a str>,
 }
 
 pub trait FirecrackerChild: Send {
@@ -146,7 +157,7 @@ pub struct ProcessFirecrackerRuntime;
 
 impl FirecrackerRuntime for ProcessFirecrackerRuntime {
     fn invoke(&self, request: &InvokeRequest<'_>) -> Result<InvokeResult, FirecrackerError> {
-        invoke(request, &ProcessSpawner, &UnixHttpApi)
+        invoke_with_tap(request, &ProcessSpawner, &UnixHttpApi, &guest_net::ProcessTapOps)
     }
 }
 
@@ -179,6 +190,15 @@ impl FirecrackerSpawner for ProcessSpawner {
 
     fn detach(&self, child: Box<dyn FirecrackerChild>) {
         RUNNING.lock().expect("firecracker running mutex").push(child);
+    }
+}
+
+/// Kill microVMs detached after a successful InstanceStart.
+pub fn kill_running() {
+    let mut running = RUNNING.lock().expect("firecracker running mutex");
+    for child in running.drain(..) {
+        let mut child = child;
+        child.kill();
     }
 }
 
@@ -221,16 +241,44 @@ pub fn api_sock_path(cache_dir: &Path) -> PathBuf {
 }
 
 pub fn boot_args(arch: &str) -> String {
-    if matches!(arch, "aarch64" | "arm64") {
+    boot_args_with_bootstrap(arch, None, None)
+}
+
+/// Kernel cmdline: console + static TAP address + optional guest bootstrap
+/// (Matchmaker origin + token). Never a Headscale preauth or S3 key.
+pub fn boot_args_with_bootstrap(
+    arch: &str,
+    origin: Option<&str>,
+    token: Option<&str>,
+) -> String {
+    let mut args = if matches!(arch, "aarch64" | "arm64") {
         format!("keep_bootcon {BOOT_ARGS_X86}")
     } else {
         BOOT_ARGS_X86.to_string()
+    };
+    args.push(' ');
+    args.push_str(&guest_net::firecracker_ip_boot_arg());
+    if let (Some(origin), Some(token)) = (origin, token) {
+        let origin = origin.trim();
+        let token = token.trim();
+        if !origin.is_empty() && !token.is_empty() && !origin.contains(' ') && !token.contains(' ')
+        {
+            args.push_str(" dcl.matchmaker=");
+            args.push_str(origin);
+            args.push_str(" dcl.bootstrap=");
+            args.push_str(token);
+        }
     }
+    args
 }
 
-/// PUT bodies in the locked order (boot-source, drives, machine-config, actions).
+/// PUT bodies in the locked order (boot-source, drives, machine-config, TAP, actions).
 pub fn api_calls(request: &InvokeRequest<'_>) -> Vec<ApiCall> {
-    let boot_args = boot_args(request.arch);
+    let boot_args = boot_args_with_bootstrap(
+        request.arch,
+        request.bootstrap_origin,
+        request.bootstrap_token,
+    );
     let boot = serde_json::json!({
         "kernel_image_path": request.kernel.to_string_lossy(),
         "boot_args": boot_args,
@@ -246,6 +294,11 @@ pub fn api_calls(request: &InvokeRequest<'_>) -> Vec<ApiCall> {
         mem_size_mib: request.memory_mib,
         smt: false,
     };
+    let net = serde_json::json!({
+        "iface_id": NETWORK_IFACE_ID,
+        "guest_mac": GUEST_MAC,
+        "host_dev_name": TAP_DEV,
+    });
     let action = serde_json::json!({ "action_type": INSTANCE_START });
     vec![
         ApiCall {
@@ -266,6 +319,11 @@ pub fn api_calls(request: &InvokeRequest<'_>) -> Vec<ApiCall> {
         ApiCall {
             method: "PUT".to_string(),
             path: API_PATH_ORDER[3].to_string(),
+            body: net.to_string(),
+        },
+        ApiCall {
+            method: "PUT".to_string(),
+            path: API_PATH_ORDER[4].to_string(),
             body: action.to_string(),
         },
     ]
@@ -357,6 +415,59 @@ pub fn boot_from_launch(
         memory_mib: launch.memory_mib,
         api_sock: api_sock.as_path(),
         arch,
+        bootstrap_origin: None,
+        bootstrap_token: None,
+    })
+}
+
+/// Same as [`boot_from_launch`], with a guest bootstrap token on the kernel
+/// cmdline (Matchmaker origin + token; never Headscale preauth or S3 keys).
+pub fn boot_from_launch_with_bootstrap(
+    os: HostOs,
+    lab_tier: LabTier,
+    capabilities: &HostCapabilities,
+    launch: &LaunchConfig,
+    binary: &Path,
+    getenv: impl Fn(&str) -> Option<String>,
+    cache_dir: &Path,
+    arch: &str,
+    bootstrap_origin: Option<&str>,
+    bootstrap_token: Option<&str>,
+    runtime: &dyn FirecrackerRuntime,
+) -> Result<InvokeResult, FirecrackerError> {
+    if os != HostOs::Linux {
+        return Err(FirecrackerError::LinuxOnly(os));
+    }
+    if lab_tier != LabTier::Standard {
+        return Err(FirecrackerError::StandardOnly(lab_tier.as_str()));
+    }
+    let rootfs = launch
+        .rootfs_path
+        .as_deref()
+        .map(Path::new)
+        .filter(|path| path.is_file())
+        .ok_or(FirecrackerError::RootfsMissing)?;
+    let kernel = resolve_kernel(
+        getenv,
+        launch.kernel_path.as_deref(),
+        Some(cache_dir),
+        lab_tier,
+        Some(rootfs),
+    )?;
+    let api_sock = api_sock_path(cache_dir);
+    runtime.invoke(&InvokeRequest {
+        os,
+        lab_tier,
+        capabilities,
+        binary,
+        kernel: kernel.as_path(),
+        rootfs,
+        vcpu_count: launch.vcpu_count,
+        memory_mib: launch.memory_mib,
+        api_sock: api_sock.as_path(),
+        arch,
+        bootstrap_origin,
+        bootstrap_token,
     })
 }
 
@@ -364,6 +475,15 @@ pub fn invoke(
     request: &InvokeRequest<'_>,
     spawner: &dyn FirecrackerSpawner,
     api: &dyn FirecrackerApi,
+) -> Result<InvokeResult, FirecrackerError> {
+    invoke_with_tap(request, spawner, api, &guest_net::NoopTap)
+}
+
+pub fn invoke_with_tap(
+    request: &InvokeRequest<'_>,
+    spawner: &dyn FirecrackerSpawner,
+    api: &dyn FirecrackerApi,
+    tap: &dyn TapOps,
 ) -> Result<InvokeResult, FirecrackerError> {
     if request.os != HostOs::Linux {
         return Err(FirecrackerError::LinuxOnly(request.os));
@@ -382,6 +502,9 @@ pub fn invoke(
     if request.vcpu_count == 0 || request.vcpu_count > MAX_VCPU {
         return Err(FirecrackerError::InvalidVcpu(request.vcpu_count));
     }
+
+    tap.ensure(TAP_DEV, HOST_IP, TAP_PREFIX)
+        .map_err(FirecrackerError::Tap)?;
 
     if let Some(parent) = request.api_sock.parent() {
         fs::create_dir_all(parent).map_err(|error| FirecrackerError::Socket {
@@ -407,6 +530,7 @@ pub fn invoke(
         }
         Err(error) => {
             child.kill();
+            let _ = tap.teardown(TAP_DEV);
             Err(error)
         }
     }
@@ -701,6 +825,8 @@ mod tests {
             memory_mib: 8192,
             api_sock: sock,
             arch: "x86_64",
+            bootstrap_origin: None,
+            bootstrap_token: None,
         }
     }
 
@@ -735,12 +861,19 @@ mod tests {
         assert_eq!(paths, API_PATH_ORDER);
         assert_eq!(
             paths,
-            ["/boot-source", "/drives/rootfs", "/machine-config", "/actions"]
+            [
+                "/boot-source",
+                "/drives/rootfs",
+                "/machine-config",
+                "/network-interfaces/eth0",
+                "/actions"
+            ]
         );
 
         let boot: serde_json::Value = serde_json::from_str(&puts[0].1).unwrap();
         assert_eq!(boot["kernel_image_path"], kernel.to_string_lossy().as_ref());
-        assert_eq!(boot["boot_args"], BOOT_ARGS_X86);
+        assert_eq!(boot["boot_args"], boot_args("x86_64"));
+        assert!(boot["boot_args"].as_str().unwrap().contains(guest_net::GUEST_IP));
 
         let drive: serde_json::Value = serde_json::from_str(&puts[1].1).unwrap();
         assert_eq!(drive["drive_id"], ROOTFS_DRIVE_ID);
@@ -753,18 +886,45 @@ mod tests {
         assert_eq!(machine["mem_size_mib"], 8192);
         assert_eq!(machine["smt"], false);
 
-        let action: serde_json::Value = serde_json::from_str(&puts[3].1).unwrap();
+        let net: serde_json::Value = serde_json::from_str(&puts[3].1).unwrap();
+        assert_eq!(net["iface_id"], NETWORK_IFACE_ID);
+        assert_eq!(net["guest_mac"], GUEST_MAC);
+        assert_eq!(net["host_dev_name"], TAP_DEV);
+
+        let action: serde_json::Value = serde_json::from_str(&puts[4].1).unwrap();
         assert_eq!(action["action_type"], INSTANCE_START);
         assert_eq!(*recorder.killed.lock().unwrap(), 0);
     }
 
     #[test]
-    fn aarch64_boot_args_prefix_keep_bootcon() {
+    fn tap_is_ensured_before_instance_start() {
+        let caps = linux_standard_caps();
+        let (_dir, binary, kernel, rootfs, sock) = fixture_tree();
+        let recorder = RecordingFirecracker::succeeding();
+        let tap = guest_net::RecordingTap::default();
+        invoke_with_tap(
+            &request(&caps, &binary, &kernel, &rootfs, &sock),
+            &recorder,
+            &recorder,
+            &tap,
+        )
+        .unwrap();
         assert_eq!(
-            boot_args("aarch64"),
-            format!("keep_bootcon {BOOT_ARGS_X86}")
+            tap.ensure_calls(),
+            vec![(
+                TAP_DEV.to_string(),
+                HOST_IP.to_string(),
+                TAP_PREFIX
+            )]
         );
-        assert_eq!(boot_args("x86_64"), BOOT_ARGS_X86);
+    }
+
+    #[test]
+    fn aarch64_boot_args_prefix_keep_bootcon() {
+        assert!(boot_args("aarch64").starts_with("keep_bootcon "));
+        assert!(boot_args("aarch64").contains(BOOT_ARGS_X86));
+        assert!(boot_args("x86_64").contains(BOOT_ARGS_X86));
+        assert!(boot_args("x86_64").contains(guest_net::GUEST_IP));
     }
 
     #[test]

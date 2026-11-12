@@ -8,11 +8,11 @@
 //!
 //! Phase 20 locates or fetches the signed base image for the probed backend
 //! into a user cache, then runs the same SHA-256 + Ed25519 checks **before**
-//! treating the file as ready. Linux Standard fetches the Firecracker guest
+//! treating the file as ready. Linux Standard fetches the QEMU+KVM guest
 //! image. Linux Pro (when offered) fetches the Pro image. Windows Standard
 //! fetches the QEMU disk the same way (SHA-256 + Ed25519) so `-accel whpx`
 //! has a verified disk. Windows Pro is not fetched here (Hyper-V GPU). macOS
-//! skips with a reason — it does not pretend Firecracker images run. The
+//! skips with a reason — it does not pretend KVM/WHPX images run. The
 //! webview does not fetch. This module never holds a private key and never
 //! boots a guest. Tests inject a fetcher, `file://`, or loopback httptest.
 
@@ -646,7 +646,7 @@ pub fn status_from_result(result: Result<GuestImageStatus, ImageError>) -> Guest
 fn skip_unsupported(os: HostOs, caps: &HostCapabilities) -> GuestImageStatus {
     let log = match os {
         HostOs::MacOs => format!(
-            "skipped: this Mac cannot host; Firecracker guest images are Linux-only and are not fetched. {}",
+            "skipped: this Mac cannot host; KVM/WHPX guest images are not fetched. {}",
             caps.standard.reason
         ),
         _ => format!(
@@ -687,7 +687,7 @@ fn ensure_linux(
         standard,
         trust.verifying_key(),
         Some(trust.local_digest()),
-        ImageBackend::Firecracker,
+        ImageBackend::Qemu,
         fetcher,
     )?;
 
@@ -1357,7 +1357,7 @@ pub(crate) mod tests {
         .unwrap();
 
         assert_eq!(status.action, ImageEnsureAction::Fetched);
-        assert_eq!(status.backend, ImageBackend::Firecracker);
+        assert_eq!(status.backend, ImageBackend::Qemu);
         assert_eq!(status.lab_tier.as_deref(), Some("standard"));
         assert!(!status.image_booted);
         assert_eq!(fetcher.hit_count(), 1);
@@ -1494,7 +1494,7 @@ pub(crate) mod tests {
         .unwrap();
 
         assert_eq!(status.action, ImageEnsureAction::Fetched);
-        assert_eq!(status.backend, ImageBackend::Firecracker);
+        assert_eq!(status.backend, ImageBackend::Qemu);
         assert_eq!(fetcher.hits.load(Ordering::SeqCst), 2);
         assert_eq!(
             fs::read(cache.path().join("standard/rootfs.img")).unwrap(),
@@ -1687,7 +1687,7 @@ pub(crate) mod tests {
         )
         .unwrap();
 
-        assert_eq!(linux.backend, ImageBackend::Firecracker);
+        assert_eq!(linux.backend, ImageBackend::Qemu);
         assert_eq!(windows.backend, ImageBackend::Qemu);
         assert_eq!(linux.action, ImageEnsureAction::Fetched);
         assert_eq!(windows.action, ImageEnsureAction::Fetched);

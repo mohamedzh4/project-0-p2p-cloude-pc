@@ -14,6 +14,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from matchmaker.guest_bootstrap import ensure_guest_bootstrap, expire_session_bootstrap
 from matchmaker.ingress import expire_session_ingress
 from matchmaker.ledger import settle_ended_session
 from matchmaker.matching import HostSelector, heartbeat_freshness_cutoff
@@ -21,7 +22,11 @@ from matchmaker.config import get_settings
 from matchmaker.headscale import HeadscaleClient, HeadscaleError
 from matchmaker.mesh import expire_session_mesh, guest_mesh_hint, mint_session_mesh
 from matchmaker.models import Host, LabSession, SessionStatus, UserStorage
-from matchmaker.provision import HostProvisioner, provision_booked_host
+from matchmaker.provision import (
+    HostProvisioner,
+    provision_booked_host,
+    teardown_booked_host,
+)
 from matchmaker.storage import GuestStorageLocators
 
 
@@ -45,6 +50,7 @@ def reclaim_stale_sessions(
     for session, lab_tier in _stale_active_rows(db, now=moment):
         session_id = session.id
         user_id = session.user_id
+        old_host = db.get(Host, session.host_id)
         if not _interrupt_stale_session(
             db,
             session,
@@ -53,12 +59,14 @@ def reclaim_stale_sessions(
         ):
             continue
         interrupted_ids.append(session_id)
+        teardown_booked_host(provisioner, old_host)
         if headscale is not None:
             try:
                 expire_session_mesh(headscale, session_id=session_id)
             except HeadscaleError:
                 pass
         expire_session_ingress(db, session_id=session_id)
+        expire_session_bootstrap(db, session_id=session_id)
         _rematch_user(
             db,
             user_id=user_id,
@@ -163,13 +171,26 @@ def _rematch_user(
     db.refresh(session)
     storage = _storage_locators_for_user(db, user_id)
     session_id = session.id
+    guest_mesh = None
+    if mesh is not None and storage is not None:
+        settings = get_settings()
+        guest_mesh = ensure_guest_bootstrap(
+            db,
+            session_id=session_id,
+            grant=mesh,
+            storage=storage,
+            ttl_seconds=settings.gateway_token_ttl_seconds,
+            public_origin=settings.matchmaker_public_origin,
+        )
+    elif mesh is not None:
+        guest_mesh = guest_mesh_hint(mesh)
     if not provision_booked_host(
         db,
         host,
         provisioner,
         lab_tier=lab_tier,
         storage=storage,
-        guest_mesh=guest_mesh_hint(mesh) if mesh is not None else None,
+        guest_mesh=guest_mesh,
     ):
         db.delete(session)
         db.commit()
@@ -178,6 +199,7 @@ def _rematch_user(
                 expire_session_mesh(headscale, session_id=session_id)
             except HeadscaleError:
                 pass
+        expire_session_bootstrap(db, session_id=session_id)
         return None
     return session
 

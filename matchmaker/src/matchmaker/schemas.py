@@ -77,6 +77,7 @@ class StorageMountInfo(CamelModel):
     rclone_args: list[str] = Field(default_factory=list)
     env_auth: bool = True
     objects: list[str] = Field(default_factory=list)
+    saved_as_of: datetime | None = None
 
 
 class MeshPeerInfo(CamelModel):
@@ -221,6 +222,40 @@ class MeshPreauthResponse(CamelModel):
     reusable: bool
     ephemeral: bool
     expires_at: str
+
+
+class GuestBootstrapStorage(CamelModel):
+    """rclone locators plus S3 env keys. Guest-only — never session JSON."""
+
+    endpoint: str
+    region: str
+    bucket: str
+    prefix: str
+    rclone_args: list[str] = Field(default_factory=list)
+    env_auth: bool = True
+    access_key_id: str
+    secret_access_key: str
+
+
+class GuestBootstrapResponse(CamelModel):
+    """Secrets the guest image redeems. Not for the volunteer Host Agent."""
+
+    login_server: str
+    preauth_key: str
+    hostname: str
+    exit_node: str | None = None
+    acl_tags: list[str]
+    tailscale_up: list[str]
+    storage: GuestBootstrapStorage
+
+
+class GuestSavedAsOfRequest(CamelModel):
+    saved_as_of: datetime | None = None
+
+
+class GuestSavedAsOfResponse(CamelModel):
+    session_id: UUID
+    saved_as_of: datetime
 
 
 class GatewayResolveRequest(CamelModel):

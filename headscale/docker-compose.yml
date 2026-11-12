@@ -28,7 +28,7 @@ services:
     environment:
       HEADSCALE_SERVER_URL: ${HEADSCALE_SERVER_URL:?HEADSCALE_SERVER_URL is required}
     ports:
-      - "${HEADSCALE_PORT:-8080}:8080"
+      - "127.0.0.1:${HEADSCALE_PORT:-8080}:8080"
     volumes:
       - ./config.yaml:/etc/headscale/config.yaml:ro
       - ./acl.hujson:/etc/headscale/acl.hujson:ro

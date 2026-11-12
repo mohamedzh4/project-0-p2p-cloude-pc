@@ -82,7 +82,7 @@ impl TailscaleUp {
             self.login_server.clone(),
             "--authkey".to_string(),
             self.auth_key.clone(),
-            "--accept-dns=false".to_string(),
+            "--accept-dns=true".to_string(),
             "--accept-routes=false".to_string(),
         ];
         if let Some(hostname) = &self.hostname {
@@ -411,7 +411,7 @@ mod tests {
         assert!(args.contains(&"http://headscale.test".to_string()));
         assert!(args.contains(&"--authkey".to_string()));
         assert!(args.contains(&TEST_PREAUTH.to_string()));
-        assert!(args.contains(&"--accept-dns=false".to_string()));
+        assert!(args.contains(&"--accept-dns=true".to_string()));
         assert!(args.contains(&"--accept-routes=false".to_string()));
         assert!(!args.iter().any(|a| a.contains("advertise-exit-node")));
         assert!(!args.iter().any(|a| a.contains("advertise-tags")));

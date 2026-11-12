@@ -20,8 +20,10 @@ from matchmaker.schemas import ConnectionInfo, MoonlightInfo
 from matchmaker.storage import GuestStorageLocators
 
 _PROVISION_PATH = "/v1/provision"
-# Host Agent may poll Kasm/Sunshine for up to ~60s after invoke.
-_REQUEST_TIMEOUT_SECONDS = 90.0
+_TEARDOWN_PATH = "/v1/teardown"
+# Host Agent may poll a cold Kasm/Sunshine guest for up to five minutes.
+_REQUEST_TIMEOUT_SECONDS = 330.0
+_TEARDOWN_TIMEOUT_SECONDS = 15.0
 
 STREAMER_KASM = "kasm"
 STREAMER_SUNSHINE = "sunshine"
@@ -62,6 +64,9 @@ class HostProvisioner(Protocol):
         guest_mesh: GuestMeshHint | None = None,
     ) -> ProvisionResult | None:
         """Ask the selected host's agent to become ready, or None to use the host row."""
+
+    def teardown(self, host: Host) -> None:
+        """Best-effort POST /v1/teardown. Occupancy is already released in the DB."""
 
 
 def locator_is_placeholder(url: str | None) -> bool:
@@ -217,12 +222,17 @@ class HttpHostProvisioner:
         elif self._storage_endpoint:
             payload["storageEndpoint"] = self._storage_endpoint
         if guest_mesh is not None:
-            payload["guestMesh"] = {
+            mesh: dict[str, object] = {
                 "loginServer": guest_mesh.login_server,
                 "hostname": guest_mesh.hostname,
                 "exitNode": guest_mesh.exit_node,
                 "aclTags": list(guest_mesh.acl_tags),
             }
+            if guest_mesh.bootstrap_origin:
+                mesh["bootstrapOrigin"] = guest_mesh.bootstrap_origin
+            if guest_mesh.bootstrap_token:
+                mesh["bootstrapToken"] = guest_mesh.bootstrap_token
+            payload["guestMesh"] = mesh
         headers = {
             "Authorization": f"Bearer {self._bearer_token}",
             "Accept": "application/json",
@@ -275,3 +285,31 @@ class HttpHostProvisioner:
             moonlight_app=moonlight_app,
             gpu_exclusive=gpu_exclusive,
         )
+
+    def teardown(self, host: Host) -> None:
+        origin = agent_origin(host.agent_url) or agent_origin(self._fallback_base_url)
+        if origin is None:
+            return
+        url = f"{origin}{_TEARDOWN_PATH}"
+        headers = {
+            "Authorization": f"Bearer {self._bearer_token}",
+            "Accept": "application/json",
+        }
+        try:
+            with httpx.Client(
+                timeout=min(self._timeout_seconds, _TEARDOWN_TIMEOUT_SECONDS),
+                follow_redirects=False,
+            ) as client:
+                client.post(url, headers=headers)
+        except httpx.HTTPError:
+            return
+
+
+def teardown_booked_host(provisioner: HostProvisioner, host: Host | None) -> None:
+    """Ignore agent failures — Matchmaker occupancy is already released."""
+    if host is None:
+        return
+    try:
+        provisioner.teardown(host)
+    except Exception:
+        return

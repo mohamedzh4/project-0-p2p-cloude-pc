@@ -26,17 +26,22 @@ from matchmaker.ledger import (
     user_credits_debited,
     user_debit_for_session,
 )
+from matchmaker.guest_bootstrap import ensure_guest_bootstrap, expire_session_bootstrap
 from matchmaker.matching import HostSelector
 from matchmaker.mesh import (
     SessionMeshGrant,
     expire_session_mesh,
-    guest_mesh_hint,
     mesh_info_from_grant,
     mint_session_mesh,
 )
 from matchmaker.ingress import connection_for_browser, expire_session_ingress
 from matchmaker.models import Host, LabSession, SessionStatus, User
-from matchmaker.provision import HostProvisioner, provision_booked_host, session_connection
+from matchmaker.provision import (
+    HostProvisioner,
+    provision_booked_host,
+    session_connection,
+    teardown_booked_host,
+)
 from matchmaker.renterd import RenterdClient, RenterdError, StorageGrant
 from matchmaker.schemas import (
     EndSessionResponse,
@@ -75,7 +80,7 @@ def _session_response(
             public_origin=settings.gateway_public_origin,
             ttl_seconds=settings.gateway_token_ttl_seconds,
         ),
-        storage=mount_info_from_grant(grant),
+        storage=mount_info_from_grant(grant, saved_as_of=session.saved_as_of),
         mesh=mesh_info_from_grant(mesh),
     )
 
@@ -147,6 +152,18 @@ def _host_or_error(db: Session, host_id: UUID) -> Host:
     return host
 
 
+def _guest_hint(db: Session, session_id: UUID, mesh: SessionMeshGrant, grant: StorageGrant):
+    settings = get_settings()
+    return ensure_guest_bootstrap(
+        db,
+        session_id=session_id,
+        grant=mesh,
+        storage=locators_from_grant(grant),
+        ttl_seconds=settings.gateway_token_ttl_seconds,
+        public_origin=settings.matchmaker_public_origin,
+    )
+
+
 def _abort_unprovisioned_session(
     db: Session,
     session: LabSession,
@@ -155,6 +172,7 @@ def _abort_unprovisioned_session(
     """Release occupancy when provision did not yield a live locator."""
     session_id = session.id
     expire_session_ingress(db, session_id=session_id)
+    expire_session_bootstrap(db, session_id=session_id)
     db.delete(session)
     db.commit()
     try:
@@ -247,7 +265,7 @@ def request_session(
         provisioner,
         lab_tier=req.lab_tier,
         storage=locators_from_grant(grant),
-        guest_mesh=guest_mesh_hint(mesh),
+        guest_mesh=_guest_hint(db, session.id, mesh, grant),
     ):
         _abort_unprovisioned_session(db, session, headscale)
         raise HTTPException(
@@ -264,6 +282,7 @@ def end_session(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
     headscale: Annotated[HeadscaleClient, Depends(get_headscale_client)],
+    provisioner: Annotated[HostProvisioner, Depends(get_host_provisioner)],
 ) -> EndSessionResponse:
     session = db.get(LabSession, session_id)
     if session is None or session.user_id != user.id:
@@ -288,6 +307,8 @@ def end_session(
                 ) from None
         else:
             db.refresh(session)
+        host = db.get(Host, session.host_id)
+        teardown_booked_host(provisioner, host)
         try:
             expire_session_mesh(headscale, session_id=session.id)
         except HeadscaleError:
@@ -295,6 +316,7 @@ def end_session(
             # no guest image joined.
             pass
         expire_session_ingress(db, session_id=session.id)
+        expire_session_bootstrap(db, session_id=session.id)
 
     if session.ended_at is None:
         raise HTTPException(

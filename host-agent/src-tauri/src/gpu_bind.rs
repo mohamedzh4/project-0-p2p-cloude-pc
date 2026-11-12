@@ -20,7 +20,9 @@
 //!
 //! Firecracker has no PCI passthrough — Pro never uses it. The Host Agent
 //! computes the PCI address from sysfs; the volunteer does not run `lspci`.
-//! Nothing here boots a guest (`Start-VM` is not used). GATE-PRO stays open.
+//! After a successful DDA/GPU-P assign, production provision calls `Start-VM`
+//! on the existing `dcl-pro-guest` (tests inject the runner). GATE-PRO stays
+//! open until a human reports metal.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -146,7 +148,8 @@ pub const DEFAULT_HYPERV_VM: &str = "dcl-pro-guest";
 /// Override [`DEFAULT_HYPERV_VM`]. Empty or unset keeps the default.
 pub const HYPERV_VM_ENV: &str = "HOST_AGENT_HYPERV_VM";
 
-/// Operator VM name for Windows Pro apply. Never creates or `Start-VM`s it.
+/// Operator VM name for Windows Pro apply. The VM must already exist; this
+/// agent does not create it. Provision `Start-VM`s it after GPU assign.
 pub fn hyperv_vm_name_from_env(lookup: impl Fn(&str) -> Option<String>) -> String {
     lookup(HYPERV_VM_ENV)
         .map(|value| value.trim().to_string())
@@ -182,6 +185,8 @@ pub enum HyperVCmdlet {
     SetGpuPartitionExclusive { vm_name: String },
     RemoveGpuPartitionAdapter { vm_name: String },
     VerifyGpuPartition { vm_name: String },
+    StartVm { vm_name: String },
+    StopVm { vm_name: String },
 }
 
 impl HyperVCmdlet {
@@ -200,6 +205,8 @@ impl HyperVCmdlet {
             Self::SetGpuPartitionExclusive { .. } => "Set-VMGpuPartitionAdapter",
             Self::RemoveGpuPartitionAdapter { .. } => "Remove-VMGpuPartitionAdapter",
             Self::VerifyGpuPartition { .. } => "Get-VMGpuPartitionAdapter",
+            Self::StartVm { .. } => "Start-VM",
+            Self::StopVm { .. } => "Stop-VM",
         }
     }
 }
@@ -959,13 +966,19 @@ fn apply_windows_dda(
         }
     }
 
+    if let Err(error) = start_existing_vm(ops, vm_name) {
+        let _ = stop_existing_vm(ops, vm_name);
+        let rolled_back = rollback_windows_dda(ops, instance_id, location_path, vm_name, true, true, true);
+        return Err(fail(error.to_string(), rolled_back));
+    }
+
     Ok(status_from_plan(
         &plan,
         GpuBindAction::Bound,
         true,
         false,
         format!(
-            "assigned GPU {gpu_id} with Hyper-V DDA ({location_path}) to VM {vm_name}. {warning} Hypervisor not invoked. Guest not started."
+            "assigned GPU {gpu_id} with Hyper-V DDA ({location_path}) to VM {vm_name} and Start-VM. {warning} QEMU was not spawned."
         ),
     ))
 }
@@ -1033,15 +1046,37 @@ fn apply_windows_gpu_p(
         }
     }
 
+    if let Err(error) = start_existing_vm(ops, vm_name) {
+        let _ = stop_existing_vm(ops, vm_name);
+        let rolled_back =
+            rollback_windows_gpu_p(ops, instance_path, vm_name, previous_count, count_set, true);
+        return Err(fail(error.to_string(), rolled_back));
+    }
+
     Ok(status_from_plan(
         &plan,
         GpuBindAction::Bound,
         true,
         false,
         format!(
-            "assigned GPU {gpu_id} with exclusive Hyper-V GPU-P (PartitionCount 1, full 100000000 resource fractions) to VM {vm_name}. {warning} Hypervisor not invoked. Guest not started."
+            "assigned GPU {gpu_id} with exclusive Hyper-V GPU-P (PartitionCount 1, full 100000000 resource fractions) to VM {vm_name} and Start-VM. {warning} QEMU was not spawned."
         ),
     ))
+}
+
+fn start_existing_vm(ops: &dyn HyperVGpuOps, vm_name: &str) -> Result<(), GpuBindError> {
+    ops.invoke(&HyperVCmdlet::StartVm {
+        vm_name: vm_name.to_string(),
+    })?;
+    Ok(())
+}
+
+/// Power off `dcl-pro-guest` (or `HOST_AGENT_HYPERV_VM`) during teardown.
+pub fn stop_existing_vm(ops: &dyn HyperVGpuOps, vm_name: &str) -> Result<(), GpuBindError> {
+    ops.invoke(&HyperVCmdlet::StopVm {
+        vm_name: vm_name.to_string(),
+    })?;
+    Ok(())
 }
 
 fn rollback_windows_dda(
@@ -1231,6 +1266,14 @@ Set-VMGpuPartitionAdapter -VMName {vm} \
         ),
         HyperVCmdlet::VerifyGpuPartition { vm_name } => format!(
             "$ErrorActionPreference = 'Stop'; $dev = Get-VMGpuPartitionAdapter -VMName {}; if (-not $dev) {{ throw 'Get-VMGpuPartitionAdapter returned no adapter; not assigned' }}; $dev | ConvertTo-Json -Compress",
+            ps_quote(vm_name)
+        ),
+        HyperVCmdlet::StartVm { vm_name } => format!(
+            "$ErrorActionPreference = 'Stop'; Start-VM -Name {}",
+            ps_quote(vm_name)
+        ),
+        HyperVCmdlet::StopVm { vm_name } => format!(
+            "$ErrorActionPreference = 'Stop'; Stop-VM -Name {} -Force -TurnOff",
             ps_quote(vm_name)
         ),
     }
@@ -1440,6 +1483,42 @@ fn status_from_plan(
         exclusive: true,
         log,
         hypervisor_invoked: false,
+    }
+}
+
+/// Restore the previous host driver after a Pro session (teardown).
+pub fn release_linux_vfio(
+    sysfs: &PciSysfs,
+    ops: &dyn PciBindOps,
+    bdf: &str,
+    previous_driver: Option<&str>,
+) -> Result<(), GpuBindError> {
+    refuse_live_sysfs_in_tests(sysfs)?;
+    let device_dir = sysfs.device_dir(bdf);
+    rollback_linux(sysfs, ops, bdf, previous_driver, &device_dir)
+}
+
+/// Stop the Pro VM and undo DDA/GPU-P so the volunteer display path returns.
+pub fn teardown_windows_pro(
+    ops: &dyn HyperVGpuOps,
+    vm_name: &str,
+    target_driver: &str,
+    instance_id: &str,
+    pci_or_path: &str,
+) {
+    let _ = stop_existing_vm(ops, vm_name);
+    if target_driver == DDA_TARGET {
+        let _ = rollback_windows_dda(
+            ops,
+            instance_id,
+            pci_or_path,
+            vm_name,
+            true,
+            true,
+            true,
+        );
+    } else if target_driver == GPU_P_TARGET {
+        let _ = rollback_windows_gpu_p(ops, pci_or_path, vm_name, 0, true, true);
     }
 }
 
@@ -2252,6 +2331,7 @@ mod tests {
                 "Dismount-VMHostAssignableDevice",
                 "Add-VMAssignableDevice",
                 "Get-VMAssignableDevice",
+                "Start-VM",
             ]
         );
         assert!(
@@ -2318,6 +2398,7 @@ mod tests {
                 "Add-VMGpuPartitionAdapter",
                 "Set-VMGpuPartitionAdapter",
                 "Get-VMGpuPartitionAdapter",
+                "Start-VM",
             ]
         );
         assert!(runner.gpu_p_assigned());
@@ -2654,9 +2735,10 @@ mod tests {
                 "Dismount-VMHostAssignableDevice",
                 "Add-VMAssignableDevice",
                 "Get-VMAssignableDevice",
+                "Start-VM",
             ]
         );
         assert!(runner.dda_assigned());
-        assert!(!status.log.to_ascii_lowercase().contains("start-vm"));
+        assert!(status.log.to_ascii_lowercase().contains("start-vm"));
     }
 }

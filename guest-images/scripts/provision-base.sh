@@ -6,10 +6,25 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
-apt-get update
+# Packer SSH is often ready while cloud-init still holds apt locks.
+if command -v cloud-init >/dev/null 2>&1; then
+  cloud-init status --wait || true
+fi
+
+retry=0
+until apt-get update; do
+  retry=$((retry + 1))
+  if (( retry >= 36 )); then
+    echo "apt-get update failed after ${retry} attempts" >&2
+    exit 1
+  fi
+  echo "apt-get update retry ${retry}/36 (waiting for lock)" >&2
+  sleep 10
+done
 apt-get install -y --no-install-recommends \
   ca-certificates \
   curl \
+  fuse3 \
   gnupg \
   python3 \
   qemu-guest-agent \

@@ -26,8 +26,8 @@ Unattended blockers. Meeting them does not close the hardware line.
 4. Operator kernel via `FIRECRACKER_KERNEL` (or `vmlinux` next to the
    rootfs). Packer does not invent a kernel from GRUB. The Firecracker
    getting-started demo kernel is not enough for Docker/Kasm.
-5. TAP/guest network is **not** in this runbook. InstanceStart plus locator
-   poll still needs a reachable Kasm on the mesh hostname. Timeout is 400,
-   not a `.invalid` success.
-6. Jailer is unused. Teardown HTTP is unused (occupancy is not cleared
-   when Matchmaker interrupts).
+5. TAP/guest network is implemented in software (`dcl-tap0`, guest
+   `172.16.0.2`). Metal still has to exist; timeout is 400, not a
+   `.invalid` success.
+6. Jailer is unused. Matchmaker session end/silence POSTs `/v1/teardown`
+   (same host bootstrap Bearer) to kill the guest and clear occupancy.
