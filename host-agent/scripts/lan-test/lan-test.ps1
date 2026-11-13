@@ -6,6 +6,12 @@
 # hypervisor + guest image + KasmVNC work on real hardware.
 #
 # Double-click lan-test.cmd. Add -CheckOnly to only check this PC.
+#
+# Two modes (lan-test.env LAN_TEST_MODE, default picked automatically):
+#   quick   no image build needed: official Ubuntu 24.04 cloud image
+#           (pinned SHA-256) + seed.iso from the kit; the first boot installs
+#           XFCE + KasmVNC with the same provision-kasm.sh as the real image.
+#   signed  the Packer-built Standard guest (IMAGE_STANDARD_DIGEST set).
 # Writes lan-test-report-<time>.txt next to this script (no password in it).
 
 [CmdletBinding()]
@@ -23,6 +29,11 @@ $script:QemuInstallerSha512 = "5bcf9eed634e8575a37b74f445af41a2fe4106da512d0c30c
 $script:QemuVersion = "20260811"
 # Same cache as windows-host-setup.ps1 so a later real setup reuses the disk.
 $script:ImageDir = "C:\dcl\images\standard"
+# Quick mode base image (must match lan-test.sh). Dated folder: the bare
+# release/ link moves.
+$script:UbuntuUrl = "https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img"
+$script:UbuntuSha256 = "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94"
+$script:QuickDir = "C:\dcl\lan-test\quick"
 # QEMU argv paths must not contain spaces or commas.
 $script:RunDir = "C:\dcl\lan-test"
 $script:FirewallRule = "DCL LAN test"
@@ -70,7 +81,8 @@ function Import-LanTestEnv {
     }
     $allowed = @(
         "IMAGE_STANDARD_DIGEST", "IMAGE_RAW_URL", "IMAGE_QCOW2_URL",
-        "LAN_TEST_PORT", "LAN_TEST_VCPUS", "LAN_TEST_MEMORY_GIB"
+        "LAN_TEST_PORT", "LAN_TEST_VCPUS", "LAN_TEST_MEMORY_GIB",
+        "LAN_TEST_MODE", "LAN_TEST_SETUP_MINUTES", "LAN_TEST_BOOT_MINUTES"
     )
     $values = @{}
     foreach ($line in Get-Content -LiteralPath $path) {
@@ -119,7 +131,7 @@ function Stop-StaleTest {
 }
 
 function Assert-Machine {
-    param([int]$Vcpus, [int]$MemGib)
+    param([int]$Vcpus, [int]$MemGib, [string]$Mode)
     Write-TestLog ""
     Write-TestLog "== Checking this PC =="
     $os = Get-CimInstance Win32_OperatingSystem
@@ -173,7 +185,10 @@ function Assert-Machine {
     $freeGib = [math]::Floor([double]$drive.Free / 1GB)
     Write-TestLog "Free disk on C: $freeGib GiB"
     $imageReady = Test-Path -LiteralPath (Join-Path $script:ImageDir "rootfs.img")
-    if (-not $imageReady -and $freeGib -lt 80) {
+    if ($Mode -eq "quick") {
+        if ($freeGib -lt 20) { Stop-Test "Need about 20 GiB free on C: (have $freeGib GiB)." }
+    }
+    elseif (-not $imageReady -and $freeGib -lt 80) {
         Stop-Test "Need about 80 GiB free on C: to unpack the guest disk (have $freeGib GiB)."
     }
 }
@@ -288,12 +303,72 @@ function Get-HttpCode {
     return $null
 }
 
+function Install-QuickDisk {
+    param([string]$QemuDir)
+    Write-TestLog ""
+    Write-TestLog "== Preparing the guest image (quick mode) =="
+    New-Item -ItemType Directory -Force -Path $script:QuickDir | Out-Null
+    $base = Join-Path $script:QuickDir ("ubuntu-24.04-cloudimg-" + $script:UbuntuSha256.Substring(0, 12) + ".img")
+    $overlay = Join-Path $script:QuickDir "overlay.qcow2"
+    $seed = Join-Path $script:QuickDir "seed.iso"
+    $doneMark = Join-Path $script:QuickDir "setup-done"
+    if (-not (Test-Path -LiteralPath $base)) {
+        Write-TestLog "Downloading Ubuntu 24.04 cloud image (about 600 MB)..."
+        curl.exe -L --retry 5 --retry-all-errors -C - -o "$base.part" $script:UbuntuUrl
+        if ($LASTEXITCODE -ne 0) { Stop-Test "Ubuntu image download failed. Check the internet connection." }
+        $hash = (Get-FileHash -LiteralPath "$base.part" -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($hash -ne $script:UbuntuSha256) {
+            Remove-Item -LiteralPath "$base.part" -Force
+            Stop-Test "Ubuntu image SHA-256 does not match the pinned value. Deleted it; not booting."
+        }
+        Move-Item -LiteralPath "$base.part" -Destination $base -Force
+    }
+    Write-TestLog "Ubuntu image verified ($($script:UbuntuSha256))."
+    $kitSeed = Join-Path $script:Here "seed.iso"
+    $seedSum = (Get-FileHash -LiteralPath $kitSeed -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (Test-Path -LiteralPath $overlay) {
+        $marked = $null
+        if (Test-Path -LiteralPath $doneMark) { $marked = (Get-Content -LiteralPath $doneMark -Raw).Trim() }
+        if ($marked -ne $seedSum) {
+            Write-TestLog "Previous setup was unfinished or the kit changed; starting the desktop setup again."
+            Remove-Item -LiteralPath $overlay, $doneMark -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Copy-Item -LiteralPath $kitSeed -Destination $seed -Force
+    $first = $false
+    if (-not (Test-Path -LiteralPath $overlay)) {
+        $qemuImg = Join-Path $QemuDir "qemu-img.exe"
+        & $qemuImg create -q -f qcow2 -F qcow2 -b $base $overlay 20G
+        if ($LASTEXITCODE -ne 0) { Stop-Test "qemu-img could not create the VM disk." }
+        $first = $true
+    }
+    return @{ Overlay = $overlay; Seed = $seed; DoneMark = $doneMark; SeedSum = $seedSum; First = $first }
+}
+
 function Start-LanTest {
     $settings = Import-LanTestEnv
     $digest = Get-Setting $settings "IMAGE_STANDARD_DIGEST" ""
-    if ($digest -notmatch '^[0-9a-fA-F]{64}$') {
-        Stop-Test "IMAGE_STANDARD_DIGEST in lan-test.env must be 64 hexadecimal characters."
+    $mode = Get-Setting $settings "LAN_TEST_MODE" ""
+    if (-not $mode) {
+        if ($digest) { $mode = "signed" } else { $mode = "quick" }
     }
+    if ($mode -eq "signed") {
+        if ($digest -notmatch '^[0-9a-fA-F]{64}$') {
+            Stop-Test "IMAGE_STANDARD_DIGEST in lan-test.env must be 64 hexadecimal characters (signed mode)."
+        }
+    }
+    elseif ($mode -eq "quick") {
+        if (-not (Test-Path -LiteralPath (Join-Path $script:Here "seed.iso"))) {
+            Stop-Test "seed.iso is missing next to lan-test.cmd (quick mode)."
+        }
+    }
+    else {
+        Stop-Test "LAN_TEST_MODE must be quick or signed."
+    }
+    $setupMin = [int](Get-Setting $settings "LAN_TEST_SETUP_MINUTES" "45")
+    if ($setupMin -lt 5) { Stop-Test "LAN_TEST_SETUP_MINUTES must be >= 5." }
+    $bootMin = [int](Get-Setting $settings "LAN_TEST_BOOT_MINUTES" "10")
+    if ($bootMin -lt 2) { Stop-Test "LAN_TEST_BOOT_MINUTES must be >= 2." }
     $port = [int](Get-Setting $settings "LAN_TEST_PORT" "8443")
     $vcpus = [int](Get-Setting $settings "LAN_TEST_VCPUS" "2")
     $memGib = [int](Get-Setting $settings "LAN_TEST_MEMORY_GIB" "4")
@@ -302,7 +377,8 @@ function Start-LanTest {
     if ($memGib -lt 4) { Stop-Test "LAN_TEST_MEMORY_GIB must be >= 4." }
 
     Stop-StaleTest
-    Assert-Machine -Vcpus $vcpus -MemGib $memGib
+    Write-TestLog "Mode: $mode"
+    Assert-Machine -Vcpus $vcpus -MemGib $memGib -Mode $mode
 
     $lanIp = Get-LanIPv4
     if (-not $lanIp) { Stop-Test "No network connection found. Connect to the Wi-Fi/LAN first." }
@@ -321,14 +397,23 @@ function Start-LanTest {
     Write-TestLog "== Installing QEMU if needed =="
     $qemuDir = Install-PinnedQemu
     $qemuSys = Join-Path $qemuDir "qemu-system-x86_64.exe"
-    $raw = Install-GuestDisk -QemuDir $qemuDir -Settings $settings
+    $quick = $null
+    if ($mode -eq "signed") {
+        $raw = Install-GuestDisk -QemuDir $qemuDir -Settings $settings
+        $diskArgs = @("-hda", $raw, "-snapshot")
+    }
+    else {
+        $quick = Install-QuickDisk -QemuDir $qemuDir
+        $diskArgs = @("-hda", $quick.Overlay, "-drive", "file=$($quick.Seed),media=cdrom,readonly=on")
+    }
 
     Write-TestLog ""
     Write-TestLog "== Starting the virtual machine =="
     New-Item -ItemType Directory -Force -Path $script:RunDir | Out-Null
     $password = New-LanPassword
     $pwFile = Join-Path $script:RunDir "lan-password"
-    [System.IO.File]::WriteAllText($pwFile, $password)
+    # SMBIOS OEM string, not fw_cfg: Ubuntu's cloud kernel has no qemu_fw_cfg.
+    [System.IO.File]::WriteAllText($pwFile, "dcl-lan-password=$password")
     $serialLog = Join-Path $script:RunDir "serial-$($script:Stamp).log"
     $outLog = Join-Path $script:RunDir "qemu-out.log"
     $errLog = Join-Path $script:RunDir "qemu-err.log"
@@ -338,9 +423,10 @@ function Start-LanTest {
     Write-TestLog "Opened firewall port $port for the local network only."
 
     # Same flags as host-agent qemu.rs (x86_64 WHPX), plus:
-    #  -snapshot  writes go to a temp file; the signed image stays unchanged
+    #  -snapshot  (signed) writes go to a temp file; the image is unchanged
+    #  overlay    (quick) desktop install persists so later runs boot fast
     #  hostfwd    publishes guest KasmVNC 8443 on this PC's LAN port
-    #  fw_cfg     LAN password -> guest turns on KasmVNC basic auth
+    #  smbios 11  LAN password (from a file, not argv) -> KasmVNC basic auth on
     $qemuArgs = @(
         "-name", $script:VmName,
         "-accel", "whpx",
@@ -349,25 +435,48 @@ function Start-LanTest {
         "-m", "$($memGib)G",
         "-device", "ich9-usb-ehci1",
         "-device", "usb-tablet",
-        "-hda", $raw,
-        "-snapshot",
+        $diskArgs,
         "-display", "none",
         "-monitor", "none",
         "-serial", "file:$serialLog",
         "-netdev", "user,id=net0,hostfwd=tcp:0.0.0.0:$port-:8443",
         "-device", "virtio-net-pci,netdev=net0",
-        "-fw_cfg", "name=opt/org.dcl/lan-password,file=$pwFile"
+        "-smbios", "type=11,path=$pwFile"
     )
+    $qemuArgs = @($qemuArgs | ForEach-Object { $_ })
     foreach ($arg in $qemuArgs) {
         if ($arg -match '[\s"]') { Stop-Test "Internal error: QEMU argument has a space: $arg" }
     }
     $bootStart = Get-Date
     $script:QemuProc = Start-Process -FilePath $qemuSys -ArgumentList $qemuArgs -PassThru `
         -NoNewWindow -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-    Write-TestLog "VM started (pid $($script:QemuProc.Id)). Waiting for the desktop (up to 5 minutes)..."
+    $limit = $bootMin * 60
+    if ($quick -and $quick.First) {
+        $limit = $setupMin * 60
+        Write-TestLog "VM started (pid $($script:QemuProc.Id)). First run: installing the desktop inside the VM."
+        Write-TestLog "This downloads ~500 MB and takes 10-30 minutes (limit $setupMin min)."
+    }
+    else {
+        Write-TestLog "VM started (pid $($script:QemuProc.Id)). Waiting for the desktop (up to $bootMin minutes)..."
+    }
 
     $code = $null
-    while (((Get-Date) - $bootStart).TotalSeconds -lt 300) {
+    $nextNote = 60
+    while (((Get-Date) - $bootStart).TotalSeconds -lt $limit) {
+        $elapsed = ((Get-Date) - $bootStart).TotalSeconds
+        if ($elapsed -ge $nextNote) {
+            Write-Host ("  ... still starting ({0} min)" -f [int][math]::Floor($elapsed / 60))
+            $nextNote += 60
+        }
+        $serialText = Get-Content -LiteralPath $serialLog -Raw -ErrorAction SilentlyContinue
+        if ($serialText -and $serialText.Contains("DCL-QUICK-SETUP-FAILED")) {
+            Write-TestLog "Desktop setup inside the VM failed. Guest console:"
+            Get-Content -LiteralPath $serialLog -Tail 60 -ErrorAction SilentlyContinue | ForEach-Object { Write-TestLog $_ }
+            Stop-Process -Id $script:QemuProc.Id -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+            if ($quick) { Remove-Item -LiteralPath $quick.Overlay -Force -ErrorAction SilentlyContinue }
+            Stop-Test "Desktop setup failed inside the VM (see above)."
+        }
         if ($script:QemuProc.HasExited) {
             Write-TestLog "QEMU stopped early. Its output:"
             if (Test-Path -LiteralPath $errLog) {
@@ -384,16 +493,27 @@ function Start-LanTest {
     if (-not $code) {
         Write-TestLog "Last lines of the guest console ($serialLog):"
         if (Test-Path -LiteralPath $serialLog) {
-            Get-Content -LiteralPath $serialLog -Tail 40 | ForEach-Object { Write-TestLog $_ }
+            Get-Content -LiteralPath $serialLog -Tail 80 -ErrorAction SilentlyContinue | ForEach-Object { Write-TestLog $_ }
         }
-        Stop-Test "The desktop did not answer within 5 minutes."
+        if ($quick -and -not $quick.First) {
+            # Known open issue: the installed desktop may not come back on a
+            # later boot. Drop the marker so the next run reinstalls.
+            Remove-Item -LiteralPath $quick.DoneMark -Force -ErrorAction SilentlyContinue
+            Write-TestLog "Run lan-test again: it will reinstall the desktop (first-run time)."
+        }
+        Stop-Test ("The desktop did not answer within {0} minutes." -f [int]($limit / 60))
     }
     Write-TestLog "Desktop answered after $($bootSecs)s (HTTP $code)."
     if ($code -ne "401") {
-        Write-TestLog "WARNING: expected a password prompt (HTTP 401) but got HTTP $code."
-        Write-TestLog "WARNING: the guest image may be older than the LAN password change."
+        # Fail closed: the port is open to the LAN and the desktop has no password.
+        Write-TestLog "The desktop answered HTTP $code instead of asking for a password (401)."
+        Write-TestLog "The guest image is older than the LAN password change, or the password did not reach the VM."
+        Stop-Test "Stopped the VM so the desktop is not open to the network without a password."
     }
-    $script:Result = "PASS: desktop reachable after $($bootSecs)s"
+    if ($quick -and -not (Test-Path -LiteralPath $quick.DoneMark)) {
+        Set-Content -LiteralPath $quick.DoneMark -Value $quick.SeedSum -Encoding ascii -NoNewline
+    }
+    $script:Result = "PASS ($mode mode): desktop reachable after $($bootSecs)s"
 
     Write-Host ""
     Write-Host "============================================================" -ForegroundColor Green

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015,SC2012  # test harness: ok()/bad() always return 0
 # Runs as user "friend" inside the container.
 set -uo pipefail
 KIT=/home/friend/kit
@@ -28,20 +29,20 @@ echo "  link=$link pwlen=${#pw}"
 c1=$(curl -sk -o /dev/null -w '%{http_code}' "$link/"); [[ $c1 == 401 ]] && ok "no password -> 401" || bad "no password -> $c1"
 c2=$(curl -sk -o /dev/null -w '%{http_code}' -u "ubuntu:wrongpass" "$link/"); [[ $c2 == 401 ]] && ok "wrong password -> 401" || bad "wrong -> $c2"
 c3=$(curl -sk -o /dev/null -w '%{http_code}' -u "ubuntu:$pw" "$link/"); [[ $c3 == 200 ]] && ok "right password -> 200" || bad "right -> $c3"
-python3 - <<'PY' && ok "argv has kvm/snapshot/hostfwd/fw_cfg/virtio" || bad "argv"
+python3 - <<'PY' && ok "argv has kvm/snapshot/hostfwd/smbios/virtio" || bad "argv"
 import json; a = json.load(open("/tmp/qemu-argv.json")); s = " ".join(a)
 for f in ["-enable-kvm", "-snapshot", "-machine q35", "-cpu host", "-name dcl-lan-test",
-          "if=virtio,format=raw", "hostfwd=tcp:0.0.0.0:8443-:8443", "name=opt/org.dcl/lan-password,file=",
+          "if=virtio,format=raw", "hostfwd=tcp:0.0.0.0:8443-:8443", "type=11,path=",
           "virtio-net-pci,netdev=net0", "-display none"]:
     assert f in s, f
 PY
-pwfile=$(python3 -c 'import json;a=json.load(open("/tmp/qemu-argv.json"));print([x for x in a if "lan-password,file=" in x][0].split("file=")[1])')
+pwfile=$(python3 -c 'import json;a=json.load(open("/tmp/qemu-argv.json"));print([x for x in a if x.startswith("type=11,path=")][0].split("path=")[1])')
 [[ ! -e "$pwfile" ]] && ok "password file removed after boot" || bad "password file still exists"
 kill -TERM $pid; wait $pid
 sleep 1
 pgrep -f fake-qemu >/dev/null && bad "fake qemu still running" || ok "VM stopped on Ctrl+C/TERM"
 r=$(latest_report)
-grep -q "Result: PASS: desktop reachable" "$r" && ok "report PASS" || { bad "report result"; cat "$r"; }
+grep -q "Result: PASS (signed mode): desktop reachable" "$r" && ok "report PASS" || { bad "report result"; cat "$r"; }
 grep -q -- "$pw" "$r" && bad "password leaked into report" || ok "password not in report"
 grep -q "Desktop answered after" "$r" && ok "boot time recorded" || bad "no boot time"
 

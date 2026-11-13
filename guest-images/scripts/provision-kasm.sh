@@ -5,9 +5,11 @@
 # access is authenticated by the DCL gateway's short-lived session token, and
 # Headscale ACLs permit the gateway/assigned roles to reach guest port 8443.
 #
-# LAN test mode: when the host passes QEMU fw_cfg opt/org.dcl/lan-password,
+# LAN test mode: when the host passes SMBIOS OEM string dcl-lan-password=...
+# (QEMU -smbios type=11; fw_cfg opt/org.dcl/lan-password as a fallback),
 # KasmVNC turns basic auth ON (user `ubuntu`, that password) because the
 # listener is then reachable from a shared Wi-Fi without the gateway.
+# SMBIOS first: Ubuntu's cloud kernel has no qemu_fw_cfg module.
 set -euo pipefail
 
 if [[ "${LAB_TIER:-}" == "pro" ]]; then
@@ -26,7 +28,8 @@ apt-get install -y --no-install-recommends \
   xfce4-terminal \
   xfonts-base
 
-curl -fL -o /tmp/kasmvncserver.deb "${KASM_VNC_DEB_URL}"
+curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 20 \
+  -o /tmp/kasmvncserver.deb "${KASM_VNC_DEB_URL}"
 echo "${KASM_VNC_DEB_SHA256}  /tmp/kasmvncserver.deb" | sha256sum -c -
 apt-get install -y /tmp/kasmvncserver.deb
 rm -f /tmp/kasmvncserver.deb
@@ -41,6 +44,10 @@ exec dbus-run-session startxfce4
 EOF
 chown ubuntu:ubuntu /home/ubuntu/.vnc/xstartup
 chmod 0700 /home/ubuntu/.vnc/xstartup
+# Without this marker vncserver stops at an interactive "choose Desktop
+# Environment" prompt (systemd cannot answer it). xstartup above is XFCE.
+touch /home/ubuntu/.vnc/.de-was-selected
+chown ubuntu:ubuntu /home/ubuntu/.vnc/.de-was-selected
 
 cat >/home/ubuntu/.vnc/kasmvnc.yaml <<'EOF'
 network:
@@ -59,7 +66,7 @@ EOF
 chown ubuntu:ubuntu /home/ubuntu/.vnc/kasmvnc.yaml
 chmod 0600 /home/ubuntu/.vnc/kasmvnc.yaml
 
-# Root pre-start: fw_cfg entries are root-only (0400). A LAN password turns
+# Root pre-start (dmidecode and fw_cfg are root-only). A LAN password turns
 # on KasmVNC basic auth; no password keeps the mesh/gateway behaviour.
 # KasmVNC always needs a user with write access, otherwise `vncserver`
 # stops at an interactive "create a user?" prompt that systemd cannot
@@ -73,7 +80,11 @@ MARKER=/run/dcl-kasmvnc/basic-auth
 rm -f "$MARKER" /home/ubuntu/.kasmpasswd
 modprobe -q qemu_fw_cfg 2>/dev/null || true
 password=""
-if [ -r "$FWCFG" ]; then
+if command -v dmidecode >/dev/null 2>&1; then
+  password="$(dmidecode -t 11 2>/dev/null |
+    sed -n 's/^[[:space:]]*String [0-9]*: dcl-lan-password=//p' | head -n 1 | tr -d '\r\n')"
+fi
+if [ -z "$password" ] && [ -r "$FWCFG" ]; then
   password="$(tr -d '\r\n' <"$FWCFG")"
 fi
 lan=1
@@ -87,7 +98,7 @@ printf '%s\n%s\n' "$password" "$password" |
 if [ "$lan" -eq 1 ]; then
   touch "$MARKER"
   chown ubuntu:ubuntu "$MARKER"
-  echo "dcl-kasmvnc: LAN password from fw_cfg; basic auth on"
+  echo "dcl-kasmvnc: LAN password from the host; basic auth on"
 else
   echo "dcl-kasmvnc: no LAN password; basic auth off (mesh/gateway mode)"
 fi

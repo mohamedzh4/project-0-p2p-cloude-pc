@@ -51,11 +51,14 @@ class PackerTemplateTests(unittest.TestCase):
         self.assertIn("dcl-kasmvnc.service", kasm)
         self.assertIn("-disableBasicAuth", kasm)
         # LAN test: fw_cfg password turns KasmVNC basic auth on.
-        self.assertIn("opt/org.dcl/lan-password", kasm)
+        self.assertIn("opt/org.dcl/lan-password", kasm)  # fallback
+        self.assertIn("dmidecode -t 11", kasm)  # SMBIOS first
         self.assertIn("ExecStartPre=+/usr/local/sbin/dcl-kasmvnc-auth", kasm)
         self.assertIn("-u ubuntu -wo", kasm)
         # No LAN password: still create a user, or vncserver blocks on a prompt.
         self.assertIn("head -c 48 /dev/urandom", kasm)
+        # No marker: vncserver blocks on a desktop-environment prompt.
+        self.assertIn(".vnc/.de-was-selected", kasm)
         self.assertIn("websocket_port: 8443", kasm)
         self.assertIn("startxfce4", kasm)
         self.assertNotIn("sunshine-ubuntu-24.04", kasm)
@@ -210,6 +213,8 @@ class PackerTemplateTests(unittest.TestCase):
             versions["KASM_VNC_DEB_URL"],
         )
         self.assertIn("cloudimg-amd64.img", versions["UBUNTU_CLOUDIMG_URL"])
+        # Dated folder: the bare release/ link moves and breaks the SHA-256.
+        self.assertRegex(versions["UBUNTU_CLOUDIMG_URL"], r"/release-\d{8}/")
         self.assertIn("sunshine-ubuntu-24.04-amd64.deb", versions["SUNSHINE_DEB_URL"])
 
     def test_cloud_init_template_renders_ssh_key(self) -> None:

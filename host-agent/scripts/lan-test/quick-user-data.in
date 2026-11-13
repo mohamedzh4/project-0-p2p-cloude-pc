@@ -1,0 +1,42 @@
+#cloud-config
+# Quick-mode seed for the LAN hardware test (cloud-init NoCloud, label cidata).
+# pack-lan-test-kit.sh fills @...@ and writes seed.iso. No secrets in here:
+# the LAN password reaches the guest through QEMU fw_cfg at every boot.
+hostname: dcl-lan-test
+ssh_pwauth: false
+package_update: true
+write_files:
+  - path: /usr/local/share/dcl/provision-kasm.sh
+    permissions: "0755"
+    encoding: b64
+    content: @PROVISION_KASM_B64@
+  # Every boot: print the desktop service state and any stuck boot jobs to
+  # the serial console, which lan-test copies into the friend's report.
+  - path: /etc/systemd/system/dcl-console-status.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=DCL LAN test: desktop status on the serial console
+      [Service]
+      Type=simple
+      ExecStart=/bin/sh -c 'sleep 90; { echo DCL-STATUS-BEGIN; systemctl --no-pager --full status dcl-kasmvnc.service; journalctl --no-pager -b -u dcl-kasmvnc.service -n 30; systemctl --no-pager list-jobs; echo DCL-STATUS-END; } >/dev/ttyS0 2>&1'
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - [bash, -c, "echo DCL-QUICK-SETUP-START >/dev/ttyS0"]
+  - [systemctl, enable, dcl-console-status.service]
+  - - bash
+    - -c
+    - |
+      set -o pipefail
+      if KASM_VNC_DEB_URL='@KASM_VNC_DEB_URL@' \
+         KASM_VNC_DEB_SHA256='@KASM_VNC_DEB_SHA256@' \
+         LAB_TIER=standard \
+         bash /usr/local/share/dcl/provision-kasm.sh >/var/log/dcl-quick-setup.log 2>&1 &&
+         systemctl start dcl-kasmvnc.service; then
+        echo DCL-QUICK-SETUP-OK >/dev/ttyS0
+      else
+        tail -n 40 /var/log/dcl-quick-setup.log >/dev/ttyS0
+        journalctl -u dcl-kasmvnc.service -n 20 --no-pager >/dev/ttyS0 2>&1
+        echo DCL-QUICK-SETUP-FAILED >/dev/ttyS0
+      fi

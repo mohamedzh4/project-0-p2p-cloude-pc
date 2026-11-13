@@ -45,10 +45,12 @@ class LanTestKitTests(unittest.TestCase):
     def test_both_kits_boot_a_throwaway_copy_with_lan_password(self) -> None:
         for path in (SH, PS1):
             text = path.read_text(encoding="utf-8")
-            self.assertIn("-snapshot", text, path)
+            self.assertIn("-snapshot", text, path)  # signed mode
             self.assertIn("hostfwd=tcp:0.0.0.0:", text, path)
             self.assertIn("-:8443", text, path)
-            self.assertIn("name=opt/org.dcl/lan-password,file=", text, path)
+            self.assertIn("type=11,path=", text, path)
+            self.assertIn("dcl-lan-password=", text, path)
+            self.assertNotIn("-fw_cfg", text, path)
             self.assertIn("-name", text, path)
             self.assertIn("dcl-lan-test", text, path)
             self.assertNotIn("tcg", text.lower(), path)
@@ -100,6 +102,42 @@ class LanTestKitTests(unittest.TestCase):
             if "$password" in line and "Write-TestLog" in line:
                 self.fail(f"password logged: {line}")
         self.assertIn('Write-Host "  Password:  $password"', ps1)
+
+    def test_quick_mode_pins_the_same_dated_ubuntu_image(self) -> None:
+        sh = SH.read_text(encoding="utf-8")
+        ps1 = PS1.read_text(encoding="utf-8")
+        sh_url = re.search(r'^UBUNTU_URL="([^"]+)"', sh, re.M).group(1)
+        sh_sha = re.search(r'^UBUNTU_SHA256="([0-9a-f]{64})"', sh, re.M).group(1)
+        self.assertEqual(sh_url, _pinned(ps1, "UbuntuUrl"))
+        self.assertEqual(sh_sha, _pinned(ps1, "UbuntuSha256"))
+        self.assertRegex(sh_url, r"/release-\d{8}/")
+        for text in (sh, ps1):
+            self.assertIn("DCL-QUICK-SETUP-FAILED", text)
+            self.assertIn("setup-done", text)
+
+    def test_both_fail_closed_without_password_prompt(self) -> None:
+        self.assertIn("Stopped the VM so the desktop is not open to the network without a password", SH.read_text(encoding="utf-8"))
+        self.assertIn("Stopped the VM so the desktop is not open to the network without a password", PS1.read_text(encoding="utf-8"))
+
+    def test_quick_seed_runs_the_real_provision_script(self) -> None:
+        tpl = (KIT / "quick-user-data.in").read_text(encoding="utf-8")
+        self.assertTrue(tpl.startswith("#cloud-config"))
+        for marker in ("@PROVISION_KASM_B64@", "@KASM_VNC_DEB_URL@", "@KASM_VNC_DEB_SHA256@",
+                       "DCL-QUICK-SETUP-OK", "DCL-QUICK-SETUP-FAILED", "systemctl start dcl-kasmvnc.service"):
+            self.assertIn(marker, tpl)
+
+    def test_pack_quick_mode_builds_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ, LAN_TEST_KIT_DIR=tmp)
+            subprocess.run(["bash", str(PACK)], check=True, env=env, capture_output=True)
+            iso = (Path(tmp) / "seed.iso").read_bytes()
+            self.assertIn(b"CIDATA", iso.upper()[32768:34816])
+            with zipfile.ZipFile(Path(tmp) / "dcl-lan-test-windows.zip") as z:
+                names = set(z.namelist())
+                self.assertIn("dcl-lan-test-windows/seed.iso", names)
+                env_text = z.read("dcl-lan-test-windows/lan-test.env").decode()
+                self.assertIn("LAN_TEST_MODE=quick", env_text)
+                self.assertNotIn("IMAGE_STANDARD_DIGEST", env_text)
 
     def test_pack_builds_both_zips(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -6,8 +6,8 @@ json.dump(args, open("/tmp/qemu-argv.json", "w"))
 if os.environ.get("FAKE_QEMU_CRASH"):
     print("qemu-system-x86_64: -accel kvm: failed to initialize kvm: Permission denied", file=sys.stderr)
     sys.exit(1)
-fw = next(a for a in args if a.startswith("name=opt/org.dcl/lan-password,file="))
-password = open(fw.split("file=", 1)[1]).read()
+sm = next(a for a in args if a.startswith("type=11,path="))
+password = open(sm.split("path=", 1)[1]).read().split("dcl-lan-password=", 1)[1]
 port = int(re.search(r"hostfwd=tcp:0\.0\.0\.0:(\d+)-:8443", " ".join(args)).group(1))
 serial = args[args.index("-serial") + 1].removeprefix("file:")
 open(serial, "w").write("fake guest console: booting\n")

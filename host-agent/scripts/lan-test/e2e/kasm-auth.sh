@@ -12,7 +12,7 @@ extract() { awk -v start="$1" '$0==start{f=1;next} f&&$0=="EOF"{exit} f' "$P"; }
 install -d -m 0700 -o ubuntu -g ubuntu /home/ubuntu/.vnc
 extract "cat >/home/ubuntu/.vnc/kasmvnc.yaml <<'EOF'" >/home/ubuntu/.vnc/kasmvnc.yaml
 printf '#!/bin/sh\nexec sleep infinity\n' >/home/ubuntu/.vnc/xstartup; chmod 755 /home/ubuntu/.vnc/xstartup
-touch /home/ubuntu/.vnc/.de-was-selected
+grep -q "touch /home/ubuntu/.vnc/.de-was-selected" "$P" && touch /home/ubuntu/.vnc/.de-was-selected
 chown -R ubuntu:ubuntu /home/ubuntu/.vnc
 extract "cat >/usr/local/sbin/dcl-kasmvnc-auth <<'EOF'" | sed 's#^FWCFG=.*#FWCFG=/tmp/fwcfg/raw#' >/usr/local/sbin/dcl-kasmvnc-auth
 extract "cat >/usr/local/sbin/dcl-kasmvnc-start <<'EOF'" >/usr/local/sbin/dcl-kasmvnc-start

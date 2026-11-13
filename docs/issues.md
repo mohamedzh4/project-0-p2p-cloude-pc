@@ -30,7 +30,42 @@ Fix: keep the bootstrap token only for first registration. Issue each host
 its own credential on approval and use that for Matchmaker → agent calls.
 Consider rotating the bootstrap token per invite.
 
-## 3. Session booking waits up to 330 s inside one HTTP request (scalability, medium)
+## 3. Guest bootstrap via fw_cfg never reaches Ubuntu guests (correctness, high)
+
+The Host Agent passes the Matchmaker origin and bootstrap token with QEMU
+`-fw_cfg name=opt/org.dcl/{matchmaker,bootstrap}` (`guest_net.rs`
+`qemu_fw_cfg_argv`, used by `qemu.rs` and `qemu_kvm.rs`), and
+`guest-images/scripts/dcl-guest-join.py` reads them from
+`/sys/firmware/qemu_fw_cfg`. The Ubuntu 24.04 cloud kernel the guest image is
+built from has **no `qemu_fw_cfg` module** (it is only in
+`linux-modules-extra`). Verified 2026-11-12 by booting
+`release-20261017` (kernel 6.8.0-147-generic): `modprobe qemu_fw_cfg` →
+"Module not found". So on QEMU hosts the guest never redeems its bootstrap:
+no Headscale join, no rclone mount, no saved-as-of. (Firecracker uses the
+kernel cmdline and is not affected.)
+
+Fix (pick one):
+- Pass the values as SMBIOS OEM strings (`-smbios type=11,path=<file>`,
+  read with `dmidecode -t 11`), which the LAN test kit already does and
+  which was verified in the same guest; or
+- install `linux-modules-extra` matching the guest kernel in
+  `provision-base.sh` and keep a meta-package so kernel updates keep it.
+
+## 3b. LAN test quick mode: desktop may not return on the second run (correctness, medium)
+
+Under emulation (Docker, TCG) the first quick-mode run passed every check
+(install, 401/401/200, KasmVNC page, clean stop, PASS report). On the second
+run the VM booted (login prompt after ~85 s guest time, cloud-init finished)
+but `dcl-kasmvnc.service` never answered within 40 minutes, and the console
+showed no start line for it. Cause not found yet (the Mac lost internet
+while reading the guest journal). Not seen on real hardware because it has
+not run there. Mitigation in both apps: a timed-out later run drops the
+`setup-done` marker so the next run reinstalls; the seed prints the
+service status to the serial console 90 s after every boot, and the app
+copies 80 console lines into the report, so the friend's report should
+show the reason.
+
+## 4. Session booking waits up to 330 s inside one HTTP request (scalability, medium)
 
 `POST /v1/sessions` (`matchmaker/src/matchmaker/routers/sessions.py`) calls
 the Host Agent synchronously and waits for the VM to boot
@@ -41,7 +76,7 @@ boots will block the API; proxies may also time out first.
 Fix: return `202 Accepted` with a `provisioning` session state, provision in
 a background task, and have `web/` poll the session status.
 
-## 4. Repeated session requests create new Headscale keys (correctness, low)
+## 5. Repeated session requests create new Headscale keys (correctness, low)
 
 When the user already has an active session, every `POST /v1/sessions` call
 mints fresh Headscale preauth keys (`sessions.py:202`) instead of reusing the
@@ -49,20 +84,16 @@ existing grant. Unused keys pile up.
 
 Fix: store the session's mesh grant and return it on repeat calls.
 
-## 5. Repo housekeeping (low)
+## 6. Repo housekeeping (low)
 
-- Phase 34/35 work is uncommitted: ~57 modified and ~25 untracked files
-  (`guest_net.rs`, `qemu_kvm.rs`, `qemu_linux.rs`, `routers/guest.py`,
-  `guest_bootstrap.py`, Alembic `0008`, host setup scripts, `web/Dockerfile`).
-- Local `main` is ahead of `origin/main`.
-- `gateway/build/` and `matchmaker/build/` are not in `.gitignore`.
+- Local `main` is ahead of `origin/main` (not pushed).
 - `DEMO_RUNBOOK.md` contains the VPS public IP; decide whether it belongs in
   the repo.
 - Three unused-import warnings in `cargo test` (`PathBuf`, `DEVICE_ARG` ×2).
 - Matchmaker tests need `TEST_DATABASE_URL` (Postgres); document a one-line
   way to start a test database.
 
-## 6. Windows setup wrongly reports virtualization off (correctness, medium)
+## 7. Windows setup wrongly reports virtualization off (correctness, medium)
 
 `Assert-FirmwareVirtualization` in `host-agent/scripts/windows-host-setup.ps1`
 fails when `Win32_Processor.VirtualizationFirmwareEnabled` is `False`. Windows
@@ -73,7 +104,7 @@ change a BIOS setting that is already correct.
 Fix: skip the check when `Win32_ComputerSystem.HypervisorPresent` is true
 (the LAN test kit already does this).
 
-## 7. No test on real hardware yet (risk, high)
+## 8. No test on real hardware yet (risk, high)
 
 Every hypervisor path (QEMU+KVM, QEMU+WHPX, VFIO, Hyper-V DDA/GPU-P) is
 covered only by mocks. Nothing has shown a real desktop in a browser.
