@@ -104,11 +104,13 @@ change a BIOS setting that is already correct.
 Fix: skip the check when `Win32_ComputerSystem.HypervisorPresent` is true
 (the LAN test kit already does this).
 
-## 8. No test on real hardware yet (risk, high)
+## 8. Most hardware paths not yet run on real hardware (risk, high)
 
-Every hypervisor path (QEMU+KVM, QEMU+WHPX, VFIO, Hyper-V DDA/GPU-P) is
-covered only by mocks. Nothing has shown a real desktop in a browser.
-First step: the LAN test kit (`docs/runbooks/lan-test.md`). Then
+2026-11-14: the Windows LAN test kit (quick mode) showed a real XFCE
+desktop on a second device over Wi-Fi: QEMU + WHPX on a physical Windows PC
+(see `PROJECT_STATUS.md`). Still only mocks/emulation: QEMU+KVM on a Linux
+host, the signed Packer image, the Host Agent provision path end to end,
+VFIO, Hyper-V DDA/GPU-P. Next: the Linux kit on an Ubuntu PC, then
 `DEMO_RUNBOOK.md` and `docs/runbooks/gate-*.md`.
 
 ## Accepted for now

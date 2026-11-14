@@ -93,6 +93,12 @@ failure it includes the QEMU error output or the last guest console lines.
 Only check a PC without booting: `bash lan-test.sh --check` or
 `lan-test.cmd -CheckOnly`.
 
+## Test logs
+
+Record each real-hardware run in `docs/test-logs/<date>-<what>.md` with the
+same benchmark commands, so results can be compared. Baseline:
+`docs/test-logs/2026-11-14-windows-lan-quick-baseline.md`.
+
 ## Checking the kit without hardware
 
 ```bash

@@ -1,4 +1,4 @@
-# Project Status — last updated: 2026-09-14, browser-cloud demo integration
+# Project Status — last updated: 2026-11-14, first Windows LAN test on metal
 
 ## Hardware proof still required
 
@@ -7,8 +7,18 @@ Never write “confirmed working” until a human reports a live session on meta
 - Standard-Linux: QEMU+KVM, direct XFCE/KasmVNC desktop, and public gateway
   integration are implemented and covered by non-metal tests. Not yet run on
   a physical Linux KVM host.
-- Standard-Windows: QEMU+WHPX uses the same signed guest and direct browser
-  desktop. Not yet run on a physical Windows host.
+- Standard-Windows: **first live session on metal, 2026-11-14 (reported by
+  the owner with screenshots).** LAN test kit, quick mode
+  (`host-agent/scripts/lan-test/`, `docs/runbooks/lan-test.md`) on a
+  physical Windows 10/11 x86-64 PC: pinned Weilnetz QEMU with `-accel whpx`
+  booted the stock Ubuntu 24.04 cloud image (release-20261017); cloud-init
+  ran `provision-kasm.sh`; KasmVNC answered HTTP 401 after 394 s; a second
+  device (Mac, Brave) on the same Wi-Fi opened `https://<pc-lan-ip>:8443`,
+  logged in as `ubuntu` with the one-time password, and showed the XFCE
+  desktop. **What this does not cover:** the signed Packer image, the Host
+  Agent provision path, Matchmaker, Headscale, the public gateway, rclone
+  storage, or a second run of the kit (see `docs/issues.md` 3b).
+  Baseline numbers: `docs/test-logs/2026-11-14-windows-lan-quick-baseline.md`.
 - Pro-GPU: Implemented in code. Not yet run on physical hardware.
 
 `SEED_HOST_KASM_URL` remains `https://example.invalid/kasm` for the seed
