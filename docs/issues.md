@@ -205,6 +205,41 @@ and removed on exit; anything left is removed by
 `RUN_DIR` is deleted on exit. Covered by
 `test_linux_cleanup_undoes_recorded_changes`.
 
+## 15. Any renter on the mesh can reach any guest (security, high)
+
+Headscale access rules are by role (`headscale/acl.hujson`): every
+`tag:user` may reach every `tag:guest`, and every `tag:gateway` too.
+Headscale 0.26.1 cannot add per-session rules from its policy file. So a
+renter who joins the mesh with the Tailscale app (the key the Matchmaker
+mints for each booking) could try to open another renter's desktop on its
+mesh name. The public gateway path is scoped by its session token, but the
+guest itself accepts anyone on the mesh.
+
+Fix (both, guest firewall first):
+- **Firewall inside each guest:** at boot the guest receives, with its
+  bootstrap, the `100.x` address of its assigned renter (and the gateway),
+  and drops every other mesh connection (nftables). Works with today's
+  Headscale and protects both the mesh and the gateway paths.
+- **Per-session rules in Headscale:** newer Headscale versions can keep the
+  policy in their database and update it through the API; the Matchmaker
+  would add and remove a rule per session. Needs checking against the
+  current Headscale docs and an upgrade from 0.26.1.
+
+## 16. Direct mesh connections reveal both public IPs; mesh needs an app (privacy, medium)
+
+`100.x` mesh addresses are private, but a direct WireGuard connection is
+made between the two machines' real public IPs, which the Tailscale client
+knows (`tailscale status`). A renter connected over the mesh therefore
+learns the host's public IP, which conflicts with the "Hide my IP" choice
+(cahier FR18). Tailscale has no simple per-session "relay only" switch.
+The mesh path also needs the Tailscale app on the renter's computer, so it
+cannot be the Standard tier's browser-only path.
+
+Plan: use the mesh for the Pro tier and advanced users (Moonlight is a
+native app anyway), with the FR18 notice; for "Hide my IP" sessions and
+browser users, use the WebRTC path with the platform relay (cahier FR17)
+or the gateway.
+
 ## Accepted for now
 
 - The gateway skips TLS certificate checks to guests (`verify=False` in
