@@ -5,11 +5,11 @@
 //! starts `qemu-system-*.exe` with the flags qemu.org documents for WHPX:
 //!
 //! x86_64: `-accel whpx -M pc -smp cores=N -m SIZE -device ich9-usb-ehci1
-//! -device usb-tablet -hda DISK`
+//! -device usb-tablet -drive file=DISK,if=virtio,format=raw`
 //!
 //! aarch64: `-accel whpx -M virt -cpu host -smp cores=N -m SIZE
 //! -bios edk2-aarch64-code.fd -device ramfb -device nec-usb-xhci
-//! -device usb-kbd -device usb-tablet -hda DISK`
+//! -device usb-kbd -device usb-tablet -drive file=DISK,if=virtio,format=raw`
 //!
 //! Size is the clamped slider mapped to a QEMU `-m` suffix (`NG` when the
 //! value is whole GiB, otherwise `NM`). Guest net is SLIRP `-netdev user`
@@ -18,7 +18,7 @@
 //! Pro GPU backend). Tests inject a fake process so CI never execs QEMU or
 //! needs WHPX. Production spawn is refused under `cfg(test)` and off Windows.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 use thiserror::Error;
@@ -40,7 +40,9 @@ pub const MEMORY_ARG: &str = "-m";
 pub const DEVICE_ARG: &str = "-device";
 pub const USB_EHCI: &str = "ich9-usb-ehci1";
 pub const USB_TABLET: &str = "usb-tablet";
-pub const HDA_ARG: &str = "-hda";
+/// Guest disk is virtio-blk, same as the Linux hosts. Emulated IDE (`-hda`)
+/// measured ~62x slower on small random reads (`docs/issues.md` 9).
+pub const DRIVE_ARG: &str = "-drive";
 pub const BIOS_ARG: &str = "-bios";
 /// Documented aarch64 WHPX firmware name (QEMU datadir).
 pub const AARCH64_BIOS: &str = "edk2-aarch64-code.fd";
@@ -196,6 +198,11 @@ pub fn net_argv() -> Vec<String> {
 }
 
 /// Documented WHPX argv (no TCG, no `-enable-kvm`, no Hyper-V) plus user net.
+/// `-drive` value for the verified raw guest disk on virtio-blk.
+pub fn virtio_drive(disk: &str) -> String {
+    format!("file={disk},if=virtio,format=raw")
+}
+
 pub fn argv(arch: &str, vcpu_count: u32, memory_mib: u64, disk: &Path) -> Vec<String> {
     let smp = format!("cores={vcpu_count}");
     let memory = memory_flag(memory_mib);
@@ -222,8 +229,8 @@ pub fn argv(arch: &str, vcpu_count: u32, memory_mib: u64, disk: &Path) -> Vec<St
             USB_KBD.to_string(),
             DEVICE_ARG.to_string(),
             USB_TABLET.to_string(),
-            HDA_ARG.to_string(),
-            disk,
+            DRIVE_ARG.to_string(),
+            virtio_drive(&disk),
         ]
     } else {
         vec![
@@ -239,8 +246,8 @@ pub fn argv(arch: &str, vcpu_count: u32, memory_mib: u64, disk: &Path) -> Vec<St
             USB_EHCI.to_string(),
             DEVICE_ARG.to_string(),
             USB_TABLET.to_string(),
-            HDA_ARG.to_string(),
-            disk,
+            DRIVE_ARG.to_string(),
+            virtio_drive(&disk),
         ]
     };
     args.extend(net_argv());
@@ -351,7 +358,7 @@ pub fn invoke(
         request.memory_mib,
         request.disk,
     );
-    args.extend(crate::guest_net::qemu_fw_cfg_argv(
+    args.extend(crate::guest_bootstrap::qemu_bootstrap_argv(
         request.bootstrap_origin,
         request.bootstrap_token,
     ));
@@ -377,7 +384,7 @@ fn require_file(path: &Path, missing: QemuError) -> Result<(), QemuError> {
 
 #[cfg(test)]
 pub(crate) struct RecordingQemu {
-    pub spawns: Mutex<Vec<(PathBuf, Vec<String>)>>,
+    pub spawns: Mutex<Vec<(std::path::PathBuf, Vec<String>)>>,
 }
 
 #[cfg(test)]
@@ -388,7 +395,7 @@ impl RecordingQemu {
         }
     }
 
-    pub(crate) fn spawn_calls(&self) -> Vec<(PathBuf, Vec<String>)> {
+    pub(crate) fn spawn_calls(&self) -> Vec<(std::path::PathBuf, Vec<String>)> {
         self.spawns.lock().expect("spawn mutex").clone()
     }
 }
@@ -429,6 +436,7 @@ mod tests {
     };
     use crate::provision::ComputeBackend;
     use std::fs;
+    use std::path::PathBuf;
 
     fn windows_standard_caps() -> HostCapabilities {
         evaluate(EvaluateInput {
@@ -667,7 +675,6 @@ mod tests {
             lab_tier: LabTier::Standard,
             vcpu_count: 2,
             memory_mib: 4096,
-            kernel_path: None,
             rootfs_path: Some(disk.to_string_lossy().into_owned()),
             gpu: None,
             hypervisor_invoked: false,
@@ -687,8 +694,8 @@ mod tests {
         assert_eq!(args[1], ACCEL_WHPX);
         assert_eq!(args[5], "cores=2");
         assert_eq!(args[7], "4G");
-        assert_eq!(args[12], HDA_ARG);
-        assert_eq!(args[13], disk.to_string_lossy());
+        assert_eq!(args[12], DRIVE_ARG);
+        assert_eq!(args[13], virtio_drive(&disk.to_string_lossy()));
     }
 
     #[test]
@@ -697,11 +704,10 @@ mod tests {
         let (_dir, binary, disk) = fixture_tree();
         let recorder = RecordingQemu::succeeding();
         let launch = LaunchConfig {
-            backend: ComputeBackend::Firecracker,
+            backend: ComputeBackend::QemuKvm,
             lab_tier: LabTier::Standard,
             vcpu_count: 2,
             memory_mib: 4096,
-            kernel_path: None,
             rootfs_path: Some(disk.to_string_lossy().into_owned()),
             gpu: None,
             hypervisor_invoked: false,
@@ -722,11 +728,11 @@ mod tests {
 
     #[test]
     fn production_source_does_not_start_hyperv_or_tcg() {
-        let source = include_str!("qemu.rs");
+        let source = include_str!("qemu_whpx.rs");
         let production = source
             .split("#[cfg(test)]")
             .next()
-            .expect("qemu.rs should have a test module");
+            .expect("qemu_whpx.rs should have a test module");
         assert!(!production.contains("Start-VM"));
         assert!(!production.contains("powershell"));
         assert!(!production.contains("-accel tcg"));

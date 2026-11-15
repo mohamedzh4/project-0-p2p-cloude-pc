@@ -38,7 +38,6 @@ def test_image_and_session_routers_do_not_name_backends_or_the_concrete_selector
         text = (root / relative).read_text(encoding="utf-8")
         assert "SingleApprovedHostSelector" not in text
         assert "RankedHostSelector" not in text
-        assert "Firecracker" not in text
         assert "QEMU" not in text
         assert "WHPX" not in text
         assert "VFIO" not in text

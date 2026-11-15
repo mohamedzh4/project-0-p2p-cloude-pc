@@ -171,7 +171,7 @@ directory on the volunteer host. Host Agent `POST /v1/provision` may include
 `storageEndpoint` (URL only) and must not mount.
 
 Logout final flush and a “saved as of HH:MM” indicator still need a live
-guest (GATE-FC / GATE-WHPX). This runbook does not close those gates.
+guest (`gate-kvm.md` / `gate-whpx.md`). This runbook does not close those gates.
 
 ## 7. How to report back
 

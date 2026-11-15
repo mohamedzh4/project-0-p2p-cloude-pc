@@ -10,11 +10,13 @@ for an HttpOnly cookie on the dedicated desktop origin.
 
 ## 1. Required machines
 
-- Linux VPS at `203.0.113.10`, checked out as `/home/dcl/dcl`
+- Linux VPS with a public IP, this repository checked out on it
+  (examples below use `lab.example.com` and `/home/dcl/dcl`; use your own)
 - Ubuntu 22.04/24.04 x86-64 build/host PC with sudo and read/write `/dev/kvm`
 - Windows 10/11 x86-64 host with WHPX enabled for the second host proof
 
-The current public DNS records must all resolve to the VPS:
+These DNS records (your domain in place of `lab.example.com`) must all
+resolve to the VPS:
 
 - `lab.example.com`
 - `desktop.lab.example.com`
@@ -23,12 +25,14 @@ The current public DNS records must all resolve to the VPS:
 
 ## 2. Deploy the VPS
 
-Copy/pull this repository to `/home/dcl/dcl`, then run:
+Copy/pull this repository onto the VPS, then run, with your domain:
 
 ```bash
 cd /home/dcl/dcl
-bash .vps-deploy.sh
+DCL_DOMAIN=lab.example.com bash scripts/vps-deploy.sh
 ```
+
+The service account defaults to the user running the script (`DCL_USER`).
 
 The script preserves existing generated secrets, upgrades the database, binds
 PostgreSQL/Headscale/renterd/Matchmaker to loopback, and publishes only Caddy

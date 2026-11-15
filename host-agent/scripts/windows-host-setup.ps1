@@ -153,6 +153,13 @@ function Get-LanIPv4 {
 }
 
 function Assert-FirmwareVirtualization {
+    # When a hypervisor already runs (Hyper-V, WSL2, Memory Integrity/VBS),
+    # Windows reports VirtualizationFirmwareEnabled=False even though
+    # VT-x/AMD-V is on. Only trust the flag when no hypervisor is present.
+    $system = Get-CimInstance -ClassName Win32_ComputerSystem
+    if ($system.HypervisorPresent) {
+        return
+    }
     $cpu = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
     $prop = $cpu.PSObject.Properties["VirtualizationFirmwareEnabled"]
     if ($prop -and ($cpu.VirtualizationFirmwareEnabled -eq $false)) {

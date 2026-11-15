@@ -1,7 +1,7 @@
 #cloud-config
 # Quick-mode seed for the LAN hardware test (cloud-init NoCloud, label cidata).
 # pack-lan-test-kit.sh fills @...@ and writes seed.iso. No secrets in here:
-# the LAN password reaches the guest through QEMU fw_cfg at every boot.
+# the LAN password reaches the guest as an SMBIOS OEM string at every boot.
 hostname: dcl-lan-test
 ssh_pwauth: false
 package_update: true
@@ -22,6 +22,45 @@ write_files:
       ExecStart=/bin/sh -c 'sleep 90; { echo DCL-STATUS-BEGIN; systemctl --no-pager --full status dcl-kasmvnc.service; journalctl --no-pager -b -u dcl-kasmvnc.service -n 30; systemctl --no-pager list-jobs; echo DCL-STATUS-END; } >/dev/ttyS0 2>&1'
       [Install]
       WantedBy=multi-user.target
+  # Pasting through KasmVNC inserted bracketed-paste markers (^[[200~) into
+  # commands (2026-11-14). Turn that off for every shell in the guest.
+  - path: /etc/inputrc
+    append: true
+    content: |
+      set enable-bracketed-paste off
+  # One-command speed check, same numbers as docs/test-logs.
+  - path: /usr/local/bin/dcl-bench
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # DCL LAN test speed check: CPU, memory, disk, internet. Results are
+      # printed and saved in ~/dcl-bench-<time>.txt.
+      set -u
+      out="$HOME/dcl-bench-$(date +%Y%m%d-%H%M%S).txt"
+      tmp=/var/tmp/dcl-bench.tmp
+      need=()
+      command -v sysbench >/dev/null || need+=(sysbench)
+      command -v fio >/dev/null || need+=(fio)
+      if [ "${#need[@]}" -gt 0 ]; then
+        echo "Installing ${need[*]} (one time, needs internet)..."
+        if ! { sudo apt-get update -qq </dev/null >/dev/null &&
+               sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${need[@]}" </dev/null >/dev/null; }; then
+          echo "Could not install the tools. Check the VM's internet and try again."
+          exit 1
+        fi
+      fi
+      echo "Running (about 2 minutes)..."
+      {
+        echo "== DCL bench $(date -Is)"
+        echo "== VM size";  nproc; free -h | head -2; df -h / | tail -1
+        echo "== CPU";      sysbench cpu --threads="$(nproc)" --time=20 run | grep "events per second"
+        echo "== Memory";   sysbench memory --memory-total-size=4G run | grep "transferred"
+        echo "== Disk seq"; fio --name=seq --filename="$tmp" --size=1G --rw=readwrite --bs=1M --direct=1 --runtime=20 --time_based --group_reporting | grep -E "READ:|WRITE:"
+        echo "== Disk 4k";  fio --name=rnd --filename="$tmp" --size=1G --rw=randread --bs=4k --direct=1 --iodepth=32 --ioengine=libaio --runtime=20 --time_based | grep IOPS
+        rm -f "$tmp"
+        echo "== Internet"; curl -L -s -o /dev/null -m 60 -w "http %{http_code}, %{size_download} bytes, %{speed_download} B/s\n" https://proof.ovh.net/files/100Mb.dat
+      } 2>&1 | tee "$out"
+      echo "Saved to $out"
 runcmd:
   - [bash, -c, "echo DCL-QUICK-SETUP-START >/dev/ttyS0"]
   - [systemctl, enable, dcl-console-status.service]

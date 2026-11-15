@@ -339,17 +339,57 @@ class SigningHelperTests(unittest.TestCase):
         self.assertEqual(len(result.stdout.strip()), 64)
 
 
-class ExtractKernelTests(unittest.TestCase):
-    def test_extract_kernel_refuses_to_guess(self) -> None:
-        script = SCRIPTS / "extract_kernel.sh"
-        result = subprocess.run(
-            ["bash", str(script), "/tmp/missing.img", "/tmp/vmlinux"],
+class GuestJoinBootstrapSourceTests(unittest.TestCase):
+    """The stock Ubuntu cloud kernel has no qemu_fw_cfg module, so QEMU hosts
+    hand the bootstrap to the guest as SMBIOS OEM strings (type 11)."""
+
+    def _read_bootstrap(self, tmp: Path) -> str:
+        env = os.environ.copy()
+        env["DCL_CMDLINE_FILE"] = str(tmp / "cmdline")
+        env["DCL_SMBIOS_DIR"] = str(tmp / "dmi")
+        env["DCL_FWCFG_DIR"] = str(tmp / "fwcfg")
+        env["DCL_GUEST_DRY_RUN"] = "1"
+        code = (
+            "import importlib.util, sys;"
+            "spec = importlib.util.spec_from_file_location('join', sys.argv[1]);"
+            "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod);"
+            "print(mod.read_bootstrap())"
+        )
+        return subprocess.run(
+            [sys.executable, "-c", code, str(JOIN)],
+            env=env,
             capture_output=True,
             text=True,
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("FIRECRACKER_KERNEL", result.stderr)
-        self.assertIn("extract-vmlinux", _read(script))
+            check=True,
+        ).stdout.strip()
+
+    @staticmethod
+    def _smbios_type11(strings: list[str]) -> bytes:
+        header = bytes([11, 5, 0x00, 0x0B, len(strings)])
+        return header + b"".join(s.encode() + b"\0" for s in strings) + b"\0"
+
+    def test_reads_origin_and_token_from_smbios_oem_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            entry = tmp / "dmi" / "11-0"
+            entry.mkdir(parents=True)
+            (entry / "raw").write_bytes(
+                self._smbios_type11(
+                    [
+                        "dcl-lan-password=unrelated",
+                        "dcl.matchmaker=https://mm.test/",
+                        "dcl.bootstrap=guest-token-value",
+                    ]
+                )
+            )
+            self.assertEqual(
+                self._read_bootstrap(tmp),
+                "('https://mm.test', 'guest-token-value')",
+            )
+
+    def test_no_source_means_no_session(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            self.assertEqual(self._read_bootstrap(Path(raw_tmp)), "(None, None)")
 
 
 if __name__ == "__main__":

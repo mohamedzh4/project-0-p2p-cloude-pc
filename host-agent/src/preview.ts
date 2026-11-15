@@ -58,13 +58,13 @@ export const previewCapabilities: HostCapabilities = {
   summary: "This Linux PC can host Standard and Pro sessions.",
 };
 
-/** Sample Linux host that already has Firecracker in the user cache (no live fetch). */
+/** Sample Linux host with the distro QEMU installed (no live fetch). */
 export const previewHypervisor: HypervisorStatus = {
   action: "skippedPresent",
-  hypervisor: "firecracker",
-  version: "v1.16.1",
-  path: "/home/host/.cache/dcl-host-agent/hypervisors/firecracker/v1.16.1/firecracker",
-  log: "skipped because present; firecracker v1.16.1 at /home/host/.cache/dcl-host-agent/hypervisors/firecracker/v1.16.1/firecracker (sha256 fixture)",
+  hypervisor: "qemu",
+  version: null,
+  path: "/usr/bin/qemu-system-x86_64",
+  log: "skipped because present; Linux uses distro QEMU+KVM at /usr/bin/qemu-system-x86_64",
   hypervisorInvoked: false,
 };
 
@@ -72,10 +72,10 @@ export const previewHypervisor: HypervisorStatus = {
 export const previewGuestImage: GuestImageStatus = {
   action: "skippedPresent",
   labTier: "standard",
-  backend: "firecracker",
+  backend: "qemu",
   path: "/home/host/.cache/dcl-host-agent/images/standard/rootfs.img",
   digest: "6ed707af13eb04a928001996ae5fc7a49ab405e73534caacf86ad65c51bab8fe",
-  log: "skipped because present; standard Firecracker guest image at /home/host/.cache/dcl-host-agent/images/standard/rootfs.img (sha256 6ed707af13eb04a928001996ae5fc7a49ab405e73534caacf86ad65c51bab8fe)",
+  log: "skipped because present; standard QEMU guest image at /home/host/.cache/dcl-host-agent/images/standard/rootfs.img (sha256 6ed707af13eb04a928001996ae5fc7a49ab405e73534caacf86ad65c51bab8fe)",
   imageBooted: false,
 };
 

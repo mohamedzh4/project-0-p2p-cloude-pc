@@ -165,11 +165,10 @@ function previewBuildLaunchConfig(config: SharingConfig, labTier: string): Launc
 
   if (labTier === "standard") {
     return {
-      backend: "firecracker",
+      backend: "qemu-kvm",
       labTier: "standard",
       vcpuCount: cores,
       memoryMib: memoryBytes / BYTES_PER_MIB,
-      kernelPath: null,
       rootfsPath: previewGuestImage.path,
       hypervisorInvoked: false,
     };
@@ -196,7 +195,6 @@ function previewBuildLaunchConfig(config: SharingConfig, labTier: string): Launc
       labTier: "pro",
       vcpuCount: cores,
       memoryMib: memoryBytes / BYTES_PER_MIB,
-      kernelPath: null,
       rootfsPath: null,
       gpu: { id, exclusive: true },
       hypervisorInvoked: false,

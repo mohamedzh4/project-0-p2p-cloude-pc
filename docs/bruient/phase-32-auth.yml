@@ -1,0 +1,19 @@
+- main [ref=f5e3]:
+  - generic [ref=f5e4]:
+    - paragraph [ref=f5e5]: Matchmaker harness
+    - heading "Lab session" [level=1] [ref=f5e6]
+    - paragraph [ref=f5e7]:
+      - text: Sign in, say what you want to do, and Matchmaker auto-matches an approved live host. Intent maps to Standard (CPU/RAM slice, Kasm) or Pro (exclusive GPU, Sunshine / Moonlight). A live locator is not the
+      - code [ref=f5e8]: .invalid
+      - text: stub TLD. This is not the product UI.
+  - generic [ref=f5e9]:
+    - tablist "Account" [ref=f5e10]:
+      - button "Sign up" [pressed] [ref=f5e11] [cursor=pointer]
+      - button "Log in" [ref=f5e12] [cursor=pointer]
+    - generic [ref=f5e13]:
+      - generic [ref=f5e14]: Email
+      - textbox "Email" [ref=f5e15]
+    - generic [ref=f5e16]:
+      - generic [ref=f5e17]: Password
+      - textbox "Password" [ref=f5e18]
+    - button "Create account" [ref=f5e19] [cursor=pointer]

@@ -17,10 +17,9 @@ mod config;
 mod disk_space;
 mod eligibility;
 mod env_file;
-mod firecracker;
 mod gpu;
 mod gpu_bind;
-mod guest_net;
+mod guest_bootstrap;
 mod hardware;
 mod host_capabilities;
 mod hypervisor;
@@ -33,9 +32,9 @@ mod mesh;
 mod models;
 mod provision;
 mod provision_http;
-mod qemu;
+mod qemu_whpx;
 mod qemu_kvm;
-mod qemu_linux;
+mod qemu_vfio;
 mod storage;
 mod tray;
 
@@ -74,9 +73,8 @@ pub struct AgentState {
     pub hardware: HardwareSnapshot,
     /// Hosting eligibility from OS + KVM/WHPX/IOMMU/GPU. Never a backend picker.
     pub capabilities: HostCapabilities,
-    /// Locate/fetch result for the OS hypervisor binary. Linux Standard
-    /// provision may invoke Firecracker; Windows Standard may invoke QEMU.
-    /// This status itself is still fetch/install-only.
+    /// Locate/install result for the OS QEMU binary. This status is
+    /// locate/install only; guests are started by the provision listener.
     pub hypervisor: HypervisorStatus,
     /// Locate/fetch result for the signed guest image. InstanceStart is not
     /// a confirmed guest userspace.
@@ -179,7 +177,6 @@ fn spawn_provision_listener(app: &tauri::App) {
                     } else {
                         None
                     };
-                    let firecracker = None;
                     let qemu = if os == HostOs::Windows && capabilities.standard.offered {
                         Some(provision_http::QemuBoot {
                             binary: hypervisor
@@ -190,13 +187,13 @@ fn spawn_provision_listener(app: &tauri::App) {
                             image_cache_dir: cache.clone(),
                             guest_image: guest_image.clone(),
                             arch: std::env::consts::ARCH.to_string(),
-                            runtime: std::sync::Arc::new(crate::qemu::ProcessQemuRuntime),
+                            runtime: std::sync::Arc::new(crate::qemu_whpx::ProcessQemuRuntime),
                         })
                     } else {
                         None
                     };
                     let linux_qemu = if os == HostOs::Linux && capabilities.pro.offered {
-                        crate::qemu_linux::resolve_binary(
+                        crate::qemu_vfio::resolve_binary(
                             std::env::consts::ARCH,
                             |key| std::env::var(key).ok(),
                         )
@@ -207,7 +204,7 @@ fn spawn_provision_listener(app: &tauri::App) {
                             guest_image: guest_image.clone(),
                             arch: std::env::consts::ARCH.to_string(),
                             runtime: std::sync::Arc::new(
-                                crate::qemu_linux::ProcessLinuxQemuRuntime,
+                                crate::qemu_vfio::ProcessLinuxQemuRuntime,
                             ),
                         })
                     } else {
@@ -238,7 +235,6 @@ fn spawn_provision_listener(app: &tauri::App) {
                         hardware,
                         sharing,
                         spare_disk_bytes: crate::disk_space::available_bytes(&cache),
-                        firecracker,
                         qemu_kvm,
                         qemu,
                         vfio,
@@ -264,7 +260,7 @@ pub fn run() {
     let hardware = hardware::detect();
     let os = HostOs::current();
     let capabilities = host_capabilities::probe_live(os, &hardware.gpus);
-    let hypervisor = hypervisor::status_from_result(hypervisor::runtime_status_from_env(
+    let hypervisor = hypervisor::status_from_result(hypervisor::ensure_from_env(
         os,
         &capabilities,
         std::env::consts::ARCH,

@@ -18,8 +18,7 @@
 //! PowerShell. On apply failure, completed steps are undone so the host is
 //! not left with a half-assigned GPU. The window still does not run it.
 //!
-//! Firecracker has no PCI passthrough — Pro never uses it. The Host Agent
-//! computes the PCI address from sysfs; the volunteer does not run `lspci`.
+//! The Host Agent computes the PCI address from sysfs; the volunteer does not run `lspci`.
 //! After a successful DDA/GPU-P assign, production provision calls `Start-VM`
 //! on the existing `dcl-pro-guest` (tests inject the runner). GATE-PRO stays
 //! open until a human reports metal.
@@ -36,7 +35,7 @@ use thiserror::Error;
 
 use crate::host_capabilities::{HostCapabilities, IommuStatus};
 use crate::provision::{
-    ComputeBackend, HostOs, LabTier, ProvisionError, Provisioner, StubProvisioner,
+    ComputeBackend, HostOs, LabTier, ProvisionError, StubProvisioner,
 };
 
 pub const VFIO_PCI: &str = "vfio-pci";
@@ -415,8 +414,6 @@ pub enum GpuBindError {
     DeviceNotInIommuGroup { pci_address: String },
     #[error("the {driver} driver control files are missing; not binding the GPU")]
     DriverControlMissing { driver: String },
-    #[error("Firecracker has no PCI passthrough; Pro GPU assignment uses QEMU+VFIO or Hyper-V")]
-    FirecrackerHasNoPassthrough,
     #[error("tests must not bind live sysfs; pass a mock tree")]
     LiveSysfsForbiddenInTests,
     #[error("tests must not spawn PowerShell for Hyper-V; inject a fake runner")]
@@ -486,15 +483,11 @@ pub fn assign(
     }
 
     match StubProvisioner::select(request.os, LabTier::Pro) {
-        Ok(selected) => {
-            if selected.backend() == ComputeBackend::Firecracker {
-                return Err(GpuBindError::FirecrackerHasNoPassthrough);
-            }
-        }
+        Ok(_) => {}
         Err(ProvisionError::UnsupportedHostOs(os)) => {
             return Ok(GpuBindStatus::skipped(
                 format!(
-                    "hosting is not supported on {os}; this agent does not fall back to Firecracker for GPU assignment"
+                    "hosting is not supported on {os}; this agent does not fall back to another backend for GPU assignment"
                 ),
             ));
         }
@@ -512,7 +505,7 @@ pub fn assign(
         HostOs::Linux => assign_linux(&gpu_id, request, ops),
         HostOs::Windows => assign_windows(&gpu_id, request),
         HostOs::MacOs | HostOs::Other => Ok(GpuBindStatus::skipped(format!(
-            "hosting is not supported on {}; this agent does not fall back to Firecracker for GPU assignment",
+            "hosting is not supported on {}; this agent does not fall back to another backend for GPU assignment",
             request.os
         ))),
     }
@@ -583,9 +576,6 @@ pub fn apply_linux_vfio(
     ops: &dyn PciBindOps,
 ) -> Result<GpuBindStatus, GpuBindError> {
     refuse_live_sysfs_in_tests(sysfs)?;
-    if plan.backend == ComputeBackend::Firecracker {
-        return Err(GpuBindError::FirecrackerHasNoPassthrough);
-    }
 
     let bdf = plan
         .pci_address
@@ -765,7 +755,6 @@ fn assign_linux(
     ops: &dyn PciBindOps,
 ) -> Result<GpuBindStatus, GpuBindError> {
     let plan = plan_linux_vfio(gpu_id, request.sysfs)?;
-    debug_assert_ne!(plan.backend, ComputeBackend::Firecracker);
 
     if !request.apply {
         let bdf = plan.pci_address.as_deref().unwrap_or("unknown");
@@ -2110,7 +2099,6 @@ mod tests {
 
         assert_eq!(status.action, GpuBindAction::Planned);
         assert_eq!(status.backend.as_deref(), Some("qemu-vfio"));
-        assert_ne!(status.backend.as_deref(), Some("firecracker"));
         assert_eq!(status.pci_address.as_deref(), Some(BDF));
         assert_eq!(status.previous_driver.as_deref(), Some("nvidia"));
         assert_eq!(status.target_driver.as_deref(), Some(VFIO_PCI));
@@ -2259,10 +2247,9 @@ mod tests {
     }
 
     #[test]
-    fn linux_pro_never_uses_firecracker() {
+    fn linux_pro_uses_qemu_vfio() {
         let selected = StubProvisioner::select(HostOs::Linux, LabTier::Pro).unwrap();
         assert_eq!(selected.backend(), ComputeBackend::QemuVfio);
-        assert_ne!(selected.backend(), ComputeBackend::Firecracker);
 
         let caps = linux_pro_caps();
         let (_dir, sysfs) = mock_gpu_tree(true);
@@ -2513,7 +2500,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_skips_and_does_not_pretend_firecracker() {
+    fn macos_skips_gpu_assignment() {
         let caps = macos_caps();
         let (_dir, sysfs) = mock_gpu_tree(true);
         let status = assign(
@@ -2525,7 +2512,7 @@ mod tests {
         assert_eq!(status.action, GpuBindAction::Skipped);
         assert!(!status.bound);
         assert!(status.log.contains("macOS"));
-        assert!(status.log.contains("Firecracker"));
+        assert!(status.log.contains("does not fall back"));
         assert!(control_lines(&sysfs.driver_dir("nvidia").join("unbind")).is_empty());
     }
 

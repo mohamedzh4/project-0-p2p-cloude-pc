@@ -12,7 +12,7 @@ use thiserror::Error;
 use crate::host_capabilities::HostCapabilities;
 use crate::launch::LaunchConfig;
 use crate::provision::{HostOs, LabTier};
-use crate::qemu::{self, DEVICE_ARG, MEMORY_ARG, SMP_ARG};
+use crate::qemu_whpx::{self, MEMORY_ARG, SMP_ARG};
 
 pub const ENABLE_KVM: &str = "-enable-kvm";
 pub const MACHINE_Q35: &str = "q35";
@@ -167,14 +167,14 @@ pub fn resolve_binary(
 pub fn argv(vcpu_count: u32, memory_mib: u64, disk: &Path) -> Vec<String> {
     let mut args = vec![
         ENABLE_KVM.to_string(),
-        qemu::MACHINE_ARG.to_string(),
+        qemu_whpx::MACHINE_ARG.to_string(),
         MACHINE_Q35.to_string(),
-        qemu::CPU_ARG.to_string(),
-        qemu::CPU_HOST.to_string(),
+        qemu_whpx::CPU_ARG.to_string(),
+        qemu_whpx::CPU_HOST.to_string(),
         SMP_ARG.to_string(),
         format!("cores={vcpu_count}"),
         MEMORY_ARG.to_string(),
-        qemu::memory_flag(memory_mib),
+        qemu_whpx::memory_flag(memory_mib),
         "-drive".to_string(),
         format!(
             "file={},if=virtio,format=raw",
@@ -188,7 +188,7 @@ pub fn argv(vcpu_count: u32, memory_mib: u64, disk: &Path) -> Vec<String> {
         "none".to_string(),
         "-no-reboot".to_string(),
     ];
-    args.extend(qemu::net_argv());
+    args.extend(qemu_whpx::net_argv());
     args
 }
 
@@ -254,7 +254,7 @@ pub fn invoke(
     }
 
     let mut args = argv(request.vcpu_count, request.memory_mib, request.disk);
-    args.extend(crate::guest_net::qemu_fw_cfg_argv(
+    args.extend(crate::guest_bootstrap::qemu_bootstrap_argv(
         request.bootstrap_origin,
         request.bootstrap_token,
     ));
@@ -273,6 +273,57 @@ fn require_file(path: &Path, missing: QemuKvmError) -> Result<(), QemuKvmError> 
         Err(missing)
     } else {
         Ok(())
+    }
+}
+
+/// Records spawns instead of starting QEMU. Used by provision HTTP tests.
+#[cfg(test)]
+pub(crate) struct RecordingQemuKvm {
+    spawns: Mutex<Vec<(std::path::PathBuf, Vec<String>)>>,
+}
+
+#[cfg(test)]
+impl RecordingQemuKvm {
+    pub(crate) fn succeeding() -> Self {
+        Self {
+            spawns: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn spawn_calls(&self) -> Vec<(std::path::PathBuf, Vec<String>)> {
+        self.spawns.lock().expect("spawn mutex").clone()
+    }
+}
+
+#[cfg(test)]
+struct RecordedChild;
+
+#[cfg(test)]
+impl QemuKvmChild for RecordedChild {
+    fn kill(&mut self) {}
+}
+
+#[cfg(test)]
+impl QemuKvmSpawner for RecordingQemuKvm {
+    fn spawn(
+        &self,
+        binary: &Path,
+        args: &[String],
+    ) -> Result<Box<dyn QemuKvmChild>, QemuKvmError> {
+        self.spawns
+            .lock()
+            .expect("spawn mutex")
+            .push((binary.to_path_buf(), args.to_vec()));
+        Ok(Box::new(RecordedChild))
+    }
+
+    fn detach(&self, _child: Box<dyn QemuKvmChild>) {}
+}
+
+#[cfg(test)]
+impl QemuKvmRuntime for RecordingQemuKvm {
+    fn invoke(&self, request: &InvokeRequest<'_>) -> Result<InvokeResult, QemuKvmError> {
+        invoke(request, self)
     }
 }
 
@@ -351,7 +402,7 @@ mod tests {
         assert!(result.hypervisor_invoked);
         assert_eq!(ComputeBackend::QemuKvm.slug(), "qemu-kvm");
         assert!(result.argv.iter().any(|arg| arg == ENABLE_KVM));
-        assert!(result.argv.iter().any(|arg| arg == qemu::NETDEV_USER));
+        assert!(result.argv.iter().any(|arg| arg == qemu_whpx::NETDEV_USER));
         assert!(result.argv.iter().any(|arg| arg.contains("opt/org.dcl/bootstrap")));
         assert!(result.argv.windows(2).any(|pair| pair == ["-display", "none"]));
         assert!(!result.argv.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));

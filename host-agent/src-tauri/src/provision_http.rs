@@ -24,12 +24,10 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::agent_status::Occupancy;
 use crate::eligibility::{self, EligibilityRequest};
-use crate::firecracker::{self, FirecrackerError, FirecrackerRuntime};
 use crate::gpu_bind::{self, GpuBindError, HyperVGpuOps, PciBindOps, PciSysfs};
-use crate::guest_net::TapOps;
-use crate::qemu::{self, QemuError, QemuRuntime};
+use crate::qemu_whpx::{self, QemuError, QemuRuntime};
 use crate::qemu_kvm::{self, QemuKvmError, QemuKvmRuntime};
-use crate::qemu_linux::{self, LinuxQemuError, LinuxQemuRuntime};
+use crate::qemu_vfio::{self, LinuxQemuError, LinuxQemuRuntime};
 use crate::host_capabilities::HostCapabilities;
 use crate::image::{
     trust_from_env, verify_image, GuestImageStatus, ImageError, ImageManifest, ImageTrust,
@@ -72,8 +70,6 @@ pub enum PlanHttpError {
     #[error("{0}")]
     Launch(#[from] LaunchError),
     #[error("{0}")]
-    Firecracker(#[from] FirecrackerError),
-    #[error("{0}")]
     Qemu(#[from] QemuError),
     #[error("{0}")]
     QemuKvm(#[from] QemuKvmError),
@@ -93,9 +89,8 @@ pub struct ProvisionGate {
     pub hardware: HardwareSnapshot,
     pub sharing: Option<SharingConfig>,
     pub spare_disk_bytes: Option<u64>,
-    /// When set on Linux Standard, InstanceStart runs (or provision fails).
-    pub firecracker: Option<FirecrackerBoot>,
-    /// Primary Linux Standard path: QEMU+KVM with unprivileged user networking.
+    /// When set on Linux Standard, QEMU+KVM runs with SLIRP user networking
+    /// (or provision fails).
     pub qemu_kvm: Option<QemuKvmBoot>,
     /// When set on Windows Standard, QEMU `-accel whpx` runs (or provision fails).
     pub qemu: Option<QemuBoot>,
@@ -110,35 +105,11 @@ pub struct ProvisionGate {
     pub hyperv: Option<HyperVAssign>,
     /// When set on Linux Pro, QEMU+KVM+VFIO starts after vfio-pci bind.
     pub linux_qemu: Option<LinuxQemuBoot>,
-    /// GPU/TAP rollback recorded after a successful apply (teardown).
+    /// GPU rollback recorded after a successful apply (teardown).
     pub cleanup: SessionCleanup,
     /// After invoke or GPU apply, wait for Kasm/Sunshine. Tests inject a
     /// loopback origin. Production uses [`StreamerWait::production`].
     pub streamer: Option<StreamerWait>,
-}
-
-/// Inputs for a real Firecracker invoke. Tests inject [`FirecrackerRuntime`].
-#[derive(Clone)]
-pub struct FirecrackerBoot {
-    pub binary: PathBuf,
-    pub image_cache_dir: PathBuf,
-    pub guest_image: GuestImageStatus,
-    pub kernel_override: Option<PathBuf>,
-    pub arch: String,
-    pub runtime: Arc<dyn FirecrackerRuntime + Send + Sync>,
-}
-
-impl std::fmt::Debug for FirecrackerBoot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FirecrackerBoot")
-            .field("binary", &self.binary)
-            .field("image_cache_dir", &self.image_cache_dir)
-            .field("guest_image", &self.guest_image)
-            .field("kernel_override", &self.kernel_override)
-            .field("arch", &self.arch)
-            .field("runtime", &"FirecrackerRuntime")
-            .finish()
-    }
 }
 
 /// Inputs for Linux Standard QEMU+KVM. Tests inject [`QemuKvmRuntime`].
@@ -410,10 +381,8 @@ where
 }
 
 /// Verify the advertised image, then select the OS-conditional backend.
-/// Linux Standard with [`ProvisionGate::qemu_kvm`] starts QEMU+KVM. The
-/// Firecracker gate remains a legacy fallback for existing installations.
-/// Windows Standard with
-/// [`ProvisionGate::qemu`] starts QEMU `-accel whpx` or fails clearly.
+/// Linux Standard with [`ProvisionGate::qemu_kvm`] starts QEMU+KVM or fails
+/// clearly. Windows Standard with [`ProvisionGate::qemu`] starts QEMU `-accel whpx` or fails clearly.
 /// Linux Pro with [`ProvisionGate::vfio`] applies vfio-pci or fails clearly.
 /// Windows Pro with [`ProvisionGate::hyperv`] applies DDA/GPU-P or fails
 /// clearly. After invoke or GPU apply, poll for a live locator or fail
@@ -446,9 +415,6 @@ pub fn plan_http(
         if let Some(boot) = gate.and_then(|gate| gate.qemu_kvm.as_ref()) {
             let gate = gate.expect("qemu kvm boot requires a gate");
             planned = invoke_linux_standard_qemu(os, request, gate, boot, planned)?;
-        } else if let Some(boot) = gate.and_then(|gate| gate.firecracker.as_ref()) {
-            let gate = gate.expect("firecracker boot requires a gate");
-            planned = invoke_linux_standard_firecracker(os, request, gate, boot, planned)?;
         }
     }
     if os == HostOs::Windows && lab_tier == LabTier::Standard {
@@ -542,7 +508,6 @@ fn invoke_linux_standard_qemu(
         guest_image: Some(&boot.guest_image),
         capabilities: Some(&gate.capabilities),
         spare_disk_bytes: gate.spare_disk_bytes,
-        kernel_override: None,
     })?;
     qemu_kvm::boot_from_launch_with_bootstrap(
         os,
@@ -550,58 +515,6 @@ fn invoke_linux_standard_qemu(
         &gate.capabilities,
         &launch,
         &boot.binary,
-        boot.arch.as_str(),
-        request
-            .guest_mesh
-            .as_ref()
-            .and_then(|mesh| mesh.bootstrap_origin.as_deref()),
-        request
-            .guest_mesh
-            .as_ref()
-            .and_then(|mesh| mesh.bootstrap_token.as_deref()),
-        boot.runtime.as_ref(),
-    )?;
-    planned.hypervisor_invoked = true;
-    Ok(planned)
-}
-
-fn invoke_linux_standard_firecracker(
-    os: HostOs,
-    request: &ProvisionHttpRequest,
-    gate: &ProvisionGate,
-    boot: &FirecrackerBoot,
-    mut planned: ProvisionPlan,
-) -> Result<ProvisionPlan, PlanHttpError> {
-    let sharing = sharing_for_gate(gate, request);
-    let launch = launch::build(LaunchRequest {
-        os,
-        lab_tier: LabTier::Standard,
-        hardware: &gate.hardware,
-        sharing: &sharing,
-        image_cache_dir: Some(boot.image_cache_dir.as_path()),
-        guest_image: Some(&boot.guest_image),
-        capabilities: Some(&gate.capabilities),
-        spare_disk_bytes: gate.spare_disk_bytes,
-        kernel_override: boot.kernel_override.as_deref(),
-    })?;
-    let kernel_env = boot
-        .kernel_override
-        .as_ref()
-        .map(|path| path.to_string_lossy().into_owned());
-    firecracker::boot_from_launch_with_bootstrap(
-        os,
-        LabTier::Standard,
-        &gate.capabilities,
-        &launch,
-        &boot.binary,
-        |key| {
-            if key == firecracker::KERNEL_ENV {
-                kernel_env.clone()
-            } else {
-                None
-            }
-        },
-        &boot.image_cache_dir,
         boot.arch.as_str(),
         request
             .guest_mesh
@@ -634,9 +547,8 @@ fn invoke_windows_standard(
         guest_image: Some(&boot.guest_image),
         capabilities: Some(&gate.capabilities),
         spare_disk_bytes: gate.spare_disk_bytes,
-        kernel_override: None,
     })?;
-    qemu::boot_from_launch_with_bootstrap(
+    qemu_whpx::boot_from_launch_with_bootstrap(
         os,
         LabTier::Standard,
         &gate.capabilities,
@@ -717,9 +629,8 @@ fn invoke_linux_pro_qemu(
         guest_image: Some(&boot.guest_image),
         capabilities: Some(&gate.capabilities),
         spare_disk_bytes: gate.spare_disk_bytes,
-        kernel_override: None,
     })?;
-    qemu_linux::boot_from_launch_with_bootstrap(
+    qemu_vfio::boot_from_launch_with_bootstrap(
         os,
         LabTier::Pro,
         &gate.capabilities,
@@ -1052,11 +963,9 @@ pub fn respond_and_track_with_gate(
 }
 
 fn teardown_session(occupancy: &Occupancy, gate: Option<&ProvisionGate>) {
-    firecracker::kill_running();
-    qemu::kill_running();
+    qemu_whpx::kill_running();
     qemu_kvm::kill_running();
-    qemu_linux::kill_running();
-    let _ = crate::guest_net::ProcessTapOps.teardown(crate::guest_net::TAP_DEV);
+    qemu_vfio::kill_running();
     if let Some(gate) = gate {
         if let Some(plan) = gate.cleanup.take() {
             match plan {
@@ -1730,7 +1639,6 @@ mod tests {
             .expect("provision_http.rs should have a test module");
         assert!(!production.contains("Command::new(\"rclone\")"));
         assert!(!production.contains("Command::new(\"tailscale\")"));
-        assert!(!production.contains("Command::new(\"firecracker\")"));
         assert!(!production.contains("S3_SECRET_KEY"));
         assert!(!production.contains("S3_ACCESS_KEY"));
         assert!(!production.contains("preauthKey"));
@@ -1758,7 +1666,6 @@ mod tests {
             hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
             sharing: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
-            firecracker: None,
             qemu_kvm: None,
             qemu: None,
             vfio: None,
@@ -1791,7 +1698,6 @@ mod tests {
             hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
             sharing: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
-            firecracker: None,
             qemu_kvm: None,
             qemu: None,
             vfio: None,
@@ -1824,10 +1730,6 @@ mod tests {
         assert!(!occupancy.is_in_session());
         let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
         assert!(body.get("connectionUrl").is_none());
-        assert_eq!(
-            body["detail"].as_str().unwrap().contains("Firecracker"),
-            false
-        );
     }
 
     #[test]
@@ -1912,7 +1814,7 @@ mod tests {
         crate::image::GuestImageStatus {
             action: crate::image::ImageEnsureAction::SkippedPresent,
             lab_tier: Some("standard".to_string()),
-            backend: crate::image::ImageBackend::Firecracker,
+            backend: crate::image::ImageBackend::Qemu,
             path: Some(path.to_string_lossy().into_owned()),
             digest: None,
             log: "test".to_string(),
@@ -1922,35 +1824,41 @@ mod tests {
 
     fn boot_tree() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("bin").join("firecracker");
+        let binary = dir.path().join("bin").join("qemu-system-x86_64");
         let rootfs = dir.path().join("standard").join("rootfs.img");
-        let kernel = dir.path().join("standard").join("vmlinux");
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         std::fs::create_dir_all(rootfs.parent().unwrap()).unwrap();
-        std::fs::write(&binary, b"fake-firecracker").unwrap();
+        std::fs::write(&binary, b"fake-qemu").unwrap();
         std::fs::write(&rootfs, b"fake-rootfs").unwrap();
-        std::fs::write(&kernel, b"fake-vmlinux").unwrap();
         (dir, binary, rootfs)
     }
 
+    fn kvm_boot(
+        tree: &tempfile::TempDir,
+        binary: std::path::PathBuf,
+        rootfs: &std::path::Path,
+        runtime: std::sync::Arc<crate::qemu_kvm::RecordingQemuKvm>,
+    ) -> QemuKvmBoot {
+        QemuKvmBoot {
+            binary,
+            image_cache_dir: tree.path().to_path_buf(),
+            guest_image: guest_ready(rootfs),
+            arch: "x86_64".to_string(),
+            runtime,
+        }
+    }
+
     #[test]
-    fn linux_standard_with_boot_inputs_invokes_and_returns_the_live_locator() {
-        use crate::firecracker::{RecordingFirecracker, API_PATH_ORDER, API_SOCK_ARG, ENABLE_PCI_ARG};
+    fn linux_standard_with_boot_inputs_invokes_kvm_and_returns_the_live_locator() {
+        use crate::qemu_kvm::RecordingQemuKvm;
         use std::sync::Arc;
 
         let live_url = spawn_live_streamer();
         let (trust, body) = signed_standard();
         let (tree, binary, rootfs) = boot_tree();
-        let recorder = Arc::new(RecordingFirecracker::succeeding());
+        let recorder = Arc::new(RecordingQemuKvm::succeeding());
         let mut gate = with_live_streamer(linux_kvm_gate(), &live_url);
-        gate.firecracker = Some(FirecrackerBoot {
-            binary: binary.clone(),
-            image_cache_dir: tree.path().to_path_buf(),
-            guest_image: guest_ready(&rootfs),
-            kernel_override: None,
-            arch: "x86_64".to_string(),
-            runtime: recorder.clone(),
-        });
+        gate.qemu_kvm = Some(kvm_boot(&tree, binary.clone(), &rootfs, recorder.clone()));
         let occupancy = Occupancy::new();
         let output = respond_and_track_with_gate(
             "POST",
@@ -1963,7 +1871,7 @@ mod tests {
             &trust,
             Some(&gate),
         );
-        assert_eq!(output.status, 200);
+        assert_eq!(output.status, 200, "{}", output.body);
         let body: serde_json::Value = serde_json::from_str(&output.body).unwrap();
         assert_eq!(body["hypervisorInvoked"], true);
         assert_eq!(body["connectionUrl"], live_url);
@@ -1977,33 +1885,27 @@ mod tests {
         let spawns = recorder.spawn_calls();
         assert_eq!(spawns.len(), 1);
         assert_eq!(spawns[0].0, binary);
-        assert_eq!(spawns[0].1[0], API_SOCK_ARG);
-        assert_eq!(spawns[0].1[2], ENABLE_PCI_ARG);
-        let puts = recorder.put_calls();
-        let paths: Vec<&str> = puts.iter().map(|(path, _)| path.as_str()).collect();
-        assert_eq!(paths, API_PATH_ORDER);
-        let machine: serde_json::Value = serde_json::from_str(&puts[2].1).unwrap();
-        assert_eq!(machine["vcpu_count"], 16);
-        assert_eq!(machine["mem_size_mib"], 32768);
+        let args = &spawns[0].1;
+        assert_eq!(args[0], "-enable-kvm");
+        assert!(args.contains(&"cores=16".to_string()));
+        assert!(args.contains(&"32G".to_string()));
+        assert!(args.contains(&format!(
+            "file={},if=virtio,format=raw",
+            rootfs.to_string_lossy()
+        )));
+        assert!(!args.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));
     }
 
     #[test]
     fn linux_standard_invoke_times_out_when_streamer_is_unreachable() {
-        use crate::firecracker::RecordingFirecracker;
+        use crate::qemu_kvm::RecordingQemuKvm;
         use std::sync::Arc;
 
         let (trust, body) = signed_standard();
         let (tree, binary, rootfs) = boot_tree();
-        let recorder = Arc::new(RecordingFirecracker::succeeding());
+        let recorder = Arc::new(RecordingQemuKvm::succeeding());
         let mut gate = with_unreachable_streamer(linux_kvm_gate());
-        gate.firecracker = Some(FirecrackerBoot {
-            binary,
-            image_cache_dir: tree.path().to_path_buf(),
-            guest_image: guest_ready(&rootfs),
-            kernel_override: None,
-            arch: "x86_64".to_string(),
-            runtime: recorder.clone(),
-        });
+        gate.qemu_kvm = Some(kvm_boot(&tree, binary, &rootfs, recorder.clone()));
         let occupancy = Occupancy::new();
         let output = respond_and_track_with_gate(
             "POST",
@@ -2024,28 +1926,16 @@ mod tests {
     }
 
     #[test]
-    fn linux_standard_boot_without_kernel_is_400_not_a_successful_stub() {
-        use crate::firecracker::RecordingFirecracker;
+    fn linux_standard_without_a_verified_disk_is_400_and_does_not_spawn() {
+        use crate::qemu_kvm::RecordingQemuKvm;
         use std::sync::Arc;
 
         let (trust, body) = signed_standard();
-        let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("bin").join("firecracker");
-        let rootfs = dir.path().join("standard").join("rootfs.img");
-        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(rootfs.parent().unwrap()).unwrap();
-        std::fs::write(&binary, b"fake-firecracker").unwrap();
-        std::fs::write(&rootfs, b"fake-rootfs").unwrap();
-        let recorder = Arc::new(RecordingFirecracker::succeeding());
+        let (tree, binary, rootfs) = boot_tree();
+        std::fs::remove_file(&rootfs).unwrap();
+        let recorder = Arc::new(RecordingQemuKvm::succeeding());
         let mut gate = linux_kvm_gate();
-        gate.firecracker = Some(FirecrackerBoot {
-            binary,
-            image_cache_dir: dir.path().to_path_buf(),
-            guest_image: guest_ready(&rootfs),
-            kernel_override: None,
-            arch: "x86_64".to_string(),
-            runtime: recorder.clone(),
-        });
+        gate.qemu_kvm = Some(kvm_boot(&tree, binary, &rootfs, recorder.clone()));
         let occupancy = Occupancy::new();
         let output = respond_and_track_with_gate(
             "POST",
@@ -2059,29 +1949,22 @@ mod tests {
             Some(&gate),
         );
         assert_eq!(output.status, 400);
-        assert!(output.body.contains("FIRECRACKER_KERNEL"));
+        assert!(output.body.contains("guest image is not present"), "{}", output.body);
         assert!(!output.body.contains("connectionUrl"));
         assert!(!occupancy.is_in_session());
         assert!(recorder.spawn_calls().is_empty());
     }
 
     #[test]
-    fn windows_standard_ignores_firecracker_boot_inputs() {
-        use crate::firecracker::RecordingFirecracker;
+    fn windows_standard_ignores_linux_boot_inputs() {
+        use crate::qemu_kvm::RecordingQemuKvm;
         use std::sync::Arc;
 
         let (trust, body) = signed_standard();
         let (tree, binary, rootfs) = boot_tree();
-        let recorder = Arc::new(RecordingFirecracker::succeeding());
+        let recorder = Arc::new(RecordingQemuKvm::succeeding());
         let mut gate = linux_kvm_gate();
-        gate.firecracker = Some(FirecrackerBoot {
-            binary,
-            image_cache_dir: tree.path().to_path_buf(),
-            guest_image: guest_ready(&rootfs),
-            kernel_override: None,
-            arch: "x86_64".to_string(),
-            runtime: recorder.clone(),
-        });
+        gate.qemu_kvm = Some(kvm_boot(&tree, binary, &rootfs, recorder.clone()));
         let output = respond_with_gate(
             "POST",
             "/v1/provision",
@@ -2124,7 +2007,6 @@ mod tests {
             hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
             sharing: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
-            firecracker: None,
             qemu_kvm: None,
             qemu: None,
             vfio: None,
@@ -2160,7 +2042,7 @@ mod tests {
 
     #[test]
     fn windows_standard_with_boot_inputs_invokes_whpx_and_returns_the_live_locator() {
-        use crate::qemu::{RecordingQemu, ACCEL_ARG, ACCEL_WHPX, HDA_ARG, MACHINE_PC};
+        use crate::qemu_whpx::{virtio_drive, RecordingQemu, ACCEL_ARG, ACCEL_WHPX, DRIVE_ARG, MACHINE_PC};
         use std::sync::Arc;
 
         let live_url = spawn_live_streamer();
@@ -2206,14 +2088,14 @@ mod tests {
         assert_eq!(spawns[0].1[3], MACHINE_PC);
         assert_eq!(spawns[0].1[5], "cores=16");
         assert_eq!(spawns[0].1[7], "32G");
-        assert_eq!(spawns[0].1[12], HDA_ARG);
-        assert_eq!(spawns[0].1[13], rootfs.to_string_lossy());
+        assert_eq!(spawns[0].1[12], DRIVE_ARG);
+        assert_eq!(spawns[0].1[13], virtio_drive(&rootfs.to_string_lossy()));
         assert!(!spawns[0].1.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));
     }
 
     #[test]
     fn windows_standard_invoke_times_out_when_streamer_is_unreachable() {
-        use crate::qemu::RecordingQemu;
+        use crate::qemu_whpx::RecordingQemu;
         use std::sync::Arc;
 
         let (trust, body) = signed_standard();
@@ -2248,7 +2130,7 @@ mod tests {
 
     #[test]
     fn windows_standard_boot_without_disk_is_400_not_a_successful_stub() {
-        use crate::qemu::RecordingQemu;
+        use crate::qemu_whpx::RecordingQemu;
         use std::sync::Arc;
 
         let (trust, body) = signed_standard();
@@ -2287,7 +2169,7 @@ mod tests {
 
     #[test]
     fn windows_standard_boot_without_qemu_binary_is_400() {
-        use crate::qemu::RecordingQemu;
+        use crate::qemu_whpx::RecordingQemu;
         use std::sync::Arc;
 
         let (trust, body) = signed_standard();
@@ -2322,7 +2204,7 @@ mod tests {
 
     #[test]
     fn linux_standard_ignores_qemu_boot_inputs() {
-        use crate::qemu::RecordingQemu;
+        use crate::qemu_whpx::RecordingQemu;
         use std::sync::Arc;
 
         let (trust, body) = signed_standard();
@@ -2358,7 +2240,7 @@ mod tests {
 
     #[test]
     fn macos_does_not_spawn_qemu() {
-        use crate::qemu::RecordingQemu;
+        use crate::qemu_whpx::RecordingQemu;
         use std::sync::Arc;
 
         let (trust, body) = signed_standard();
@@ -2980,7 +2862,7 @@ mod tests {
         std::fs::create_dir_all(rootfs.parent().unwrap()).unwrap();
         std::fs::write(&binary, b"fake-qemu").unwrap();
         std::fs::write(&rootfs, b"fake-rootfs").unwrap();
-        let recorder = Arc::new(crate::qemu_linux::RecordingLinuxQemu::succeeding());
+        let recorder = Arc::new(crate::qemu_vfio::RecordingLinuxQemu::succeeding());
         let mut gate = with_live_streamer(linux_kvm_gate(), &live_url);
         gate.vfio = Some(VfioBind {
             sysfs: sysfs.clone(),

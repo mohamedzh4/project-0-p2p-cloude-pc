@@ -1,0 +1,108 @@
+- main [ref=f7e3]:
+  - generic [ref=f7e4]:
+    - generic [ref=f7e5]:
+      - heading "Host Agent" [level=1] [ref=f7e6]
+      - paragraph [ref=f7e7]: Choose how much of this machine you can spare while you keep using it. Pause at any time — that stops Matchmaker pings immediately.
+    - generic [ref=f7e8]: Paused
+  - paragraph [ref=f7e9]: "Browser preview: these readings are sample data and Matchmaker registration is simulated. The packaged agent reads the real machine, calls the Matchmaker from Rust, and can sit in the system tray."
+  - generic [ref=f7e10]:
+    - heading "Status" [level=2] [ref=f7e11]
+    - generic [ref=f7e12]:
+      - generic [ref=f7e13]:
+        - term [ref=f7e14]: Presence
+        - definition [ref=f7e15]: Paused
+        - term [ref=f7e16]: Earnings
+        - definition [ref=f7e17]: 0 credits accrued (not paid out)
+      - button "Resume sharing" [ref=f7e18] [cursor=pointer]
+    - paragraph [ref=f7e19]: Pause writes locally and stops heartbeats on the next tick so this host becomes unselectable after it goes stale. It does not end an active guest session. Earnings are credits accrued on the Matchmaker ledger and are not paid out.
+    - generic [ref=f7e20]:
+      - button "Simulate in-session" [ref=f7e21] [cursor=pointer]
+      - button "Clear simulated session" [ref=f7e22] [cursor=pointer]
+  - generic [ref=f7e23]:
+    - heading "Detected hardware" [level=2] [ref=f7e24]
+    - generic [ref=f7e25]:
+      - generic [ref=f7e26]:
+        - heading "CPU" [level=3] [ref=f7e27]
+        - generic [ref=f7e28]: AMD Ryzen 9 7950X 16-Core Processor
+        - generic [ref=f7e29]: 32 cores · 16 physical
+      - generic [ref=f7e30]:
+        - heading "Memory" [level=3] [ref=f7e31]
+        - generic [ref=f7e32]: 64 GiB
+        - generic [ref=f7e33]: Total installed RAM
+      - generic [ref=f7e34]:
+        - heading "GPU" [level=3] [ref=f7e35]
+        - generic [ref=f7e36]: 2 GPUs
+        - generic [ref=f7e37]: NVIDIA GeForce RTX 4070 · 12 GiB VRAM · NVIDIA GeForce RTX 3060 · 12 GiB VRAM
+  - generic [ref=f7e38]:
+    - heading "What this PC can host" [level=2] [ref=f7e39]
+    - paragraph [ref=f7e40]: This Linux PC can host Standard and Pro sessions.
+    - generic [ref=f7e41]:
+      - generic [ref=f7e42]:
+        - heading "Standard sessions" [level=3] [ref=f7e43]
+        - generic [ref=f7e44]: Available
+        - generic [ref=f7e45]: This PC can host Standard sessions.
+      - generic [ref=f7e46]:
+        - heading "Pro sessions" [level=3] [ref=f7e47]
+        - generic [ref=f7e48]: Available
+        - generic [ref=f7e49]: This PC can host Pro sessions when you dedicate a GPU. That GPU is exclusive for the session — not a concurrent slice like CPU or RAM.
+      - generic [ref=f7e50]:
+        - heading "Hypervisor binary" [level=3] [ref=f7e51]
+        - generic [ref=f7e52]: firecracker v1.16.1
+        - generic [ref=f7e53]: skipped because present; firecracker v1.16.1 at /home/host/.cache/dcl-host-agent/hypervisors/firecracker/v1.16.1/firecracker (sha256 fixture)
+      - generic [ref=f7e54]:
+        - heading "Guest image" [level=3] [ref=f7e55]
+        - generic [ref=f7e56]: standard (firecracker)
+        - generic [ref=f7e57]: skipped because present; standard Firecracker guest image at /home/host/.cache/dcl-host-agent/images/standard/rootfs.img (sha256 6ed707af13eb04a928001996ae5fc7a49ab405e73534caacf86ad65c51bab8fe)
+      - generic [ref=f7e58]:
+        - heading "Standard launch config" [level=3] [ref=f7e59]
+        - generic [ref=f7e60]: 16 vCPU · 32768 MiB
+        - generic [ref=f7e61]: firecracker · GPU omitted · /home/host/.cache/dcl-host-agent/images/standard/rootfs.img. Not booted.
+      - generic [ref=f7e62]:
+        - heading "Pro launch config" [level=3] [ref=f7e63]
+        - generic [ref=f7e64]: Cannot launch
+        - generic [ref=f7e65]: a Pro session needs you to dedicate a GPU (shareGpu); that GPU is exclusive for the session, not a concurrent slice
+      - generic [ref=f7e66]:
+        - heading "Pro GPU assignment" [level=3] [ref=f7e67]
+        - generic [ref=f7e68]: Not eligible
+        - generic [ref=f7e69]: a Pro GPU bind needs you to dedicate a GPU (shareGpu); that GPU is exclusive for the session, not a concurrent slice
+    - paragraph [ref=f7e70]: A second display path was detected (iGPU or more than one GPU), so this PC can keep a screen while a guest uses a dedicated GPU.
+    - paragraph [ref=f7e71]: When Pro is offered, the dedicated GPU is exclusive for the session — not a concurrent slice like CPU or RAM. This PC cannot use that card while a guest is connected.
+    - paragraph [ref=f7e72]: The agent locates or fetches the hypervisor and signed guest image for this OS after the probe, then maps your CPU/RAM sliders (and a dedicated GPU, when you opt in) into a launch document and a VFIO / DDA plan. It computes PCI addresses itself — you do not run lspci. It does not boot a guest or bind a live GPU from this window. Standard needs at least 2 vCPU, 4 GiB RAM, and 50 GiB spare disk.
+  - generic [ref=f7e73]:
+    - heading "What you share" [level=2] [ref=f7e74]
+    - generic [ref=f7e76] [cursor=pointer]:
+      - checkbox "Make this machine available for sessions while I keep using it" [ref=f7e77]
+      - text: Make this machine available for sessions while I keep using it
+    - generic [ref=f7e78]:
+      - generic [ref=f7e79]:
+        - generic [ref=f7e80]: CPU cores
+        - generic [ref=f7e81]: 16 of 32
+      - generic [ref=f7e82]:
+        - slider "CPU cores" [ref=f7e83]: "16"
+        - spinbutton "CPU cores (exact value)" [ref=f7e84]: "16"
+      - paragraph [ref=f7e85]: Leave at least one core for your own work. A session needs at least 2 vCPU — below that, Standard is not offered.
+    - generic [ref=f7e86]:
+      - generic [ref=f7e87]:
+        - generic [ref=f7e88]: Memory
+        - generic [ref=f7e89]: 32 of 64 GiB
+      - generic [ref=f7e90]:
+        - slider "Memory" [ref=f7e91]: "32"
+        - spinbutton "Memory (exact value)" [ref=f7e92]: "32"
+      - paragraph [ref=f7e93]: Reserved while a session is running, so keep enough for your own applications. A session needs at least 4 GiB — below that, Standard is not offered.
+    - generic [ref=f7e94]:
+      - generic [ref=f7e95] [cursor=pointer]:
+        - checkbox "Dedicate a GPU to guest sessions" [ref=f7e96]
+        - text: Dedicate a GPU to guest sessions
+      - paragraph [ref=f7e97]: Unlike CPU and RAM, this is not a slice you can spare while you keep using it. For the session, that GPU is unavailable to this PC — your display and your own apps cannot use it. Keep an iGPU or a second card for yourself, or leave this off.
+      - generic [ref=f7e98]:
+        - generic [ref=f7e99]: GPU to dedicate
+        - combobox "GPU to dedicate" [ref=f7e100]:
+          - option "NVIDIA GeForce RTX 4070 · 12 GiB VRAM" [selected]
+          - option "NVIDIA GeForce RTX 3060 · 12 GiB VRAM"
+  - generic [ref=f7e101]:
+    - generic [ref=f7e102]:
+      - button "Save configuration" [disabled] [ref=f7e103]
+      - button "Discard changes" [disabled] [ref=f7e104]
+      - generic [ref=f7e105]: Up to date
+    - paragraph [ref=f7e106]: (browser preview — nothing is written to disk)
+    - paragraph [ref=f7e108]: Not registered with the Matchmaker yet. Save to declare these caps from Rust.

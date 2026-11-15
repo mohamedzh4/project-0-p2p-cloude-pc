@@ -1,22 +1,29 @@
 # DCL LAN hardware test (Windows, QEMU+WHPX).
 #
-# Boots the signed Standard guest on this PC and prints a link + password.
-# Anyone on the same Wi-Fi/LAN opens the link to reach the XFCE desktop.
-# No Matchmaker, gateway, Headscale or renterd: this only proves that the
+# Boots the Standard guest on this PC and prints a link + password. Anyone
+# on the same Wi-Fi/LAN opens the link to reach the XFCE desktop. No
+# Matchmaker, gateway, Headscale or renterd: this only proves that the
 # hypervisor + guest image + KasmVNC work on real hardware.
 #
-# Double-click lan-test.cmd. Add -CheckOnly to only check this PC.
+# Double-click lan-test.cmd to run the test; lan-test-cleanup.cmd undoes
+# everything it changed. From a prompt: lan-test.cmd [-CheckOnly] [-Yes],
+# lan-test.cmd -Cleanup [-Yes].
 #
 # Two modes (lan-test.env LAN_TEST_MODE, default picked automatically):
 #   quick   no image build needed: official Ubuntu 24.04 cloud image
 #           (pinned SHA-256) + seed.iso from the kit; the first boot installs
 #           XFCE + KasmVNC with the same provision-kasm.sh as the real image.
 #   signed  the Packer-built Standard guest (IMAGE_STANDARD_DIGEST set).
+#
+# VM size: asked at start (Enter keeps the smallest working default), or set
+# LAN_TEST_VCPUS / LAN_TEST_MEMORY_GIB / LAN_TEST_DISK_GIB in lan-test.env.
 # Writes lan-test-report-<time>.txt next to this script (no password in it).
 
 [CmdletBinding()]
 param(
-    [switch]$CheckOnly
+    [switch]$CheckOnly,
+    [switch]$Cleanup,
+    [switch]$Yes
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,8 +43,18 @@ $script:UbuntuSha256 = "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f
 $script:QuickDir = "C:\dcl\lan-test\quick"
 # QEMU argv paths must not contain spaces or commas.
 $script:RunDir = "C:\dcl\lan-test"
+# What this test changed, so -Cleanup can undo exactly that.
+$script:ChangesFile = "C:\dcl\lan-test\changes.txt"
 $script:FirewallRule = "DCL LAN test"
 $script:VmName = "dcl-lan-test"
+
+# Smallest sizes that run the desktop (2 GiB RAM installed and ran XFCE +
+# KasmVNC in testing). Defaults = minimum except CPU.
+$script:MinVcpus = 1
+$script:MinMemGib = 2
+$script:MinDiskGib = 6
+$script:DefaultMemGib = 2
+$script:DefaultDiskGib = 8
 
 $script:Here = $PSScriptRoot
 if (-not $script:Here) { $script:Here = Split-Path -Parent $PSCommandPath }
@@ -69,9 +86,32 @@ function Request-Administrator {
     Write-Host "Requesting Administrator rights (click Yes on the prompt)..."
     $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"")
     if ($CheckOnly) { $argList += "-CheckOnly" }
+    if ($Cleanup) { $argList += "-Cleanup" }
+    if ($Yes) { $argList += "-Yes" }
     Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList $argList
     Write-Host "The test continues in the new Administrator window."
     return $true
+}
+
+function Confirm-Choice {
+    # -Yes answers yes; otherwise ask, default no.
+    param([string]$Question)
+    if ($Yes) { return $true }
+    $reply = Read-Host "$Question [y/N]"
+    return ($reply -match '^[Yy]')
+}
+
+function Add-Change {
+    param([string]$Line)
+    New-Item -ItemType Directory -Force -Path $script:RunDir | Out-Null
+    Add-Content -LiteralPath $script:ChangesFile -Value $Line -Encoding ascii
+}
+
+function Get-Changes {
+    if (Test-Path -LiteralPath $script:ChangesFile) {
+        return @(Get-Content -LiteralPath $script:ChangesFile | Where-Object { $_ })
+    }
+    return @()
 }
 
 function Import-LanTestEnv {
@@ -81,7 +121,7 @@ function Import-LanTestEnv {
     }
     $allowed = @(
         "IMAGE_STANDARD_DIGEST", "IMAGE_RAW_URL", "IMAGE_QCOW2_URL",
-        "LAN_TEST_PORT", "LAN_TEST_VCPUS", "LAN_TEST_MEMORY_GIB",
+        "LAN_TEST_PORT", "LAN_TEST_VCPUS", "LAN_TEST_MEMORY_GIB", "LAN_TEST_DISK_GIB",
         "LAN_TEST_MODE", "LAN_TEST_SETUP_MINUTES", "LAN_TEST_BOOT_MINUTES"
     )
     $values = @{}
@@ -105,17 +145,41 @@ function Get-Setting {
     return $Default
 }
 
-function Get-LanIPv4 {
+function Get-LanAddresses {
+    # IPv4 addresses on real Wi-Fi/Ethernet adapters, plus the Windows Mobile
+    # hotspot adapter. VPN, Hyper-V/WSL vEthernet and Bluetooth adapters are
+    # skipped: with a VPN up, the default route can point at the VPN, and its
+    # address is useless on the LAN. The default-route adapter comes first.
+    $adapters = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Up" })
+    $adapters += @(Get-NetAdapter -ErrorAction SilentlyContinue |
+        Where-Object { $_.Status -eq "Up" -and $_.InterfaceDescription -like "*Wi-Fi Direct Virtual Adapter*" })
+    $found = @()
+    foreach ($adapter in $adapters) {
+        Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $adapter.ifIndex -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" } |
+            ForEach-Object {
+                $found += [pscustomobject]@{ Name = $adapter.Name; IP = $_.IPAddress; Prefix = $_.PrefixLength; Index = $adapter.ifIndex }
+            }
+    }
     $route = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
         Sort-Object RouteMetric |
         Select-Object -First 1
-    if ($route) {
-        $addr = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue |
+    if ($found.Count -eq 0 -and $route) {
+        # e.g. an Ethernet port bound to a Hyper-V external switch: fall back
+        # to the default-route adapter.
+        Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue |
             Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" } |
-            Select-Object -First 1
-        if ($addr) { return $addr.IPAddress }
+            ForEach-Object {
+                $found += [pscustomobject]@{ Name = $route.InterfaceAlias; IP = $_.IPAddress; Prefix = $_.PrefixLength; Index = $route.InterfaceIndex }
+            }
     }
-    return $null
+    $primary = @()
+    $others = @()
+    foreach ($item in $found) {
+        if ($route -and $item.Index -eq $route.InterfaceIndex -and $primary.Count -eq 0) { $primary += $item }
+        else { $others += $item }
+    }
+    return @($primary + $others)
 }
 
 function Stop-StaleTest {
@@ -123,15 +187,74 @@ function Stop-StaleTest {
     Get-CimInstance Win32_Process -Filter "Name = 'qemu-system-x86_64.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -and $_.CommandLine -like "*-name $($script:VmName)*" } |
         ForEach-Object {
-            Write-TestLog "Stopping a VM left over from an earlier test (pid $($_.ProcessId))."
+            Write-Host "Stopping a test VM that is still running (pid $($_.ProcessId))."
             Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
         }
     Get-NetFirewallRule -DisplayName $script:FirewallRule -ErrorAction SilentlyContinue |
         Remove-NetFirewallRule -ErrorAction SilentlyContinue
 }
 
-function Assert-Machine {
-    param([int]$Vcpus, [int]$MemGib, [string]$Mode)
+function Get-QemuInstallDir {
+    return Join-Path $env:LOCALAPPDATA "dcl-host-agent\hypervisors\qemu\$($script:QemuVersion)"
+}
+
+function Invoke-Cleanup {
+    Write-Host "== DCL LAN test cleanup =="
+    Stop-StaleTest
+    Write-Host "Removed the test firewall rule (if any)."
+    $changes = Get-Changes
+
+    $qemuDir = Get-QemuInstallDir
+    if (($changes -contains "qemu-installed") -and (Test-Path -LiteralPath $qemuDir)) {
+        if (Confirm-Choice "The test installed QEMU in $qemuDir. Uninstall it?") {
+            $uninstaller = Get-ChildItem -LiteralPath $qemuDir -Filter "*uninst*.exe" -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($uninstaller) {
+                # _?= runs the NSIS uninstaller in place and waits for it.
+                Start-Process -FilePath $uninstaller.FullName -ArgumentList @("/S", "_?=$qemuDir") -Wait
+            }
+            else {
+                Write-Host "No QEMU uninstaller found; if QEMU is listed in Apps & features, uninstall it there."
+            }
+            Remove-Item -LiteralPath $qemuDir -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "QEMU removed."
+        }
+    }
+
+    if ($changes -contains "whpx-enabled") {
+        if (Confirm-Choice "The test turned on Windows Hypervisor Platform. Turn it off (needs a restart)?") {
+            $dism = Start-Process -FilePath "dism.exe" -ArgumentList @(
+                "/online", "/Disable-Feature", "/FeatureName:HypervisorPlatform", "/NoRestart"
+            ) -Wait -PassThru -NoNewWindow
+            if ($dism.ExitCode -in 0, 3010) { Write-Host "Windows Hypervisor Platform will be off after a restart." }
+            else { Write-Host "DISM exit $($dism.ExitCode); turn it off in 'Turn Windows features on or off'." }
+        }
+    }
+
+    $signed = Join-Path $script:ImageDir "rootfs.img"
+    if (Test-Path -LiteralPath $signed) {
+        $gib = [math]::Round((Get-Item -LiteralPath $signed).Length / 1GB, 1)
+        if (Confirm-Choice "Delete the signed test image ($gib GiB) in $($script:ImageDir)?") {
+            Remove-Item -LiteralPath $signed -Force
+        }
+    }
+
+    if (Test-Path -LiteralPath $script:RunDir) {
+        $bytes = (Get-ChildItem -LiteralPath $script:RunDir -Recurse -File -ErrorAction SilentlyContinue |
+            Measure-Object -Property Length -Sum).Sum
+        Write-Host ("Deleting the VM disk and Ubuntu image ({0:N1} GiB)..." -f ([double]$bytes / 1GB))
+        Remove-Item -LiteralPath $script:RunDir -Recurse -Force
+    }
+    foreach ($dir in @($script:ImageDir, "C:\dcl\images", "C:\dcl")) {
+        if ((Test-Path -LiteralPath $dir) -and -not (Get-ChildItem -LiteralPath $dir -Force)) {
+            Remove-Item -LiteralPath $dir -Force
+        }
+    }
+    Write-Host "Done. Report files next to lan-test.cmd were kept."
+}
+
+function Get-HostInfo {
+    param([string]$Mode)
     Write-TestLog ""
     Write-TestLog "== Checking this PC =="
     $os = Get-CimInstance Win32_OperatingSystem
@@ -159,42 +282,96 @@ function Assert-Machine {
 
     $whpx = Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform
     if ($whpx.State -ne "Enabled") {
-        Write-TestLog "Windows Hypervisor Platform is off. Turning it on..."
-        $dism = Start-Process -FilePath "dism.exe" -ArgumentList @(
-            "/online", "/Enable-Feature", "/FeatureName:HypervisorPlatform", "/All", "/NoRestart"
-        ) -Wait -PassThru -NoNewWindow
-        if ($dism.ExitCode -notin 0, 3010) {
-            Stop-Test "Could not turn on Windows Hypervisor Platform (DISM exit $($dism.ExitCode))."
+        if ($CheckOnly) {
+            Write-TestLog "Windows Hypervisor Platform: off (the test turns it on; needs a restart)"
         }
-        $script:Result = "NEEDS REBOOT (Windows Hypervisor Platform turned on)"
-        Write-TestLog ""
-        Write-TestLog "Restart the PC, then double-click lan-test.cmd again."
-        throw [System.OperationCanceledException]::new("reboot required")
+        else {
+            Write-TestLog "Windows Hypervisor Platform is off. Turning it on..."
+            $dism = Start-Process -FilePath "dism.exe" -ArgumentList @(
+                "/online", "/Enable-Feature", "/FeatureName:HypervisorPlatform", "/All", "/NoRestart"
+            ) -Wait -PassThru -NoNewWindow
+            if ($dism.ExitCode -notin 0, 3010) {
+                Stop-Test "Could not turn on Windows Hypervisor Platform (DISM exit $($dism.ExitCode))."
+            }
+            Add-Change "whpx-enabled"
+            $script:Result = "NEEDS REBOOT (Windows Hypervisor Platform turned on)"
+            Write-TestLog ""
+            Write-TestLog "Restart the PC, then double-click lan-test.cmd again."
+            throw [System.OperationCanceledException]::new("reboot required")
+        }
     }
-    Write-TestLog "Windows Hypervisor Platform: enabled"
+    else {
+        Write-TestLog "Windows Hypervisor Platform: enabled"
+    }
 
-    if ($threads -lt ($Vcpus + 1)) {
-        Stop-Test "Need at least $($Vcpus + 1) CPU threads (have $threads)."
-    }
     $freeMib = [math]::Floor([double]$os.FreePhysicalMemory / 1024)
-    Write-TestLog ("Free RAM: {0:N1} GiB (VM uses {1} GiB)" -f ($freeMib / 1024), $MemGib)
-    if ($freeMib -lt ($MemGib * 1024 + 512)) {
-        Stop-Test "Not enough free RAM: the test needs about $($MemGib + 1) GiB free. Close other apps and run again."
-    }
-    $drive = Get-PSDrive -Name C
-    $freeGib = [math]::Floor([double]$drive.Free / 1GB)
+    $freeGib = [math]::Floor([double](Get-PSDrive -Name C).Free / 1GB)
+    Write-TestLog ("Free RAM: {0:N1} GiB" -f ($freeMib / 1024))
     Write-TestLog "Free disk on C: $freeGib GiB"
-    $imageReady = Test-Path -LiteralPath (Join-Path $script:ImageDir "rootfs.img")
-    if ($Mode -eq "quick") {
-        if ($freeGib -lt 20) { Stop-Test "Need about 20 GiB free on C: (have $freeGib GiB)." }
-    }
-    elseif (-not $imageReady -and $freeGib -lt 80) {
-        Stop-Test "Need about 80 GiB free on C: to unpack the guest disk (have $freeGib GiB)."
+    return @{ Threads = $threads; FreeMemGib = [int][math]::Floor($freeMib / 1024); FreeDiskGib = [int]$freeGib }
+}
+
+function Read-Size {
+    param([hashtable]$Settings, [string]$Key, [string]$Label, [int]$Default, [int]$Min, [int]$Max, [string]$Unit)
+    $fromEnv = Get-Setting $Settings $Key ""
+    if ($fromEnv) { return [int]$fromEnv }
+    if ($Yes -or $CheckOnly) { return $Default }
+    while ($true) {
+        $reply = Read-Host "  $Label [$Min-$Max $Unit, Enter = $Default]"
+        if (-not $reply) { return $Default }
+        $n = 0
+        if ([int]::TryParse($reply, [ref]$n) -and $n -ge $Min -and $n -le $Max) { return $n }
+        Write-Host "  Please type a number from $Min to $Max."
     }
 }
 
-function Get-QemuInstallDir {
-    return Join-Path $env:LOCALAPPDATA "dcl-host-agent\hypervisors\qemu\$($script:QemuVersion)"
+function Select-VmSize {
+    param([hashtable]$Settings, [hashtable]$HostInfo, [string]$Mode)
+    # Leave one thread and 1 GiB RAM / disk to the host.
+    $maxVcpus = $HostInfo.Threads - 1
+    $maxMem = $HostInfo.FreeMemGib - 1
+    $overlay = Join-Path $script:QuickDir "overlay.qcow2"
+    $base = Join-Path $script:QuickDir ("ubuntu-24.04-cloudimg-" + $script:UbuntuSha256.Substring(0, 12) + ".img")
+    $maxDisk = $HostInfo.FreeDiskGib - 1
+    if (-not (Test-Path -LiteralPath $base)) { $maxDisk -= 1 }
+    $defaultVcpus = 2
+    if ($maxVcpus -lt 2) { $defaultVcpus = 1 }
+
+    if ($maxVcpus -lt $script:MinVcpus) { Stop-Test "This PC needs at least 2 CPU threads (1 for the VM, 1 for itself)." }
+    if ($maxMem -lt $script:MinMemGib) {
+        Stop-Test "Not enough free RAM: the smallest VM needs $($script:MinMemGib) GiB plus 1 GiB for this PC (free: $($HostInfo.FreeMemGib) GiB). Close other apps."
+    }
+    $newDisk = ($Mode -eq "quick") -and -not (Test-Path -LiteralPath $overlay)
+    if ($newDisk -and $maxDisk -lt $script:MinDiskGib) {
+        Stop-Test "Not enough free disk on C: the smallest VM disk is $($script:MinDiskGib) GiB plus room for the Ubuntu image (free: $($HostInfo.FreeDiskGib) GiB)."
+    }
+
+    if (-not $Yes -and -not $CheckOnly) {
+        Write-Host ""
+        Write-Host "VM size (press Enter to keep the smallest working size):"
+    }
+    $vcpus = Read-Size $Settings "LAN_TEST_VCPUS" "CPU cores for the VM" $defaultVcpus $script:MinVcpus $maxVcpus "cores"
+    $memGib = Read-Size $Settings "LAN_TEST_MEMORY_GIB" "RAM for the VM" $script:DefaultMemGib $script:MinMemGib $maxMem "GiB"
+    # 0 = keep the existing VM disk as it is (set LAN_TEST_DISK_GIB to grow it).
+    $diskGib = [int](Get-Setting $Settings "LAN_TEST_DISK_GIB" "0")
+    if ($newDisk) {
+        $defaultDisk = [math]::Min($script:DefaultDiskGib, $maxDisk)
+        $diskGib = Read-Size $Settings "LAN_TEST_DISK_GIB" "VM disk" $defaultDisk $script:MinDiskGib $maxDisk "GiB"
+    }
+
+    if ($vcpus -lt $script:MinVcpus -or $vcpus -gt $maxVcpus) { Stop-Test "LAN_TEST_VCPUS must be $($script:MinVcpus)-$maxVcpus on this PC." }
+    if ($memGib -lt $script:MinMemGib -or $memGib -gt $maxMem) {
+        Stop-Test "LAN_TEST_MEMORY_GIB must be $($script:MinMemGib)-$maxMem on this PC (free RAM $($HostInfo.FreeMemGib) GiB)."
+    }
+    if ($diskGib -ne 0 -and $diskGib -lt $script:MinDiskGib) { Stop-Test "LAN_TEST_DISK_GIB must be at least $($script:MinDiskGib)." }
+    if ($newDisk -and $diskGib -gt $maxDisk) { Stop-Test "LAN_TEST_DISK_GIB=$diskGib does not fit: $($HostInfo.FreeDiskGib) GiB free on C:." }
+    if ($Mode -eq "signed" -and -not (Test-Path -LiteralPath (Join-Path $script:ImageDir "rootfs.img")) -and $HostInfo.FreeDiskGib -lt 80) {
+        Stop-Test "Need about 80 GiB free on C: to unpack the signed guest disk (have $($HostInfo.FreeDiskGib) GiB)."
+    }
+    if ($Mode -eq "quick" -and $diskGib -gt 0) { Write-TestLog "VM size: $vcpus CPU, $memGib GiB RAM, $diskGib GiB disk" }
+    elseif ($Mode -eq "quick") { Write-TestLog "VM size: $vcpus CPU, $memGib GiB RAM, existing VM disk" }
+    else { Write-TestLog "VM size: $vcpus CPU, $memGib GiB RAM" }
+    return @{ Vcpus = $vcpus; MemGib = $memGib; DiskGib = $diskGib }
 }
 
 function Install-PinnedQemu {
@@ -218,11 +395,13 @@ function Install-PinnedQemu {
         Stop-Test "QEMU installer checksum mismatch; not installed."
     }
     Write-TestLog "Installing QEMU silently..."
+    Add-Change "qemu-installed"
     $setupCmd = $setup -replace '/', '\'
     cmd.exe /c "`"$setupCmd`" /S /D=$installDir"
     if (-not (Test-Path -LiteralPath $qemuSys)) {
         Stop-Test "QEMU installer finished but qemu-system-x86_64.exe is missing."
     }
+    Remove-Item -LiteralPath $setup -Force -ErrorAction SilentlyContinue
     return $installDir
 }
 
@@ -304,7 +483,7 @@ function Get-HttpCode {
 }
 
 function Install-QuickDisk {
-    param([string]$QemuDir)
+    param([string]$QemuDir, [int]$DiskGib)
     Write-TestLog ""
     Write-TestLog "== Preparing the guest image (quick mode) =="
     New-Item -ItemType Directory -Force -Path $script:QuickDir | Out-Null
@@ -312,6 +491,7 @@ function Install-QuickDisk {
     $overlay = Join-Path $script:QuickDir "overlay.qcow2"
     $seed = Join-Path $script:QuickDir "seed.iso"
     $doneMark = Join-Path $script:QuickDir "setup-done"
+    $qemuImg = Join-Path $QemuDir "qemu-img.exe"
     if (-not (Test-Path -LiteralPath $base)) {
         Write-TestLog "Downloading Ubuntu 24.04 cloud image (about 600 MB)..."
         curl.exe -L --retry 5 --retry-all-errors -C - -o "$base.part" $script:UbuntuUrl
@@ -337,11 +517,24 @@ function Install-QuickDisk {
     Copy-Item -LiteralPath $kitSeed -Destination $seed -Force
     $first = $false
     if (-not (Test-Path -LiteralPath $overlay)) {
-        $qemuImg = Join-Path $QemuDir "qemu-img.exe"
-        & $qemuImg create -q -f qcow2 -F qcow2 -b $base $overlay 20G
+        # DiskGib is 0 when an old disk was found earlier and has just been reset.
+        if ($DiskGib -le 0) { $DiskGib = $script:DefaultDiskGib }
+        & $qemuImg create -q -f qcow2 -F qcow2 -b $base $overlay "$($DiskGib)G"
         if ($LASTEXITCODE -ne 0) { Stop-Test "qemu-img could not create the VM disk." }
         $first = $true
     }
+    elseif ($DiskGib -gt 0) {
+        # Grow (never shrink) an existing disk; the guest grows its partition
+        # on the next boot.
+        $info = (& $qemuImg info --output=json $overlay) -join "`n" | ConvertFrom-Json
+        $want = [int64]$DiskGib * 1GB
+        if ($want -gt [int64]$info.'virtual-size') {
+            & $qemuImg resize -q $overlay "$($DiskGib)G"
+            if ($LASTEXITCODE -eq 0) { Write-TestLog "VM disk grown to $DiskGib GiB." }
+        }
+    }
+    $used = ((Get-Item -LiteralPath $overlay).Length + (Get-Item -LiteralPath $base).Length) / 1GB
+    Write-TestLog ("VM files use {0:N1} GiB on C: (Ubuntu image + VM disk)." -f $used)
     return @{ Overlay = $overlay; Seed = $seed; DoneMark = $doneMark; SeedSum = $seedSum; First = $first }
 }
 
@@ -370,18 +563,17 @@ function Start-LanTest {
     $bootMin = [int](Get-Setting $settings "LAN_TEST_BOOT_MINUTES" "10")
     if ($bootMin -lt 2) { Stop-Test "LAN_TEST_BOOT_MINUTES must be >= 2." }
     $port = [int](Get-Setting $settings "LAN_TEST_PORT" "8443")
-    $vcpus = [int](Get-Setting $settings "LAN_TEST_VCPUS" "2")
-    $memGib = [int](Get-Setting $settings "LAN_TEST_MEMORY_GIB" "4")
     if ($port -lt 1024 -or $port -gt 65535) { Stop-Test "LAN_TEST_PORT must be 1024-65535." }
-    if ($vcpus -lt 2) { Stop-Test "LAN_TEST_VCPUS must be >= 2." }
-    if ($memGib -lt 4) { Stop-Test "LAN_TEST_MEMORY_GIB must be >= 4." }
 
     Stop-StaleTest
     Write-TestLog "Mode: $mode"
-    Assert-Machine -Vcpus $vcpus -MemGib $memGib -Mode $mode
+    $hostInfo = Get-HostInfo -Mode $mode
+    $size = Select-VmSize -Settings $settings -HostInfo $hostInfo -Mode $mode
 
-    $lanIp = Get-LanIPv4
-    if (-not $lanIp) { Stop-Test "No network connection found. Connect to the Wi-Fi/LAN first." }
+    $lan = @(Get-LanAddresses)
+    if ($lan.Count -eq 0) { Stop-Test "No Wi-Fi/Ethernet network found. Connect to the Wi-Fi/LAN first." }
+    foreach ($item in $lan) { Write-TestLog "LAN network: $($item.Name) $($item.IP)/$($item.Prefix)" }
+    $lanIp = $lan[0].IP
     Write-TestLog "LAN address: $lanIp"
     if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {
         Stop-Test "Port $port is already in use. Set LAN_TEST_PORT=8444 in lan-test.env."
@@ -398,13 +590,16 @@ function Start-LanTest {
     $qemuDir = Install-PinnedQemu
     $qemuSys = Join-Path $qemuDir "qemu-system-x86_64.exe"
     $quick = $null
+    # virtio disk (not -hda/IDE): random reads were ~62x slower on IDE
+    # (Windows 1,426 IOPS vs 88,700 on a Linux host, 2026-11-14).
     if ($mode -eq "signed") {
         $raw = Install-GuestDisk -QemuDir $qemuDir -Settings $settings
-        $diskArgs = @("-hda", $raw, "-snapshot")
+        $diskArgs = @("-drive", "file=$raw,if=virtio,format=raw", "-snapshot")
     }
     else {
-        $quick = Install-QuickDisk -QemuDir $qemuDir
-        $diskArgs = @("-hda", $quick.Overlay, "-drive", "file=$($quick.Seed),media=cdrom,readonly=on")
+        $quick = Install-QuickDisk -QemuDir $qemuDir -DiskGib $size.DiskGib
+        $diskArgs = @("-drive", "file=$($quick.Overlay),if=virtio,format=qcow2",
+            "-drive", "file=$($quick.Seed),media=cdrom,readonly=on")
     }
 
     Write-TestLog ""
@@ -422,7 +617,8 @@ function Start-LanTest {
         -LocalPort $port -RemoteAddress LocalSubnet -Program $qemuSys -Action Allow -Profile Any | Out-Null
     Write-TestLog "Opened firewall port $port for the local network only."
 
-    # Same flags as host-agent qemu.rs (x86_64 WHPX), plus:
+    # Same flags as host-agent qemu_whpx.rs (x86_64 WHPX), except the disk, plus:
+    #  virtio     disk instead of -hda (see above)
     #  -snapshot  (signed) writes go to a temp file; the image is unchanged
     #  overlay    (quick) desktop install persists so later runs boot fast
     #  hostfwd    publishes guest KasmVNC 8443 on this PC's LAN port
@@ -431,8 +627,8 @@ function Start-LanTest {
         "-name", $script:VmName,
         "-accel", "whpx",
         "-M", "pc",
-        "-smp", "cores=$vcpus",
-        "-m", "$($memGib)G",
+        "-smp", "cores=$($size.Vcpus)",
+        "-m", "$($size.MemGib)G",
         "-device", "ich9-usb-ehci1",
         "-device", "usb-tablet",
         $diskArgs,
@@ -522,6 +718,10 @@ function Start-LanTest {
     Write-Host "  On another device on the SAME Wi-Fi, open:"
     Write-Host ""
     Write-Host "      https://$($lanIp):$port" -ForegroundColor Cyan
+    foreach ($item in ($lan | Select-Object -Skip 1)) {
+        Write-Host ""
+        Write-Host "  or, from a device on $($item.Name):  https://$($item.IP):$port" -ForegroundColor Cyan
+    }
     Write-Host ""
     Write-Host "  The browser warns about the certificate: choose"
     Write-Host "  `"Advanced`" -> `"Continue`" (it is a self-signed test cert)."
@@ -529,6 +729,10 @@ function Start-LanTest {
     Write-Host "  Username:  ubuntu"
     Write-Host "  Password:  $password" -ForegroundColor Yellow
     Write-Host ""
+    if ($mode -eq "quick") {
+        Write-Host "  Speed test: in the VM terminal, type  dcl-bench"
+        Write-Host ""
+    }
     Write-Host "  Keep this window open. Press Ctrl+C to stop the test."
     Write-Host "============================================================" -ForegroundColor Green
     Write-Host ""
@@ -543,6 +747,13 @@ function Start-LanTest {
 
 # --- main -------------------------------------------------------------------
 if (Request-Administrator) { exit 0 }
+
+if ($Cleanup) {
+    try { Invoke-Cleanup }
+    catch { Write-Host "Cleanup stopped: $($_.Exception.Message)" }
+    if (-not $Yes) { Read-Host "Press Enter to close" | Out-Null }
+    exit 0
+}
 
 Set-Content -LiteralPath $script:Report -Value "DCL LAN hardware test (Windows)" -Encoding utf8
 Write-TestLog "Started: $(Get-Date -Format o)"
@@ -573,6 +784,7 @@ finally {
     Write-Host ""
     Write-Host "Report saved to: $($script:Report)"
     Write-Host "Send that file back to the project owner."
+    Write-Host "To undo everything this test changed: double-click lan-test-cleanup.cmd"
     Read-Host "Press Enter to close" | Out-Null
 }
 exit $exitCode

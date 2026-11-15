@@ -8,8 +8,8 @@ Linux Pro Host Agent can apply vfio-pci bind on provision (phase 29) and
 poll Sunshine on `https://{guestMesh.hostname}:47990/`. Windows Pro Host
 Agent can apply Hyper-V DDA/GPU-P on provision (phase 30) then `Start-VM`,
 and poll Sunshine the same way (VM `dcl-pro-guest` must already exist). Linux
-Pro can also spawn distro QEMU+KVM with VFIO attached (phase 34). Metal TAP
-is `dcl-tap0` in software; QEMU uses SLIRP. Tests inject loopback HTTP.
+Pro can also spawn distro QEMU+KVM with VFIO attached (phase 34). Every
+backend uses QEMU SLIRP networking (no TAP). Tests inject loopback HTTP.
 The live-streamer timeout is five minutes, not a `.invalid` success.
 
 | Tier | Streamer in the guest | Locator after provision | Disk |

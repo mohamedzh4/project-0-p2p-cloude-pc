@@ -202,7 +202,6 @@ def test_headscale_modules_do_not_name_backends_or_the_concrete_selector() -> No
         text = (root / relative).read_text(encoding="utf-8")
         assert "SingleApprovedHostSelector" not in text
         assert "RankedHostSelector" not in text
-        assert "Firecracker" not in text
         assert "QEMU" not in text
         assert "WHPX" not in text
         assert "VFIO" not in text
@@ -286,7 +285,16 @@ def test_acl_policy_is_default_deny_with_architecture_grants() -> None:
     assert ("tag:guest", "tag:exit") in pairs
     assert ("tag:guest", "autogroup:internet") in pairs
     assert ("tag:guest", "tag:host") not in pairs
-    assert ("tag:host", "tag:guest") not in pairs
+    # Host Agent may reach the guest only on the streamer ports it health-checks
+    # (KasmVNC 8443, Sunshine 47990) before it reports a live locator.
+    host_to_guest = [
+        dst
+        for rule in acls
+        if rule["src"] == ["tag:host"]
+        for dst in rule["dst"]
+        if dst.startswith("tag:guest:")
+    ]
+    assert sorted(host_to_guest) == ["tag:guest:47990", "tag:guest:8443"]
     assert ("tag:host", "autogroup:internet") not in pairs
     assert ("tag:gateway", "tag:host") not in pairs
     assert ("tag:host", "tag:gateway") not in pairs
@@ -514,7 +522,6 @@ def test_headscale_modules_include_mesh_without_hypervisor_names() -> None:
         text = (root / relative).read_text(encoding="utf-8")
         assert "SingleApprovedHostSelector" not in text
         assert "RankedHostSelector" not in text
-        assert "Firecracker" not in text
         assert "QEMU" not in text
         assert "WHPX" not in text
         assert "VFIO" not in text

@@ -261,7 +261,6 @@ pub enum ImageEnsureAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageBackend {
-    Firecracker,
     Qemu,
     None,
 }
@@ -862,11 +861,6 @@ pub fn cached_rootfs_path(cache_dir: &Path, lab_tier: LabTier) -> PathBuf {
     cache_dir.join(lab_tier.as_str()).join("rootfs.img")
 }
 
-/// Optional Firecracker kernel next to the rootfs: `{cache}/{labTier}/vmlinux`.
-pub fn cached_kernel_path(cache_dir: &Path, lab_tier: LabTier) -> PathBuf {
-    cache_dir.join(lab_tier.as_str()).join("vmlinux")
-}
-
 fn write_cached_manifest(path: &Path, manifest: &CachedImageManifest) -> Result<(), ImageError> {
     let json = serde_json::to_string_pretty(manifest)
         .map_err(|error| ImageError::Cache(error.to_string()))?;
@@ -897,7 +891,6 @@ fn sha256_file(path: &Path) -> Result<Sha256Digest, ImageError> {
 
 fn backend_label(backend: ImageBackend) -> &'static str {
     match backend {
-        ImageBackend::Firecracker => "Firecracker",
         ImageBackend::Qemu => "QEMU",
         ImageBackend::None => "guest",
     }
@@ -1281,7 +1274,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn macos_skips_without_fetching_a_firecracker_image() {
+    fn macos_skips_without_fetching_a_guest_image() {
         let cache = tempfile::tempdir().unwrap();
         let fetcher = ScriptedImageFetcher::new(FIXTURE_STANDARD_BYTES);
         let (trust, spec) = spec_for(
@@ -1337,7 +1330,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn linux_fetches_standard_firecracker_image_when_missing() {
+    fn linux_fetches_standard_image_when_missing() {
         let cache = tempfile::tempdir().unwrap();
         let fetcher = ScriptedImageFetcher::new(FIXTURE_STANDARD_BYTES);
         let (trust, spec) = spec_for(

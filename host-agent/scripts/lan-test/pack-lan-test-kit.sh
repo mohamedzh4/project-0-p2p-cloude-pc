@@ -118,9 +118,11 @@ write_env() {
       echo "IMAGE_STANDARD_DIGEST=$DIGEST"
       [[ -n "$QCOW2_URL" ]] && echo "IMAGE_QCOW2_URL=$QCOW2_URL"
     fi
+    echo "# VM size: asked at start when not set here (Enter = smallest working size)."
+    echo "# LAN_TEST_VCPUS=2          # min 1"
+    echo "# LAN_TEST_MEMORY_GIB=2     # min 2"
+    echo "# LAN_TEST_DISK_GIB=8       # quick mode, min 6; set higher to grow"
     echo "# LAN_TEST_PORT=8443"
-    echo "# LAN_TEST_VCPUS=2"
-    echo "# LAN_TEST_MEMORY_GIB=4"
     echo "# LAN_TEST_SETUP_MINUTES=45"
     echo "# LAN_TEST_BOOT_MINUTES=10"
   } >"$1"
@@ -134,7 +136,7 @@ for os in linux windows; do
     install -m 0755 "$HERE/lan-test.sh" "$dir/lan-test.sh"
     cp "$HERE/README-FRIEND.txt" "$dir/README.txt"
   else
-    cp "$HERE/lan-test.ps1" "$HERE/lan-test.cmd" "$dir/"
+    cp "$HERE/lan-test.ps1" "$HERE/lan-test.cmd" "$HERE/lan-test-cleanup.cmd" "$dir/"
     # README gets CRLF for Notepad.
     sed 's/$/\r/' "$HERE/README-FRIEND.txt" >"$dir/README.txt"
   fi

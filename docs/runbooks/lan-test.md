@@ -34,7 +34,7 @@ your own built image; run it once you have a Linux build machine.
 | XFCE + KasmVNC render in a real browser | rclone persistent storage |
 | Boot time on real hardware (in the report) | Pro GPU (VFIO / Hyper-V) |
 
-After it passes, run the full path in `DEMO_RUNBOOK.md`.
+After it passes, run the full path in `docs/runbooks/demo.md`.
 
 ## 1. Pack the kits
 
@@ -71,7 +71,15 @@ Instructions are in the kit's `README.txt`.
 
 - Windows: double-click `lan-test.cmd`, accept the admin prompt. If WHPX was
   off, the script turns it on and asks for a reboot; run it again after.
-- Ubuntu: `bash lan-test.sh`.
+- Linux: `bash lan-test.sh`. Ubuntu/Debian install QEMU with `apt`
+  (`qemu-system-x86 qemu-utils`); Arch with `pacman -S --needed qemu-base`
+  (no `-Sy`, to avoid a partial upgrade; on failure the app asks for
+  `pacman -Syu` first). Firewall: `ufw` or `firewalld` (runtime rule) are
+  opened for every Wi-Fi/Ethernet network and closed on exit; other
+  firewalls must allow TCP 8443 by hand. VPN (`wg*`, `tun*`, `tailscale*`),
+  Docker and VM bridge interfaces are never used for the link or the
+  firewall rule: with a VPN as the default route, its address is useless
+  on the LAN (Arch PC with WireGuard, 2026-11-14).
 
 The script checks the PC, installs QEMU (Windows: the pinned Weilnetz build
 with SHA-512 check), verifies the image SHA-256, boots it, and prints:
@@ -92,6 +100,38 @@ failure it includes the QEMU error output or the last guest console lines.
 
 Only check a PC without booting: `bash lan-test.sh --check` or
 `lan-test.cmd -CheckOnly`.
+
+## VM size and cleanup
+
+Both apps ask for the VM size at start (Enter keeps the default), or read
+it from `lan-test.env`:
+
+| Setting | Default | Minimum | Maximum offered |
+| --- | --- | --- | --- |
+| `LAN_TEST_VCPUS` | 2 (1 on a 2-thread PC) | 1 | host threads − 1 |
+| `LAN_TEST_MEMORY_GIB` | 2 | 2 | free RAM − 1 GiB |
+| `LAN_TEST_DISK_GIB` (quick mode) | 8 | 6 | free disk − 1 GiB (− 1 more before the Ubuntu image is downloaded) |
+
+2 GiB RAM installed and ran XFCE + KasmVNC in testing. The disk size is
+asked on the first run only; setting a bigger `LAN_TEST_DISK_GIB` later
+grows the disk (never shrinks it). `--yes` / `-Yes` skips the questions.
+The Windows app now attaches the guest disk as virtio, like Linux (issue 9).
+
+Cleanup undoes what the app recorded it changed:
+
+- Linux: `bash lan-test.sh --cleanup` removes recorded ufw/firewalld rules,
+  the VM files, `/tmp/dcl-lan-test.*`, and asks before removing packages
+  the test installed and the `kvm` group membership it added. It also lists
+  leftover port 8443 ufw rules from older versions.
+- Windows: `lan-test-cleanup.cmd` stops the VM, removes the firewall rule
+  and `C:\dcl\lan-test`, and asks before uninstalling the QEMU the test
+  installed and turning off Windows Hypervisor Platform if the test turned
+  it on.
+- `--yes` / `-Yes` answers yes to every question.
+
+Inside the guest (quick mode), `dcl-bench` runs the CPU/memory/disk/
+internet benchmark and saves `~/dcl-bench-<time>.txt`; bracketed paste is
+off in `/etc/inputrc`.
 
 ## Test logs
 

@@ -83,7 +83,6 @@ def test_session_router_does_not_name_backends_or_the_concrete_selector() -> Non
     text = source.read_text(encoding="utf-8")
     assert "SingleApprovedHostSelector" not in text
     assert "RankedHostSelector" not in text
-    assert "Firecracker" not in text
     assert "QEMU" not in text
     assert "WHPX" not in text
     assert "VFIO" not in text

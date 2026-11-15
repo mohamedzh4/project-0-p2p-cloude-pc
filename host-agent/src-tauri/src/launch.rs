@@ -1,8 +1,9 @@
 //! Launch configuration from clamped sharing sliders (phase 21).
 //!
 //! Maps vCPU / RAM (and a Pro GPU id) onto the OS-conditional stub backend
-//! already chosen in [`crate::provision`]. Kernel and rootfs paths come from
-//! the phase-20 image cache when those files exist. This module never invokes
+//! already chosen in [`crate::provision`]. The rootfs path comes from the
+//! phase-20 image cache when that file exists; every backend boots the
+//! disk's own kernel. This module never invokes
 //! a hypervisor. Tests assert JSON fields, not a running VM.
 //!
 //! Phase 23: when a capability probe is supplied, an unoffered tier (missing
@@ -16,7 +17,7 @@ use thiserror::Error;
 
 use crate::eligibility::{self, format_bytes_plain, EligibilityRequest};
 use crate::host_capabilities::HostCapabilities;
-use crate::image::{cached_kernel_path, cached_rootfs_path, GuestImageStatus};
+use crate::image::{cached_rootfs_path, GuestImageStatus};
 use crate::models::{HardwareSnapshot, SharingConfig};
 use crate::provision::{
     plan, ComputeBackend, HostOs, LabTier, ProvisionError, ProvisionRequest, StubProvisioner,
@@ -37,8 +38,6 @@ pub struct LaunchRequest<'a> {
     /// When set, an unoffered tier (probe or resources) does not emit a config.
     pub capabilities: Option<&'a HostCapabilities>,
     pub spare_disk_bytes: Option<u64>,
-    /// `FIRECRACKER_KERNEL` when that path is a file.
-    pub kernel_override: Option<&'a Path>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -58,7 +57,6 @@ pub struct LaunchConfig {
     pub lab_tier: LabTier,
     pub vcpu_count: u32,
     pub memory_mib: u64,
-    pub kernel_path: Option<String>,
     pub rootfs_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu: Option<GpuAssignment>,
@@ -157,16 +155,6 @@ pub fn build(request: LaunchRequest<'_>) -> Result<LaunchConfig, LaunchError> {
         request.image_cache_dir,
         request.guest_image,
     );
-    let kernel_path = (plan.backend == ComputeBackend::Firecracker)
-        .then(|| {
-            resolve_kernel(
-                request.lab_tier,
-                request.image_cache_dir,
-                rootfs_path.as_deref(),
-                request.kernel_override,
-            )
-        })
-        .flatten();
 
     let gpu = match plan.shared_gpu_id {
         Some(id) => Some(GpuAssignment {
@@ -181,7 +169,6 @@ pub fn build(request: LaunchRequest<'_>) -> Result<LaunchConfig, LaunchError> {
         lab_tier: plan.lab_tier,
         vcpu_count: clamped.shared_logical_cores,
         memory_mib: clamped.shared_memory_bytes / BYTES_PER_MIB,
-        kernel_path,
         rootfs_path,
         gpu,
         hypervisor_invoked: false,
@@ -201,22 +188,6 @@ fn resolve_rootfs(
         }
     }
     existing_file(cache_dir.map(|dir| cached_rootfs_path(dir, lab_tier)))
-}
-
-fn resolve_kernel(
-    lab_tier: LabTier,
-    cache_dir: Option<&Path>,
-    rootfs_path: Option<&str>,
-    kernel_override: Option<&Path>,
-) -> Option<String> {
-    if let Some(path) = kernel_override.filter(|path| path.is_file()) {
-        return Some(path.to_string_lossy().into_owned());
-    }
-    if let Some(path) = existing_file(cache_dir.map(|dir| cached_kernel_path(dir, lab_tier))) {
-        return Some(path);
-    }
-    let rootfs = rootfs_path?;
-    existing_file(Some(Path::new(rootfs).with_file_name("vmlinux")))
 }
 
 fn existing_file(path: Option<PathBuf>) -> Option<String> {
@@ -277,7 +248,6 @@ mod tests {
             guest_image: None,
             capabilities: None,
             spare_disk_bytes: None,
-            kernel_override: None,
         }
     }
 
@@ -318,7 +288,7 @@ mod tests {
         assert_eq!(json["memoryMib"], 8192);
         assert!(json.get("gpu").is_none());
         assert_eq!(json["hypervisorInvoked"], false);
-        assert!(json["kernelPath"].is_null());
+        assert!(json.get("kernelPath").is_none());
         assert!(json["rootfsPath"].is_null());
     }
 
@@ -428,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_does_not_emit_a_firecracker_config() {
+    fn macos_does_not_emit_a_launch_config() {
         let hardware = hardware();
         let sharing = sharing(4, 8 * BYTES_PER_GIB, false, None);
         let error = build(request(
@@ -546,7 +516,6 @@ mod tests {
             guest_image: Some(&guest),
             capabilities: None,
             spare_disk_bytes: None,
-            kernel_override: None,
         })
         .unwrap();
         let json = serde_json::to_value(&config).unwrap();
@@ -555,7 +524,6 @@ mod tests {
             config.rootfs_path.as_deref(),
             Some("/home/host/.cache/dcl-host-agent/images/standard/rootfs.img")
         );
-        assert!(config.kernel_path.is_none());
         assert_eq!(
             json["rootfsPath"],
             "/home/host/.cache/dcl-host-agent/images/standard/rootfs.img"
@@ -576,7 +544,6 @@ mod tests {
             guest_image: Some(&guest),
             capabilities: None,
             spare_disk_bytes: None,
-            kernel_override: None,
         })
         .unwrap();
 
@@ -584,15 +551,13 @@ mod tests {
     }
 
     #[test]
-    fn qemu_kvm_uses_rootfs_but_not_an_external_kernel() {
+    fn qemu_kvm_uses_the_cached_rootfs() {
         let hardware = hardware();
         let sharing = sharing(4, 8 * BYTES_PER_GIB, false, None);
         let cache = TempDir::new().unwrap();
         let rootfs = cached_rootfs_path(cache.path(), LabTier::Standard);
-        let kernel = cached_kernel_path(cache.path(), LabTier::Standard);
         fs::create_dir_all(rootfs.parent().unwrap()).unwrap();
         fs::write(&rootfs, b"rootfs-fixture\n").unwrap();
-        fs::write(&kernel, b"vmlinux-fixture\n").unwrap();
 
         let config = build(LaunchRequest {
             os: HostOs::Linux,
@@ -603,7 +568,6 @@ mod tests {
             guest_image: None,
             capabilities: None,
             spare_disk_bytes: None,
-            kernel_override: None,
         })
         .unwrap();
         let json = serde_json::to_value(&config).unwrap();
@@ -613,30 +577,7 @@ mod tests {
             Some(rootfs.to_str().unwrap())
         );
         assert_eq!(json["rootfsPath"], rootfs.to_str().unwrap());
-        assert!(config.kernel_path.is_none());
-        assert!(json["kernelPath"].is_null());
-    }
-
-    #[test]
-    fn qemu_kvm_ignores_a_firecracker_kernel_override() {
-        let hardware = hardware();
-        let sharing = sharing(4, 8 * BYTES_PER_GIB, false, None);
-        let dir = TempDir::new().unwrap();
-        let override_kernel = dir.path().join("from-env-vmlinux");
-        fs::write(&override_kernel, b"env-vmlinux\n").unwrap();
-        let config = build(LaunchRequest {
-            os: HostOs::Linux,
-            lab_tier: LabTier::Standard,
-            hardware: &hardware,
-            sharing: &sharing,
-            image_cache_dir: None,
-            guest_image: None,
-            capabilities: None,
-            spare_disk_bytes: None,
-            kernel_override: Some(override_kernel.as_path()),
-        })
-        .unwrap();
-        assert!(config.kernel_path.is_none());
+        assert!(json.get("kernelPath").is_none());
     }
 
     #[test]
@@ -708,7 +649,6 @@ mod tests {
             guest_image: None,
             capabilities: Some(&caps),
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
-            kernel_override: None,
         })
         .unwrap_err();
 
@@ -734,7 +674,6 @@ mod tests {
             guest_image: None,
             capabilities: Some(&caps),
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
-            kernel_override: None,
         })
         .unwrap_err();
 
@@ -761,7 +700,6 @@ mod tests {
             guest_image: None,
             capabilities: None,
             spare_disk_bytes: Some(10 * BYTES_PER_GIB),
-            kernel_override: None,
         })
         .unwrap_err();
 
@@ -798,14 +736,12 @@ mod tests {
             guest_image: None,
             capabilities: Some(&caps),
             spare_disk_bytes: None,
-            kernel_override: None,
         })
         .unwrap_err();
 
         match error {
             LaunchError::TierNotOffered(reason) => {
                 assert!(reason.contains("Mac"));
-                assert!(!reason.contains("Firecracker"));
             }
             other => panic!("expected TierNotOffered, got {other:?}"),
         }

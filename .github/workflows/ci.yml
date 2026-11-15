@@ -1,0 +1,124 @@
+# Tests for every component. Installer builds live in host-agent.yml.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check matchmaker gateway guest-images host-agent/scripts
+
+  matchmaker:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: matchmaker
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: matchmaker_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U matchmaker -d matchmaker_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://matchmaker:ci-only@localhost:5432/matchmaker_test
+      JWT_SECRET: ci-only-jwt-secret-not-used-anywhere-else
+    defaults:
+      run:
+        working-directory: matchmaker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q
+
+  gateway:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q
+
+  scripts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest
+      - run: python -m pytest -q host-agent/scripts guest-images/tests
+
+  web:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  host-agent:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: host-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: host-agent/src-tauri -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: host-agent/package-lock.json
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: cargo test --lib
+        working-directory: host-agent/src-tauri

@@ -2,11 +2,24 @@
 set -euo pipefail
 umask 077
 
-DOMAIN="lab.example.com"
+# Deploy the platform on the VPS. Run from the repository checkout:
+#   DCL_DOMAIN=your.domain bash scripts/vps-deploy.sh
+# DCL_DOMAIN     public domain; desktop., storage. and mesh. subdomains must
+#                resolve to this VPS too (required)
+# DCL_ROOT       repository checkout (default: the folder above this script)
+# DCL_USER       account that runs the Matchmaker service (default: you)
+DOMAIN="${DCL_DOMAIN:?Set DCL_DOMAIN to your public domain, e.g. DCL_DOMAIN=lab.example.com bash scripts/vps-deploy.sh}"
 DESKTOP_DOMAIN="desktop.${DOMAIN}"
 STORAGE_DOMAIN="storage.${DOMAIN}"
 MESH_DOMAIN="mesh.${DOMAIN}"
-ROOT="/home/dcl/dcl"
+ROOT="${DCL_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+DCL_USER="${DCL_USER:-$(id -un)}"
+export DCL_ROOT="$ROOT"
+
+# Heredocs below are quoted (no shell expansion); fill in these placeholders.
+fill() {
+  sed -e "s|__DCL_DOMAIN__|${DOMAIN}|g" -e "s|__DCL_ROOT__|${ROOT}|g" -e "s|__DCL_USER__|${DCL_USER}|g"
+}
 HS_PUBLIC="https://${MESH_DOMAIN}"
 
 echo "dns_check $(getent hosts "$DOMAIN" | awk '{print $1}' | head -1)"
@@ -20,18 +33,18 @@ done
 sudo apt-get update -y
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3.12-venv python3-pip jq
 
-if ! grep -q "lab.example.com" /etc/hosts; then
-  echo "127.0.0.1 lab.example.com" | sudo tee -a /etc/hosts >/dev/null
+if ! grep -q "$DOMAIN" /etc/hosts; then
+  echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts >/dev/null
 fi
 
 printf '%s\n' "net.ipv4.ip_forward=1" "net.ipv6.conf.all.forwarding=1" \
   | sudo tee /etc/sysctl.d/99-dcl-forward.conf >/dev/null
 sudo sysctl -p /etc/sysctl.d/99-dcl-forward.conf >/dev/null || true
 
-python3 - <<'PY'
+fill <<'PY' | python3 -
 import re
 from pathlib import Path
-p = Path("/home/dcl/dcl/matchmaker/docker-compose.yml")
+p = Path("__DCL_ROOT__/matchmaker/docker-compose.yml")
 t = p.read_text()
 old = '- "${POSTGRES_PORT:-5432}:5432"'
 new = '- "127.0.0.1:${POSTGRES_PORT:-5432}:5432"'
@@ -39,11 +52,11 @@ if old in t:
     p.write_text(t.replace(old, new, 1))
 elif "127.0.0.1:${POSTGRES_PORT" not in t:
     raise SystemExit("postgres ports line not found")
-p = Path("/home/dcl/dcl/headscale/config.yaml")
+p = Path("__DCL_ROOT__/headscale/config.yaml")
 t = p.read_text()
 p.write_text(re.sub(
     r"(?m)^server_url:\s*.*$",
-    "server_url: https://mesh.lab.example.com",
+    "server_url: https://mesh.__DCL_DOMAIN__",
     t,
     count=1,
 ))
@@ -57,16 +70,16 @@ if [ ! -f "$ROOT/headscale/.env" ]; then
 else
   echo "keep_headscale_env"
 fi
-python3 - <<'PY'
+fill <<'PY' | python3 -
 from pathlib import Path
 
-p = Path("/home/dcl/dcl/headscale/.env")
+p = Path("__DCL_ROOT__/headscale/.env")
 values = {}
 for line in p.read_text().splitlines():
     if "=" in line and not line.lstrip().startswith("#"):
         key, value = line.split("=", 1)
         values[key] = value
-values["HEADSCALE_SERVER_URL"] = "https://mesh.lab.example.com"
+values["HEADSCALE_SERVER_URL"] = "https://mesh.__DCL_DOMAIN__"
 values["HEADSCALE_PORT"] = "8080"
 p.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
 PY
@@ -74,7 +87,7 @@ chmod 600 "$ROOT/headscale/.env"
 
 if [ ! -f "$ROOT/renterd/.env" ]; then
   echo "generating_renterd_seed"
-  python3 - <<'PY'
+  fill <<'PY' | python3 -
 import hashlib, os, urllib.request
 from pathlib import Path
 words = urllib.request.urlopen(
@@ -88,7 +101,7 @@ digest = hashlib.sha256(entropy).digest()
 bits = "".join(f"{b:08b}" for b in entropy) + f"{digest[0]:08b}"[:4]
 seed = " ".join(words[int(bits[i:i+11], 2)] for i in range(0, 132, 11))
 api_pw = os.urandom(24).hex()
-Path("/home/dcl/dcl/renterd/.env").write_text(
+Path("__DCL_ROOT__/renterd/.env").write_text(
     f'RENTERD_SEED="{seed}"\n'
     f"RENTERD_API_PASSWORD={api_pw}\n"
     "RENTERD_NETWORK=zen\n"
@@ -204,9 +217,9 @@ if [ ! -f "$ROOT/.secret-s3-access" ]; then
 fi
 chmod 600 "$ROOT/.secret-s3-access" "$ROOT/.secret-s3-secret"
 
-python3 - <<'PY'
+fill <<'PY' | python3 -
 from pathlib import Path
-root = Path("/home/dcl/dcl")
+root = Path("__DCL_ROOT__")
 env = {}
 for line in (root / "renterd/.env").read_text().splitlines():
     if "=" in line and not line.startswith("#"):
@@ -221,7 +234,8 @@ print("prepared_s3_put")
 PY
 RENTERD_API_PASSWORD="$(python3 -c '
 from pathlib import Path
-for line in Path("/home/dcl/dcl/renterd/.env").read_text().splitlines():
+import os
+for line in Path(os.environ["DCL_ROOT"], "renterd/.env").read_text().splitlines():
     if line.startswith("RENTERD_API_PASSWORD="):
         print(line.split("=",1)[1])
         break
@@ -236,10 +250,10 @@ echo "renterd_s3_put_http=$HTTP_CODE"
 if [ ! -f "$ROOT/matchmaker/.env" ]; then
   PG_PASS="$(openssl rand -hex 16)"
   export PG_PASS HS_USER_ID
-  python3 - <<'PY'
+  fill <<'PY' | python3 -
 import os
 from pathlib import Path
-root = Path("/home/dcl/dcl")
+root = Path("__DCL_ROOT__")
 pg = os.environ["PG_PASS"]
 hs_user = os.environ["HS_USER_ID"]
 api = (root / ".secret-headscale-api-key").read_text().strip()
@@ -275,16 +289,16 @@ IMAGE_STANDARD_SIGNATURE=WQjS2zyW+BjgfoZDK3IFx6OIwXPmRxO22PN4FpfEJNpjY/AgEsLmqLV
 IMAGE_PRO_DIGEST=b5dc04d095774efc8fee56dfcbabbe7346788f29a7576aaa27248d9b8249b118
 IMAGE_PRO_SIGNATURE=T1FrV8mlhTvhk+0laH74qnb6s6CTM2M+waEhIAtjszKlN3pZyQ+w18xDfp0xvbA3MO+FXvt8Z+B+hmXDrvBaDA==
 HEADSCALE_URL=http://127.0.0.1:8080
-HEADSCALE_LOGIN_SERVER=https://mesh.lab.example.com
+HEADSCALE_LOGIN_SERVER=https://mesh.__DCL_DOMAIN__
 HEADSCALE_API_KEY={api}
 HEADSCALE_USER={hs_user}
 HEADSCALE_EXIT_NODE=off
-GATEWAY_PUBLIC_ORIGIN=https://lab.example.com
+GATEWAY_PUBLIC_ORIGIN=https://__DCL_DOMAIN__
 GATEWAY_RESOLVE_TOKEN={resolve}
 GATEWAY_TOKEN_TTL_SECONDS=43200
-MATCHMAKER_PUBLIC_ORIGIN=http://lab.example.com:8000
+MATCHMAKER_PUBLIC_ORIGIN=http://__DCL_DOMAIN__:8000
 S3_ENDPOINT=http://127.0.0.1:8081
-S3_GUEST_ENDPOINT=https://storage.lab.example.com
+S3_GUEST_ENDPOINT=https://storage.__DCL_DOMAIN__
 S3_REGION=us-east-1
 S3_ACCESS_KEY={access}
 S3_SECRET_KEY={secret}
@@ -295,20 +309,20 @@ PY
 else
   echo "keep_matchmaker_env"
 fi
-python3 - <<'PY'
+fill <<'PY' | python3 -
 from pathlib import Path
 
-p = Path("/home/dcl/dcl/matchmaker/.env")
+p = Path("__DCL_ROOT__/matchmaker/.env")
 values = {}
 for line in p.read_text().splitlines():
     if "=" in line and not line.lstrip().startswith("#"):
         key, value = line.split("=", 1)
         values[key] = value
 values.update({
-    "HEADSCALE_LOGIN_SERVER": "https://mesh.lab.example.com",
-    "GATEWAY_PUBLIC_ORIGIN": "https://desktop.lab.example.com",
-    "MATCHMAKER_PUBLIC_ORIGIN": "https://lab.example.com/api",
-    "S3_GUEST_ENDPOINT": "https://storage.lab.example.com",
+    "HEADSCALE_LOGIN_SERVER": "https://mesh.__DCL_DOMAIN__",
+    "GATEWAY_PUBLIC_ORIGIN": "https://desktop.__DCL_DOMAIN__",
+    "MATCHMAKER_PUBLIC_ORIGIN": "https://__DCL_DOMAIN__/api",
+    "S3_GUEST_ENDPOINT": "https://storage.__DCL_DOMAIN__",
 })
 p.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
 PY
@@ -346,7 +360,7 @@ set +a
 ./.venv/bin/alembic upgrade head
 echo "alembic_ok"
 
-sudo tee /etc/systemd/system/dcl-matchmaker.service >/dev/null <<'UNIT'
+fill <<'UNIT' | sudo tee /etc/systemd/system/dcl-matchmaker.service >/dev/null
 [Unit]
 Description=DCL Matchmaker
 After=network.target docker.service
@@ -354,10 +368,10 @@ Wants=docker.service
 
 [Service]
 Type=simple
-User=dcl
-Group=dcl
-WorkingDirectory=/home/dcl/dcl/matchmaker
-ExecStart=/home/dcl/dcl/matchmaker/.venv/bin/uvicorn matchmaker.main:app --app-dir src --host 127.0.0.1 --port 8000
+User=__DCL_USER__
+Group=__DCL_USER__
+WorkingDirectory=__DCL_ROOT__/matchmaker
+ExecStart=__DCL_ROOT__/matchmaker/.venv/bin/uvicorn matchmaker.main:app --app-dir src --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=3
 
@@ -370,20 +384,20 @@ sleep 3
 sudo systemctl --no-pager --full status dcl-matchmaker.service | sed -n '1,25p' || true
 
 if [ ! -f "$ROOT/gateway/.env" ]; then
-  python3 - <<'PY'
+  fill <<'PY' | python3 -
 from pathlib import Path
-root = Path("/home/dcl/dcl")
+root = Path("__DCL_ROOT__")
 resolve = (root / ".secret-gateway-resolve").read_text().strip()
 preauth = (root / ".secret-gateway-preauth").read_text().strip()
-(root / "gateway/.env").write_text(f"""GATEWAY_DOMAIN=lab.example.com
-GATEWAY_DESKTOP_DOMAIN=desktop.lab.example.com
-GATEWAY_STORAGE_DOMAIN=storage.lab.example.com
-GATEWAY_MESH_DOMAIN=mesh.lab.example.com
+(root / "gateway/.env").write_text(f"""GATEWAY_DOMAIN=__DCL_DOMAIN__
+GATEWAY_DESKTOP_DOMAIN=desktop.__DCL_DOMAIN__
+GATEWAY_STORAGE_DOMAIN=storage.__DCL_DOMAIN__
+GATEWAY_MESH_DOMAIN=mesh.__DCL_DOMAIN__
 GATEWAY_ACME_EMAIL=mohamedm8931@gmail.com
-GATEWAY_PUBLIC_ORIGIN=https://desktop.lab.example.com
+GATEWAY_PUBLIC_ORIGIN=https://desktop.__DCL_DOMAIN__
 GATEWAY_RESOLVE_TOKEN={resolve}
 MATCHMAKER_URL=http://127.0.0.1:8000
-HEADSCALE_LOGIN_SERVER=https://mesh.lab.example.com
+HEADSCALE_LOGIN_SERVER=https://mesh.__DCL_DOMAIN__
 HEADSCALE_GATEWAY_AUTHKEY={preauth}
 GATEWAY_FAIL_LIMIT=20
 GATEWAY_FAIL_WINDOW_SECONDS=60
@@ -394,22 +408,22 @@ PY
 else
   echo "keep_gateway_env"
 fi
-python3 - <<'PY'
+fill <<'PY' | python3 -
 from pathlib import Path
 
-p = Path("/home/dcl/dcl/gateway/.env")
+p = Path("__DCL_ROOT__/gateway/.env")
 values = {}
 for line in p.read_text().splitlines():
     if "=" in line and not line.lstrip().startswith("#"):
         key, value = line.split("=", 1)
         values[key] = value
 values.update({
-    "GATEWAY_DOMAIN": "lab.example.com",
-    "GATEWAY_DESKTOP_DOMAIN": "desktop.lab.example.com",
-    "GATEWAY_STORAGE_DOMAIN": "storage.lab.example.com",
-    "GATEWAY_MESH_DOMAIN": "mesh.lab.example.com",
-    "GATEWAY_PUBLIC_ORIGIN": "https://desktop.lab.example.com",
-    "HEADSCALE_LOGIN_SERVER": "https://mesh.lab.example.com",
+    "GATEWAY_DOMAIN": "__DCL_DOMAIN__",
+    "GATEWAY_DESKTOP_DOMAIN": "desktop.__DCL_DOMAIN__",
+    "GATEWAY_STORAGE_DOMAIN": "storage.__DCL_DOMAIN__",
+    "GATEWAY_MESH_DOMAIN": "mesh.__DCL_DOMAIN__",
+    "GATEWAY_PUBLIC_ORIGIN": "https://desktop.__DCL_DOMAIN__",
+    "HEADSCALE_LOGIN_SERVER": "https://mesh.__DCL_DOMAIN__",
 })
 p.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
 PY

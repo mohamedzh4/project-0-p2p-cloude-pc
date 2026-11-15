@@ -578,7 +578,7 @@ def test_invalid_agent_url_is_rejected(client: TestClient) -> None:
 
 def test_locator_is_placeholder_matches_rfc2606() -> None:
     assert locator_is_placeholder("https://example.invalid/kasm")
-    assert locator_is_placeholder("https://provision.invalid/firecracker")
+    assert locator_is_placeholder("https://provision.invalid/qemu-kvm")
     assert locator_is_placeholder("https://provision.invalid/sunshine")
     assert locator_is_placeholder("")
     assert not locator_is_placeholder(LIVE_KASM_URL)

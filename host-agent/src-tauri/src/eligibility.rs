@@ -12,7 +12,7 @@ use crate::host_capabilities::{CapabilityOs, HostCapabilities, LabOffer};
 use crate::models::{HardwareSnapshot, SharingConfig, BYTES_PER_GIB};
 use crate::provision::LabTier;
 
-/// Official Kasm single-server minimum (`docs/runbooks/gate-fc.md`).
+/// Official Kasm single-server minimum (`docs/runbooks/gate-kvm.md`).
 pub const MIN_VCPU: u32 = 2;
 pub const MIN_MEMORY_BYTES: u64 = 4 * BYTES_PER_GIB;
 /// Kasm single-server disk floor (~50 GiB). Recommended guest disks are 64 GiB.
@@ -317,7 +317,7 @@ mod tests {
             "{} {} {}",
             report.summary, report.standard.reason, report.pro.reason
         );
-        for banned in ["Firecracker", "QEMU", "WHPX", "choose", "which backend"] {
+        for banned in ["QEMU", "WHPX", "choose", "which backend"] {
             assert!(
                 !blob.contains(banned),
                 "eligibility copy must not mention {banned:?}: {blob}"

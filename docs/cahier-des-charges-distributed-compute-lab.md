@@ -22,7 +22,7 @@ Traditional cloud computing routes every workload through centralized datacenter
 ## 4. Périmètre
 
 ### Inclus dans le MVP
-- Standard Lab — OS-conditional backend: Firecracker + Kasm on Linux hosts, QEMU+WHPX (or Hyper-V) + Kasm on Windows hosts
+- Standard Lab — QEMU VM with the accelerator chosen by host OS: QEMU+KVM + Kasm on Linux hosts, QEMU+WHPX + Kasm on Windows hosts
 - Pro/Gamer Lab — exclusive GPU assignment for the session: QEMU/KVM + VFIO on Linux, Hyper-V DDA/GPU-P (or QEMU+WHPX passthrough) on Windows, plus Sunshine/Moonlight
 - Web app for users, tray app for hosts
 - Matchmaker: auth, intent capture, matching, session lifecycle, billing
@@ -75,7 +75,7 @@ Traditional cloud computing routes every workload through centralized datacenter
 | Plan | Rôle | Outils |
 |---|---|---|
 | Contrôle | Auth, matching, billing | Matchmaker (custom) |
-| Calcul | Exécute les sessions | Standard: Firecracker (Linux host) or QEMU+WHPX (Windows host). Pro: QEMU+KVM+VFIO (Linux) or Hyper-V GPU assignment (Windows). GPU assignment is exclusive for the session. |
+| Calcul | Exécute les sessions | Standard: QEMU+KVM (Linux host) or QEMU+WHPX (Windows host). Pro: QEMU+KVM+VFIO (Linux) or Hyper-V GPU assignment (Windows). GPU assignment is exclusive for the session. |
 | Réseau | Connecte user↔VM↔storage | Tailscale / Headscale |
 | Stockage | Persistance des données | Storj + rclone |
 
@@ -83,7 +83,7 @@ Traditional cloud computing routes every workload through centralized datacenter
 
 ## 8. Contraintes Techniques et Légales
 
-- Firecracker is Linux/KVM only. It does not run on Windows. Standard Lab on a Windows host uses QEMU+WHPX (or Hyper-V), not Firecracker
+- Standard Lab runs QEMU on both host OSes: KVM on Linux, WHPX on Windows. The guest uses QEMU user-mode networking, so the volunteer's PC needs no root-owned network device (decision 2026-11-15; Firecracker was dropped because it needs a separate kernel and a TAP device)
 - CPU/RAM sharing is concurrent with the host's own use. GPU sharing on consumer hardware is exclusive for the session (passthrough / whole-device assignment). Realistic options: a second GPU, or a later schedule when the host is away. SR-IOV/vGPU is out of scope
 - Pro/Gamer hosts on Linux require an IOMMU-capable CPU/motherboard (VT-d / AMD-Vi). On Windows they need a GPU the hypervisor can assign, plus a remaining display path (iGPU or a second card) so the host can keep using the PC
 - Kernel-level anti-cheat (EAC, BattlEye, Vanguard) blocks some titles by vendor policy — not something the architecture can route around
@@ -93,9 +93,9 @@ Traditional cloud computing routes every workload through centralized datacenter
 
 ## 9. Stratégie de Développement — Par Où Commencer
 
-The Matchmaker (backend) is conventional, low-risk engineering. The compute pipeline — Firecracker+Kasm feeling native on Linux, QEMU+WHPX+Kasm feeling native on Windows, VFIO/Hyper-V GPU assignment + Sunshine hitting playable latency — is where the real technical risk lives. Development should follow risk first, not layer first:
+The Matchmaker (backend) is conventional, low-risk engineering. The compute pipeline — QEMU+KVM+Kasm feeling native on Linux, QEMU+WHPX+Kasm feeling native on Windows, VFIO/Hyper-V GPU assignment + Sunshine hitting playable latency — is where the real technical risk lives. Development should follow risk first, not layer first:
 
-1. Manually validate one Standard session on Linux (Firecracker+Kasm) and one on Windows (QEMU+WHPX+Kasm), plus one Pro session (QEMU+VFIO or Hyper-V GPU assignment + Sunshine) — no server, no UI — to confirm the core technical bet holds
+1. Manually validate one Standard session on Linux (QEMU+KVM+Kasm) and one on Windows (QEMU+WHPX+Kasm), plus one Pro session (QEMU+VFIO or Hyper-V GPU assignment + Sunshine) — no server, no UI — to confirm the core technical bet holds
 2. Build a minimal Matchmaker: one hardcoded host, one user, provisioning triggered by code instead of by hand
 3. Build the client web app around that working loop
 4. Generalize: real matching across many hosts, billing, automated host onboarding
@@ -140,7 +140,7 @@ The Matchmaker (backend) is conventional, low-risk engineering. The compute pipe
 - **Matchmaker** — Service central qui authentifie les utilisateurs, fait correspondre demande et host, et pilote le cycle de vie des sessions
 - **Host Agent** — Application légère installée chez le host, qui rejoint le réseau maillé et déclenche le provisioning des VMs
 - **Base Image** — Image système standby, signée, prête à démarrer instantanément sur un host
-- **Firecracker** — MicroVM légère basée sur KVM, sans passthrough PCI, utilisée pour le Standard Lab **sur un host Linux uniquement**. Elle ne tourne pas sur Windows.
+- **KVM** — Hyperviseur intégré au noyau Linux. Backend QEMU pour le Standard Lab (et, avec VFIO, pour le Pro Lab) sur un host Linux.
 - **WHPX** — Windows Hypervisor Platform. Backend QEMU pour le Standard Lab sur un host Windows, sans installer Linux sur la machine du volontaire.
 - **VFIO** — Mécanisme du noyau Linux permettant le passthrough direct d'un GPU physique vers une VM. Exclusive pour la durée de la session.
 - **Tailscale / Headscale** — Réseau maillé chiffré (WireGuard) gérant la traversée NAT et le contrôle d'accès

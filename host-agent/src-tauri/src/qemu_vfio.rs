@@ -18,7 +18,7 @@ use thiserror::Error;
 use crate::host_capabilities::HostCapabilities;
 use crate::launch::LaunchConfig;
 use crate::provision::{HostOs, LabTier};
-use crate::qemu::{self, DEVICE_ARG, MEMORY_ARG, SMP_ARG};
+use crate::qemu_whpx::{self, DEVICE_ARG, MEMORY_ARG, SMP_ARG};
 
 pub const QEMU_BIN_ENV: &str = "HOST_AGENT_QEMU_BIN";
 pub const ENABLE_KVM: &str = "-enable-kvm";
@@ -191,21 +191,21 @@ pub fn vfio_device_arg(pci_address: &str) -> String {
     format!("{VFIO_DEVICE_PREFIX}{pci_address}")
 }
 
-/// KVM + q35 + VFIO + SLIRP. No TCG, no WHPX, no Firecracker.
+/// KVM + q35 + VFIO + SLIRP. No TCG, no WHPX.
 pub fn argv(arch: &str, vcpu_count: u32, memory_mib: u64, disk: &Path, pci_address: &str) -> Vec<String> {
     let smp = format!("cores={vcpu_count}");
-    let memory = qemu::memory_flag(memory_mib);
+    let memory = qemu_whpx::memory_flag(memory_mib);
     let disk = disk.to_string_lossy().into_owned();
     let mut args = vec![
         ENABLE_KVM.to_string(),
-        qemu::MACHINE_ARG.to_string(),
+        qemu_whpx::MACHINE_ARG.to_string(),
         if is_aarch64(arch) {
-            qemu::MACHINE_VIRT.to_string()
+            qemu_whpx::MACHINE_VIRT.to_string()
         } else {
             MACHINE_Q35.to_string()
         },
-        qemu::CPU_ARG.to_string(),
-        qemu::CPU_HOST.to_string(),
+        qemu_whpx::CPU_ARG.to_string(),
+        qemu_whpx::CPU_HOST.to_string(),
         SMP_ARG.to_string(),
         smp,
         MEMORY_ARG.to_string(),
@@ -215,7 +215,7 @@ pub fn argv(arch: &str, vcpu_count: u32, memory_mib: u64, disk: &Path, pci_addre
         DEVICE_ARG.to_string(),
         vfio_device_arg(pci_address),
     ];
-    args.extend(qemu::net_argv());
+    args.extend(qemu_whpx::net_argv());
     args
 }
 
@@ -332,7 +332,7 @@ pub fn invoke(
         request.disk,
         request.pci_address,
     );
-    args.extend(crate::guest_net::qemu_fw_cfg_argv(
+    args.extend(crate::guest_bootstrap::qemu_bootstrap_argv(
         request.bootstrap_origin,
         request.bootstrap_token,
     ));
@@ -476,7 +476,7 @@ mod tests {
         assert_eq!(args[0], ENABLE_KVM);
         assert!(args.contains(&MACHINE_Q35.to_string()));
         assert!(args.iter().any(|arg| arg == "vfio-pci,host=0000:01:00.0"));
-        assert!(args.windows(2).any(|w| w[0] == qemu::NETDEV_ARG && w[1] == qemu::NETDEV_USER));
+        assert!(args.windows(2).any(|w| w[0] == qemu_whpx::NETDEV_ARG && w[1] == qemu_whpx::NETDEV_USER));
         assert!(!args.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));
         assert!(!args.iter().any(|arg| arg.contains("whpx")));
         assert_eq!(recorder.spawn_calls().len(), 1);

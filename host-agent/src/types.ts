@@ -67,7 +67,7 @@ export type HypervisorAction =
   | "fetchFailed"
   | "installFailed";
 
-export type HypervisorName = "firecracker" | "qemu" | "none";
+export type HypervisorName = "qemu" | "none";
 
 /** Locate/fetch log for the OS hypervisor binary. Never invoked. */
 export interface HypervisorStatus {
@@ -88,7 +88,7 @@ export type GuestImageAction =
   | "rejected"
   | "fetchFailed";
 
-export type GuestImageBackend = "firecracker" | "qemu" | "none";
+export type GuestImageBackend = "qemu" | "none";
 
 /** Locate/fetch log for the signed guest image. Never booted. */
 export interface GuestImageStatus {
@@ -103,7 +103,6 @@ export interface GuestImageStatus {
 
 export type LaunchBackend =
   | "qemu-kvm"
-  | "firecracker"
   | "qemu-whpx"
   | "qemu-vfio"
   | "hyperv-gpu";
@@ -114,7 +113,6 @@ export interface LaunchConfig {
   labTier: "standard" | "pro";
   vcpuCount: number;
   memoryMib: number;
-  kernelPath: string | null;
   rootfsPath: string | null;
   /** Present only for Pro when a GPU is dedicated. Omitted on Standard. */
   gpu?: {

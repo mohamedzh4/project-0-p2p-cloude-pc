@@ -502,7 +502,7 @@ mod tests {
             "{} {} {}",
             caps.summary, caps.standard.reason, caps.pro.reason
         );
-        for banned in ["Firecracker", "QEMU", "WHPX", "choose", "which backend"] {
+        for banned in ["QEMU", "WHPX", "choose", "which backend"] {
             assert!(
                 !blob.contains(banned),
                 "capability copy must not mention {banned:?}: {blob}"

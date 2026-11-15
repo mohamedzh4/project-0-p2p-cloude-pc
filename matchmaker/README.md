@@ -29,7 +29,7 @@ How Matchmaker finds the agent: `hosts.agent_url` from inventory, else optional
 only when the agent does not answer. A placeholder seed (`.invalid`) is not
 occupied — the book is 502 and the session row is deleted. OS/backend
 selection stays in Host Agent Rust (`plan_provision`); this service does not
-name Firecracker/QEMU/WHPX.
+name QEMU/WHPX/VFIO.
 
 ## What it does
 
@@ -198,13 +198,14 @@ curl -s http://127.0.0.1:8000/v1/sessions \
 
 ## Tests
 
-Needs the test database in `TEST_DATABASE_URL` (created by compose).
+Needs the test database in `TEST_DATABASE_URL` (created by compose). Any
+empty Postgres works; the tests create and migrate their own tables.
 
 ```bash
 pytest
 ```
 
-Expect **166** passed (phase 31). Unit tests mock renterd S3 and Headscale
+Or run every suite in the repo with `bash scripts/check.sh` from the root. Unit tests mock renterd S3 and Headscale
 HTTP; they do not start Docker or talk to a live Sia network.
 
 ## API
@@ -279,7 +280,7 @@ webview.
 
 - Real measured latency / reliability scoring (declared-cap ranking is in)
 - Payment processors / host payouts (internal ledger only)
-- Invoking Firecracker, QEMU, Kasm, Sunshine, or VFIO
+- Invoking QEMU, Kasm, Sunshine, or VFIO
 - Pairwise `tag:session-<uuid>` ACLs (Headscale 0.26 file policy; role tags remain)
 - rclone / Tailscale inside a live guest (argv/plan exist; no guest image in-repo)
 - Storj

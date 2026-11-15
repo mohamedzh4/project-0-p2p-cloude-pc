@@ -5,7 +5,7 @@ Implemented in code. Not yet run on physical hardware.
 See `PROJECT_STATUS.md`. Guest disks: `guest-images/README.md`.
 Never write "confirmed working" until a human reports a live session on metal.
 Do not invent lab output. After a successful spawn, provision polls Kasm
-on `https://{guestMesh.hostname}/` (HTTPS 443) and returns that URL, or 400
+on `https://{guestMesh.hostname}:8443/` and returns that URL, or 400
 if it never answers. Tests inject loopback HTTP. Metal still needs guest net.
 
 Phase 28 starts QEMU (`-accel whpx`) from Host Agent `POST /v1/provision`
@@ -25,7 +25,7 @@ Unattended blockers. Meeting them does not close the hardware line.
    `/D=`; UAC consent is still manual).
 3. Verified Standard disk (phase 20 fetch / phase 26 Packer
    `guest-images/output/standard/rootfs.img`). Host Agent cache name is
-   `rootfs.img`; `-hda` accepts raw or qcow2 content.
+   `rootfs.img` (raw), attached as virtio-blk.
 4. Guest net is QEMU SLIRP user-net (no TAP-Windows). A successful spawn
    plus locator poll still needs a reachable Kasm on the mesh hostname.
    Timeout is 400, not a `.invalid` success.

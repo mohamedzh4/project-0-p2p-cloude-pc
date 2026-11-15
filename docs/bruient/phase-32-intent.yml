@@ -1,0 +1,32 @@
+- main [ref=f5e3]:
+  - generic [ref=f5e4]:
+    - paragraph [ref=f5e5]: Matchmaker harness
+    - heading "Lab session" [level=1] [ref=f5e6]
+    - paragraph [ref=f5e7]:
+      - text: Sign in, say what you want to do, and Matchmaker auto-matches an approved live host. Intent maps to Standard (CPU/RAM slice, Kasm) or Pro (exclusive GPU, Sunshine / Moonlight). A live locator is not the
+      - code [ref=f5e8]: .invalid
+      - text: stub TLD. This is not the product UI.
+  - generic [ref=f5e20]:
+    - generic [ref=f5e21]:
+      - generic [ref=f5e22]:
+        - text: Signed in as
+        - strong [ref=f5e23]: phase32-loop@test.example
+      - button "Sign out" [ref=f5e24] [cursor=pointer]
+    - generic [ref=f5e25]:
+      - generic [ref=f5e26]:
+        - generic [ref=f5e27]: What do you want to do in your lab today?
+        - textbox "What do you want to do in your lab today?" [ref=f5e28]:
+          - /placeholder: e.g. write code, or play a game with a dedicated GPU
+      - group "Example intents" [ref=f5e29]:
+        - button "Office / coding" [ref=f5e30] [cursor=pointer]
+        - button "Game (dedicated GPU)" [ref=f5e31] [cursor=pointer]
+        - button "GPU model training" [ref=f5e32] [cursor=pointer]
+      - paragraph [ref=f5e33]: Answer the prompt to choose a lab tier.
+      - paragraph [ref=f5e34]:
+        - text: Host inventory is register + heartbeat on Matchmaker (then manual approve). Request session posts
+        - code [ref=f5e35]: labTier
+        - text: only.
+      - button "Request session" [disabled] [ref=f5e37]
+  - generic [ref=f5e38]:
+    - heading "Session history" [level=2] [ref=f5e39]
+    - paragraph [ref=f5e40]: Could not load credits from Matchmaker yet.

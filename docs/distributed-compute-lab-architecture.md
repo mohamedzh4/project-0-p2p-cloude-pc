@@ -16,44 +16,25 @@ Four principles run through every decision below:
 | Plane | Purpose | Owned by |
 |---|---|---|
 | **Control plane** | Auth, matching, billing, session lifecycle | Your custom Matchmaker service |
-| **Compute plane** | Runs the actual virtual desktops | Host PCs that stay in daily use. Isolation is OS-conditional: Firecracker on Linux, QEMU+WHPX (or Hyper-V) on Windows; Pro sessions add GPU passthrough on top |
+| **Compute plane** | Runs the actual virtual desktops | Host PCs that stay in daily use. Isolation is a QEMU VM: KVM on Linux, WHPX on Windows; Pro sessions add GPU passthrough on top |
 | **Network plane** | Connects user ↔ VM ↔ storage securely | Tailscale / self-hosted Headscale, plus an operator-run **public HTTPS gateway** (`tag:gateway`) so a browser with zero Tailscale install can reach Standard Lab Kasm |
 | **Storage plane** | Persists user files across sessions | Storj, mounted via rclone |
 
 Everything in this document fits into one of these four planes.
 
-## Implemented vs this paper (2026-09-05)
+## This paper vs the code
 
-This file is the **target** architecture. Software on local `main` after
-execution phase 33 is the **control-plane MVP** plus Linux Standard Firecracker
-**InstanceStart**, Windows Standard QEMU **`-accel whpx`**, Linux Pro
-**vfio-pci bind apply**, Windows Pro **Hyper-V DDA/GPU-P apply**, and a
-**live Kasm/Sunshine locator poll** after invoke/apply (tests inject loopback;
-metal still needs TAP/guest net), a Headscale
-mint+join contract, a default-deny ACL file, session ephemeral guest/user
-tags, a platform exit-node **guest join plan** (not live egress), a **renterd**
-S3 storage contract (not Storj; human decision 2026-09-05), Pro
-Sunshine/Moonlight **locators** on session JSON (not a live stream), a Host
-Agent capability probe, hypervisor **binary** locate/fetch (Firecracker
-cache on Linux; Windows QEMU NSIS silent install with `/S` `/D=` — UAC still
-manual), signed **guest-image**
-locate/fetch (Linux Firecracker/Pro and Windows Standard images verified
-SHA-256+Ed25519 before ready; macOS skip), a **launch config** from clamped
-sliders, a **VFIO/DDA bind** (Linux Pro provision apply +
-rollback on injectable/live sysfs; window plan-only; Windows Pro Hyper-V DDA/GPU-P apply from provision via injectable runner + rollback), **insufficient-resource
-rejection UX** (blocked tiers are not offered), and an **on-target Host Agent
-binary** (phase 33: `npm run tauri build` on Linux/Windows; packaged `.env`).
-It is not a live lab.
+This file is the **target** architecture. What is built, and what has run on
+real hardware, is in `PROJECT_STATUS.md`. Two decisions changed the paper:
 
-| Paper | In-repo now |
-| --- | --- |
-| Four planes | Control plane (Matchmaker). Compute: Linux Standard can InstanceStart Firecracker; Windows Standard can spawn QEMU `-accel whpx`; Linux Pro can apply vfio-pci from provision (window plan-only); Windows Pro can apply Hyper-V DDA/GPU-P from provision (window plan-only). Network plane: Headscale mint+join, default-deny ACL file, host `tag:host`, session `tag:guest`/`tag:user`, guest `--exit-node` plan, public HTTPS gateway (`tag:gateway`, scoped tokens). Storage: renterd S3 locators + guest rclone argv (not Storj; zen testnet until a funded mainnet go-ahead); live mount needs a guest network |
-| Standard: Firecracker (Linux) / QEMU+WHPX (Windows) + Kasm in the guest | `plan()` never invokes. Linux Standard `POST /v1/provision` starts Firecracker (`--api-sock`, `--enable-pci`, then PUT boot-source / drives/rootfs / machine-config / `InstanceStart`) when the probe offers Standard and binary + kernel + verified `rootfs.img` are present. After invoke, provision polls Kasm on `https://{guestMesh.hostname}/` (443) and returns that URL, or 400 if it never answers (tests inject loopback). Windows Standard `POST /v1/provision` starts QEMU with qemu.org `-accel whpx` when the probe offers Standard and binary + verified disk are present (no TCG; Hyper-V is not a Standard boot fallback), then polls Kasm the same way. Eligibility gate (phase 23) still refuses an unoffered tier. Phase 19 locates/fetches the Firecracker **binary** on Linux (SHA-256, user cache; fetch never execs). Phase 24 fetches/runs the Windows QEMU NSIS installer (`/S` `/D=`; UAC still manual). Phase 20 locates/fetches the signed **guest image** on Linux and Windows Standard. Phase 21 maps clamped sliders to a **launch config** JSON. Phase 26 Packer pipeline builds signed disks (`guest-images/`). Standard-Linux / Standard-Windows: implemented in code, not yet run on physical hardware. |
-| Pro: VFIO / Hyper-V GPU + Sunshine | Stubs require `sharedGpuId` and set `gpuExclusive`. Launch config includes `{ id, exclusive: true }` when `shareGpu` is on. Linux VFIO bind applies from Matchmaker provision against injectable/live sysfs with rollback (window stays plan-only; `cfg(test)` refuses live `/sys`). Windows DDA/GPU-P apply from Matchmaker provision uses an injectable Hyper-V runner with rollback (not live PowerShell in tests; window stays plan-only). After GPU apply, provision polls Sunshine on `https://{guestMesh.hostname}:47990/` and returns that URL, or 400 if it never answers. Session JSON `streamer: sunshine` + Moonlight hint. Pro-GPU: implemented in code, not yet run on physical hardware; no live stream on metal |
-| Intent capture, ranking, billing | FR2 harness maps intent → `labTier`; ranking is `RankedHostSelector` (declared CPU/RAM, Pro GPU id); internal `ledger_entries` meter at session end (no payment processor). Phase 32 web loop auto-matches and opens a live locator when Matchmaker returns one |
-| Tailscale/Headscale + exit-node egress | Phase 14: self-hosted Headscale compose + Matchmaker preauth mint + Host Agent Rust join. **No Tailscale SaaS.** Phase 14c: default-deny `acl.hujson` + host `tag:host`. Phase 17: ephemeral guest/user tags; guest join plan includes `--exit-node`. Phase 35: operator **public HTTPS gateway** (`tag:gateway` ↔ `tag:guest`) reverse-proxies a scoped token to the mesh Kasm/Sunshine URL so a browser needs no Tailscale install. Headscale 0.26 still cannot pairwise-isolate sessions. Live egress still needs a guest image (§9 items 4–5). Implemented in code, not yet run across real networks |
-| Storj + rclone | **Not used.** Implemented storage is **renterd S3** (human decision 2026-09-05): compose + per-user bucket + guest rclone argv/plan. Live guest mount still needs a guest image |
-| Host Agent tray / mesh / signed images | Tray + pause + presence. Signed image **verify** before stub boot (fixture bytes). Phase 20 **fetch** to user cache + SHA-256/Ed25519 before ready (Linux + Windows Standard; no CDN; no private key). Phase 21 **launch config** from sliders + exclusive GPU id (JSON document). Phase 22 **VFIO/DDA plan** (Linux mock-sysfs bind + rollback; Windows DDA/GPU-P apply on injectable runner; never Firecracker). Phase 29 **Linux Pro VFIO apply** from provision (window still plan-only). Phase 30 **Windows Pro Hyper-V apply** from provision (window still plan-only). Phase 23 **eligibility**: probe + CPU/RAM/disk floor + refused VFIO plan; blocked tier not offered. Host mesh mint+join tagged `tag:host`; session guest/user tags on Matchmaker JSON; Host Agent never `--exit-node`. Phase 19: Firecracker binary fetch to user cache. Phase 27: Linux Standard `InstanceStart` (`firecracker.rs`; tests inject argv/API). Phase 28: Windows Standard `-accel whpx` (`qemu.rs`; tests inject argv). Phase 31: live Kasm/Sunshine locator poll after invoke/apply (tests inject loopback) |
+- **Storage is Sia renterd, not Storj** (2026-09-05). See §8.
+- **Linux Standard uses QEMU+KVM, not Firecracker** (2026-11-15). The signed
+  Ubuntu disk boots its own kernel, so there is no separate kernel to build
+  and ship. QEMU's SLIRP user networking gives the guest outbound access
+  without root or a TAP device on the volunteer's PC. Windows already used
+  QEMU, so both OSes now share one image format and almost one launch path.
+  The cost is a heavier VMM and slower cold boot than a microVM. Firecracker
+  was implemented first (phase 27) and removed once it was unused.
 
 Do not treat a passing pytest/cargo suite as a live session on metal.
 
@@ -63,10 +44,10 @@ Do not treat a passing pytest/cargo suite as a live session on metal.
 
 | | |
 |---|---|
-| Isolation | **OS-conditional.** Linux host → **Firecracker** microVM (KVM, ~125ms cold boot, minimal device model). Windows host → **QEMU with WHPX** (Windows Hypervisor Platform), or Hyper-V if WHPX is unavailable. Same isolation guarantee either way: the guest never sees the host filesystem or LAN. Firecracker does not run on Windows — there is no port, and hosts will commonly be ordinary Windows desktops — so the backend is chosen by OS, not by lab tier. |
+| Isolation | **QEMU full VM, accelerator chosen by host OS.** Linux host → **QEMU + KVM**. Windows host → **QEMU + WHPX** (Windows Hypervisor Platform). Same guest disk and the same isolation guarantee either way: the guest never sees the host filesystem or LAN, and reaches the network only through QEMU's user-mode NAT (SLIRP) and its own mesh connection. |
 | Streaming | **Kasm Workspaces** (KasmVNC protocol — zero-install, browser-native), running *inside* the guest |
 | Base image | Minimal Linux (Debian/Ubuntu minimal + lightweight desktop environment), Kasm agent pre-baked in — the guest OS is independent of the host OS |
-| Why it fits | These workloads need a CPU/RAM slice, not a GPU. The host keeps using the rest of the machine. On Linux, Firecracker's tiny footprint still lets one host run several concurrent Standard sessions; on Windows, QEMU+WHPX is heavier but avoids asking a volunteer to dual-boot or install Linux. |
+| Why it fits | These workloads need a CPU/RAM slice, not a GPU. The host keeps using the rest of the machine. QEMU on both OSes avoids asking a volunteer to dual-boot or install Linux, and needs no root-owned network device. |
 
 ### 3.2 Pro/Gamer Lab — video editing, 3D rendering, gaming, AI
 
@@ -80,9 +61,9 @@ Do not treat a passing pytest/cargo suite as a live session on metal.
 
 ### Why the split is mandatory, not a design choice
 
-Firecracker deliberately ships **no PCI passthrough support** — it's a minimal-device-model VMM built for security through simplicity, not a general-purpose hypervisor. There is no configuration flag that unlocks GPU passthrough on it. Splitting the stack at the GPU boundary isn't a shortcut; it's the only correct answer, and the two-tier structure you proposed already reflects that correctly.
+A Standard session lends a CPU/RAM slice while the host keeps everything else. A Pro session takes one whole GPU away from the host for its duration (§3.3) and needs IOMMU support, a clean GPU reset, and a second display path on the host. Those are different promises to the volunteer, so they are different tiers even though both now run on QEMU.
 
-The Standard/Pro split is independent of the Linux/Windows backend split. A Windows host still offers a Standard Lab (QEMU+WHPX, no GPU) and a Pro Lab (GPU assigned to the guest). A Linux host still offers Firecracker for Standard and QEMU+VFIO for Pro.
+The Standard/Pro split is independent of the Linux/Windows backend split. A Windows host still offers a Standard Lab (QEMU+WHPX, no GPU) and a Pro Lab (GPU assigned to the guest). A Linux host offers QEMU+KVM for Standard and QEMU+KVM+VFIO for Pro.
 
 ### 3.3 What "sharing" actually means on a machine the host still uses
 
@@ -102,8 +83,8 @@ The Host Agent must present GPU sharing as that exclusive trade-off, not as a sl
 
 | Layer | Tool | Role | Alternative worth knowing |
 |---|---|---|---|
-| MicroVM (Standard, Linux host) | Firecracker | Hardware isolation, instant boot. Linux/KVM only — does not run on Windows | Cloud Hypervisor (similar Rust VMM, also Linux) |
-| Full VM (Standard, Windows host) | QEMU + WHPX | Same guest isolation on a Windows desktop, no Linux install required on the host | Hyper-V as the hypervisor if WHPX is unavailable |
+| Full VM (Standard, Linux host) | QEMU + KVM | Hardware isolation; boots the signed disk's own kernel; SLIRP networking without root | Firecracker / Cloud Hypervisor (faster microVMs, but need a separate kernel and a TAP device) |
+| Full VM (Standard, Windows host) | QEMU + WHPX | Same guest disk and isolation on a Windows desktop, no Linux install required on the host | Hyper-V as the hypervisor if WHPX is unavailable |
 | Full VM (Pro, Linux host) | KVM + QEMU + VFIO | Exclusive GPU passthrough for the session | — this is already the standard approach |
 | Full VM (Pro, Windows host) | Hyper-V DDA / GPU-P, or QEMU+WHPX with passthrough | Exclusive GPU assignment for the session; host needs another display path (iGPU or a second card) | — |
 | Desktop streaming | Kasm Workspaces | Browser-based remote desktop, inside the guest | Apache Guacamole (more manual assembly required) |
@@ -133,10 +114,10 @@ This is the one component with no off-the-shelf substitute. Most of the engineer
 2. App asks: **"What do you want to do in your lab today?"**
 3. Matchmaker maps the answer to Standard or Pro/Gamer, plus any GPU/VRAM requirement
 4. Matchmaker finds the best available host and reserves it
-5. Host Agent boots the relevant VM from its standby base image — Firecracker (Linux) or QEMU+WHPX (Windows) for Standard; QEMU+VFIO or Hyper-V GPU assignment for Pro
+5. Host Agent boots the relevant VM from its standby base image — QEMU+KVM (Linux) or QEMU+WHPX (Windows) for Standard; QEMU+VFIO or Hyper-V GPU assignment for Pro
 6. If the user has existing files, their Storj bucket is mounted **inside the VM** via rclone — the decryption key is only ever available inside the isolated guest, never on the host's bare disk
 7. The browser connects directly to the session over the Tailscale-secured stream (KasmVNC, or Sunshine/Moonlight/Selkies depending on tier)
-8. User works. The guest is isolated; the host keeps using the rest of their PC. Firecracker's near-zero overhead (Standard on Linux) or GPU passthrough's near-native performance (Pro) is what makes the session feel like a physical machine rather than a remote one. If this is a Pro session, the dedicated GPU is unavailable to the host until logout.
+8. User works. The guest is isolated; the host keeps using the rest of their PC. Hardware-accelerated virtualization (Standard) or GPU passthrough's near-native performance (Pro) is what makes the session feel like a physical machine rather than a remote one. If this is a Pro session, the dedicated GPU is unavailable to the host until logout.
 9. In the background, changed files sync to Storj automatically every 5–10 minutes, **plus immediately on an explicit save or on logout** — see §9 item 6 for why the fixed interval alone isn't enough
 10. User logs out → Matchmaker triggers a final sync flush, then the VM and its ephemeral virtual disk are destroyed outright
 11. Host returns to standby with a clean base image. Nothing the user did is recoverable from the host, because there was never a real file on its physical disk to recover
@@ -150,7 +131,7 @@ This is the one component with no off-the-shelf substitute. Most of the engineer
  - Registers its capacity with the Matchmaker
  - Downloads the correct **signed** base image for its resource class and keeps it on standby
 4. Host UI stays minimal: idle / in-session / earnings — nothing to operate during a session. The host keeps using the machine.
-5. On match, the Matchmaker signals the Agent → the OS-appropriate backend launches (Firecracker, QEMU+WHPX, or QEMU+VFIO / Hyper-V GPU assignment) → storage mounts → streaming service starts → Agent reports "ready"
+5. On match, the Matchmaker signals the Agent → the OS-appropriate backend launches (QEMU+KVM, QEMU+WHPX, or QEMU+VFIO / Hyper-V GPU assignment) → storage mounts → streaming service starts → Agent reports "ready"
 6. For a Standard session the host keeps working as usual, minus the capped CPU/RAM slice. For a Pro session they also lose the dedicated GPU until the session ends.
 7. If the host disconnects mid-session, the Matchmaker's heartbeat monitor (missed pings for ~30–60s) flags the session as interrupted. Because of the sync cadence in §6.9, the user loses at most a few minutes of work and can be re-matched to a different host with their data intact
 8. On a normal session end, the Agent wipes the ephemeral VM disk, returns the GPU to the host if one was assigned, returns to standby, and usage is reported for payout
@@ -170,7 +151,7 @@ not live on the volunteer host’s bare disk. See `docs/runbooks/renterd.md`.
 
 | # | Gap | Risk | Mitigation |
 |---|---|---|---|
-| 1 | Kasm's *default* isolation is Docker containers, which share the host kernel | Container escape could reach the host | Run Kasm's containers **inside** the guest VM — Firecracker (Linux) or QEMU/Hyper-V (Windows) is the real isolation boundary, Kasm is just the streaming layer on top of it |
+| 1 | Kasm's *default* isolation is Docker containers, which share the host kernel | Container escape could reach the host | Run Kasm's containers **inside** the guest VM — QEMU (KVM on Linux, WHPX on Windows) or Hyper-V is the real isolation boundary, Kasm is just the streaming layer on top of it |
 | 2 | A malicious host could tamper with the base image before serving it | Malware or a keylogger injected before the user ever connects | Sign every base image with a platform key; the Agent and hypervisor verify the hash before every boot, and reject and re-pull on mismatch |
 | 3 | No confidential computing by default | A host with physical access could theoretically inspect a running guest's memory | Route sessions flagged as sensitive to hosts with AMD SEV-SNP / Intel TDX when available; otherwise be explicit in your ToS about the trust model |
 | 4 | Overly broad Tailscale ACLs | A guest VM could reach the host's other LAN devices, or another user's session | Ephemeral, tagged, **per-session** tailnet identities; default-deny ACLs allowing only `VM ↔ Matchmaker` and `VM ↔ assigned user` |
@@ -220,7 +201,7 @@ Items 5, 10, and 12 are the ones most likely to be missing from a first draft, a
 
 ## 12. Suggested Build Order
 
-1. **Standard Lab only**, single region, hosts approved manually — wire the OS-conditional backend (Firecracker+Kasm on Linux, QEMU+WHPX+Kasm on Windows) + Tailscale + Storj together by hand to validate the core loop end to end
+1. **Standard Lab only**, single region, hosts approved manually — wire the OS-conditional backend (QEMU+KVM+Kasm on Linux, QEMU+WHPX+Kasm on Windows) + Tailscale + Storj together by hand to validate the core loop end to end
 2. Automate host onboarding (the installer script), and build the real Matchmaker: matching logic + billing
 3. Add the **Pro/Gamer Lab** (QEMU+VFIO or Hyper-V GPU assignment + Sunshine), with latency-aware matching and honest GPU exclusivity
 4. Harden: base-image signing, exit-node routing, reliability scoring, and — if the market wants it — a confidential-computing tier

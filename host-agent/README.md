@@ -19,11 +19,11 @@ does these things and nothing else:
    `POST /v1/hosts/{id}/heartbeat` from Rust every 10 seconds. Pause sharing to
    stop pings immediately (next tick) so the host goes stale in matching.
 6. Selects a provision target from host OS × lab tier (Linux Standard
-   → Firecracker, Windows Standard → QEMU+WHPX,    Pro → QEMU+VFIO / Hyper-V GPU).
+   → QEMU+KVM, Windows Standard → QEMU+WHPX, Pro → QEMU+VFIO / Hyper-V GPU).
    macOS is an explicit unsupported variant. `plan()` never invokes a
-   hypervisor. Linux Standard `POST /v1/provision` starts Firecracker when
-   the probe offers Standard and the binary, kernel, and verified rootfs
-   are present (`InstanceStart` over a Unix socket). Windows Standard
+   hypervisor. Linux Standard `POST /v1/provision` starts the distro QEMU
+   with `-enable-kvm` when the probe offers Standard and the binary plus a
+   verified rootfs are present (SLIRP networking, no TAP). Windows Standard
    `POST /v1/provision` starts QEMU with documented `-accel whpx` when the
    probe offers Standard and the binary plus a verified disk are present.
    Linux Pro `POST /v1/provision` applies vfio-pci bind (rollback on
@@ -33,15 +33,15 @@ does these things and nothing else:
    (`apply: false`, `hyperv: None`) so opening it does not steal the GPU.
    The Hyper-V VM `dcl-pro-guest` must already exist;
    this agent does not create it. After DDA/GPU-P it runs `Start-VM`. After a successful invoke or
-   GPU apply, provision polls for a reachable Kasm (`https://{meshHost}/`,
-   443) or Sunshine (`https://{meshHost}:47990/`) locator and returns that
+   GPU apply, provision polls for a reachable Kasm (`https://{meshHost}:8443/`)
+   or Sunshine (`https://{meshHost}:47990/`) locator and returns that
    URL, or 400 if the streamer never answers. Tests inject loopback HTTP.
    Plan-only stubs may still return `https://provision.invalid/{backend}`.
 7. Optionally listens for `POST /v1/provision` from the Matchmaker
    (`HOST_AGENT_LISTEN_ADDR`). The handler verifies the advertised SHA-256
    digest + Ed25519 signature against `IMAGE_SIGNING_PUBLIC_KEY` and
    `IMAGE_LOCAL_DIGEST`, then calls `plan_provision`. Linux Standard with
-   boot inputs invokes Firecracker or returns 400 (no fake success). Windows
+   boot inputs invokes QEMU+KVM or returns 400 (no fake success). Windows
    Standard with boot inputs invokes QEMU `-accel whpx` or returns 400.
    Linux Pro with VFIO inputs applies vfio-pci or returns 400 (rollback on
    mid-step failure). Windows Pro with Hyper-V inputs applies DDA/GPU-P or
@@ -63,16 +63,16 @@ does these things and nothing else:
 10. Sits in the system tray (Rust, not the webview): tooltip, pause/resume,
     open window, quit. Closing the window hides to the tray when the icon
     installed.
-11. After the capability probe, locates or fetches the OS hypervisor **binary**
-    into a user cache (Linux Firecracker, documented GitHub URL + SHA-256).
+11. After the capability probe, locates the OS hypervisor **binary**. Linux
+    uses the distro `qemu-system-x86_64` (nothing is downloaded).
     Windows Standard fetches the documented Weilnetz NSIS installer, verifies
     SHA-512, and runs it with `/S` and `/D=<cache>` (NSIS Chapter 3). UAC may
     still appear (`qemu.nsi` `RequestExecutionLevel admin`) and cannot be
     suppressed. macOS skips with a reason. Locate/fetch never execs the
-    binary. Linux Standard provision (item 6) starts Firecracker from
-    `firecracker.rs`. Windows Standard provision starts QEMU from `qemu.rs`.
+    binary. Linux Standard provision (item 6) starts QEMU from
+    `qemu_kvm.rs`. Windows Standard provision starts QEMU from `qemu_whpx.rs`.
     The webview does not download it. Tests inject a fake
-    installer and a fake Firecracker/QEMU process.
+    installer and a fake QEMU process.
 12. Plans Pro GPU assignment from the dedicated GPU id: Linux vfio-pci
     (injectable sysfs, rollback on apply failure); Windows Hyper-V DDA
     (preferred) or exclusive GPU-P via an injectable PowerShell/CIM runner
@@ -190,7 +190,6 @@ Process environment still wins. Copy `.env.example` and fill at least:
 | `IMAGE_SIGNING_PUBLIC_KEY` + `IMAGE_LOCAL_DIGEST` | Required if listening |
 | `IMAGE_STANDARD_DIGEST` / `IMAGE_STANDARD_SIGNATURE` | Fetch+verify when Standard is offered |
 | `HOST_AGENT_STANDARD_IMAGE_URL` | `file://` or HTTP to the Packer `rootfs.img`. Matchmaker does not host blobs |
-| `FIRECRACKER_KERNEL` | Linux Standard only (or `vmlinux` next to the rootfs) |
 | `HEADSCALE_LOGIN_SERVER` | To join mesh; omit to skip join |
 | `HOST_AGENT_PRO_IMAGE_URL` + Pro `IMAGE_*` | Linux when Pro is offered |
 | `HOST_AGENT_HYPERV_VM` | Windows Pro; default `dcl-pro-guest` (VM must already exist, powered off) |
@@ -208,14 +207,14 @@ An operator must still **approve** the host on Matchmaker
 Detects hardware and whether Standard/Pro is offered → locates/fetches the
 OS hypervisor binary and signed guest image → you save sharing caps and
 register (pending until approved) → heartbeats every 10s while sharing is
-on → Matchmaker `POST /v1/provision` → Linux Standard InstanceStart /
+on → Matchmaker `POST /v1/provision` → Linux Standard QEMU+KVM /
 Windows Standard `-accel whpx` / Linux Pro VFIO apply / Windows Pro
 Hyper-V DDA or GPU-P → poll KasmVNC `:8443` or Sunshine `:47990` on the guest
 mesh hostname → return that URL or 400. The window never asks which
 backend. GPU bind from the window stays plan-only.
 
 Windows QEMU NSIS install still shows **UAC** (`qemu.nsi`
-`RequestExecutionLevel admin`). Firecracker/QEMU/PowerShell/`tailscale` are
+`RequestExecutionLevel admin`). QEMU/PowerShell/`tailscale` are
 spawned from Rust, not the Tauri shell plugin (capabilities stay narrow).
 
 ### Operator checklist
@@ -227,13 +226,13 @@ spawned from Rust, not the Tauri shell plugin (capabilities stay narrow).
 - [ ] Firewall allows TCP 7842 from Matchmaker
 - [ ] Image public key + digests/signatures from Packer `env.snippet` (not the fixture, for a real disk)
 - [ ] `HOST_AGENT_STANDARD_IMAGE_URL` (and Pro URL if offering Pro)
-- [ ] Linux Standard: `FIRECRACKER_KERNEL` (not the Firecracker demo kernel)
+- [ ] Linux Standard: distro `qemu-system-x86` installed, `/dev/kvm` read/write for the agent's user
 - [ ] `tailscale` on PATH if joining Headscale; `HEADSCALE_LOGIN_SERVER` reachable
 - [ ] Host approved on Matchmaker
 - [ ] Windows Standard: accept UAC for Weilnetz QEMU; WHPX available
 - [ ] Windows Pro: Hyper-V enabled, agent elevated, VM `dcl-pro-guest` exists and is off
 - [ ] Linux Pro: IOMMU + second display path
-- [ ] Guest net/TAP is in software (`dcl-tap0` / QEMU SLIRP); metal still has to exist for Kasm/Sunshine to answer the locator poll
+- [ ] Guest net is QEMU SLIRP in software; metal still has to exist for Kasm/Sunshine to answer the locator poll
 
 Restart Matchmaker after pulling recent commits if `GET /v1/sessions` is 405
 (stale uvicorn). That is not a web harness method mismatch (`POST` books,
@@ -268,30 +267,38 @@ host-agent/
 │   └── types.ts              mirrors the Rust models
 └── src-tauri/
     ├── src/
+    │   │   # app shell
+    │   ├── lib.rs            app setup, state, heartbeat loop, provision listener wiring
+    │   ├── commands.rs       the command surface exposed to the UI
+    │   ├── tray.rs           system tray in Rust (no webview tray APIs)
+    │   ├── env_file.rs       packaged `.env` paths (cwd, exe dir, app-config)
+    │   │   # this machine
     │   ├── models.rs         shared types, recommended defaults, clamping
     │   ├── hardware.rs       CPU + RAM detection
     │   ├── gpu.rs            NVIDIA detection with graceful fallback
-    │   ├── host_capabilities.rs  OS + KVM/WHPX/IOMMU/GPU probe (no Tauri; no hypervisor)
-    │   ├── hypervisor.rs     locate/fetch Firecracker (Linux) / QEMU NSIS (Windows); never exec here
-    │   ├── firecracker.rs    Linux Standard InstanceStart over Unix API (injected in tests)
-    │   ├── qemu.rs           Windows Standard `-accel whpx` (injected in tests)
+    │   ├── disk_space.rs     spare bytes on the image-cache volume
+    │   ├── host_capabilities.rs  OS + KVM/WHPX/IOMMU/GPU probe
+    │   ├── eligibility.rs    probe + CPU/RAM/disk floor + GPU plan → Standard/Pro offered or blocked
     │   ├── config.rs         load/save the sharing config; immediate pause
+    │   ├── agent_status.rs   paused / idle / in-session
+    │   │   # talking to the platform
     │   ├── identity.rs       persisted Matchmaker host id
-    │   ├── matchmaker.rs     inventory + heartbeat + earnings GET (clamp, fail-fast env)
-    │   ├── mesh.rs           Matchmaker preauth mint + tailscale up from env (no secrets in source; never --exit-node)
-    │   ├── storage.rs        Guest rclone argv/plan from locators or env (no S3 secrets, no spawn)
-    │   ├── agent_status.rs   paused / idle / in-session (no Tauri types)
-    │   ├── provision.rs      OS-conditional stub backends (plan() never invokes)
-    │   ├── image.rs          SHA-256 + Ed25519 verify; locate/fetch signed guest image (Linux + Windows Standard; never boot)
-    │   ├── launch.rs         clamped sliders → launch-config JSON (document only)
-    │   ├── eligibility.rs    probe + CPU/RAM/disk floor + VFIO plan → offered vs blocked
-    │   ├── env_file.rs       packaged `.env` paths (cwd, exe dir, app-config; fail-fast HOST_AGENT_ENV_FILE)
-    │   ├── disk_space.rs     spare bytes on the image-cache volume (not a disk inventory)
-    │   ├── gpu_bind.rs       VFIO plan; Linux Pro provision apply + rollback; Windows DDA/GPU-P apply from provision via injectable runner
-    │   ├── provision_http.rs POST /v1/provision → verify image → plan; Linux/Windows Standard may invoke; Linux Pro may VFIO-bind; Windows Pro may Hyper-V-assign
-    │   ├── tray.rs           system tray in Rust (no webview tray APIs)
-    │   ├── commands.rs       the command surface exposed to the UI
-    │   └── lib.rs            app setup and state
+    │   ├── matchmaker.rs     register + heartbeat + earnings client
+    │   ├── mesh.rs           Headscale preauth mint + `tailscale up`
+    │   ├── provision_http.rs POST /v1/provision and /v1/teardown: verify image → gate → boot → wait for streamer
+    │   ├── provision.rs      which backend this OS + tier uses (plan only, never boots)
+    │   ├── locator.rs        poll KasmVNC / Sunshine until the guest answers
+    │   ├── storage.rs        guest rclone argv from locators (no secrets)
+    │   │   # preparing a guest
+    │   ├── hypervisor.rs     find distro QEMU (Linux) / install pinned QEMU (Windows)
+    │   ├── image.rs          fetch + SHA-256 + Ed25519 verify of the signed guest disk
+    │   ├── launch.rs         sliders → launch config (vCPU, RAM, disk, GPU)
+    │   ├── guest_bootstrap.rs  bootstrap argv handed to the guest (SMBIOS + fw_cfg)
+    │   │   # starting a guest: one module per backend
+    │   ├── qemu_kvm.rs       Linux Standard: QEMU `-enable-kvm`
+    │   ├── qemu_whpx.rs      Windows Standard: QEMU `-accel whpx`
+    │   ├── qemu_vfio.rs      Linux Pro: QEMU+KVM with `-device vfio-pci`
+    │   └── gpu_bind.rs       Pro GPU hand-over: Linux vfio-pci bind, Windows Hyper-V DDA / GPU-P, with rollback
     └── tauri.conf.json
 ```
 
@@ -329,14 +336,12 @@ Copy `.env.example` to `.env` on the host machine (never commit `.env`):
 | `HOST_AGENT_IMAGE_CACHE` | no | User-writable dir for guest images. Default `~/.cache/dcl-host-agent/images` (Linux), `~/Library/Caches/dcl-host-agent/images` (macOS), `%LOCALAPPDATA%\dcl-host-agent\images` (Windows). |
 | `HOST_AGENT_STANDARD_IMAGE_URL` / `HOST_AGENT_PRO_IMAGE_URL` | when Standard/Pro offered | Bytes URL (`file://` or HTTP) for the signed image. Not a secret. Matchmaker does not host blobs. |
 | `HOST_AGENT_IMAGE_NETWORK` | tests only | `1` allows non-loopback HTTP during `cargo test`. Leave unset in CI. |
-| `FIRECRACKER_KERNEL` | Linux Standard boot | Kernel file, or `vmlinux` next to the verified rootfs. Packer does not invent one. |
 | `HEADSCALE_LOGIN_SERVER` | to join mesh | Headscale origin for `tailscale up --login-server`. Fail fast if join is attempted without it. Omit to skip join after register. |
 | `TAILSCALE_BIN` | no | Defaults to `tailscale` on PATH. |
 | `HOST_AGENT_HYPERV_VM` | no | Windows Pro VM name. Default `dcl-pro-guest`. Must already exist; not started. |
-| `HOST_AGENT_HYPERVISOR_CACHE` | no | User-writable dir for Firecracker and the Windows QEMU NSIS install. Default `~/.cache/dcl-host-agent/hypervisors` (Linux), `~/Library/Caches/dcl-host-agent/hypervisors` (macOS), `%LOCALAPPDATA%\dcl-host-agent\hypervisors` (Windows). |
-| `HOST_AGENT_FIRECRACKER_URL` / `HOST_AGENT_FIRECRACKER_SHA256` | no | Override the documented GitHub tarball + published SHA-256. Not secrets. |
+| `HOST_AGENT_HYPERVISOR_CACHE` | no | User-writable dir for the Windows QEMU NSIS install. Default `~/.cache/dcl-host-agent/hypervisors` (Linux), `~/Library/Caches/dcl-host-agent/hypervisors` (macOS), `%LOCALAPPDATA%\dcl-host-agent\hypervisors` (Windows). |
 | `HOST_AGENT_QEMU_URL` / `HOST_AGENT_QEMU_SHA512` | no | Override the pinned Weilnetz NSIS installer + published SHA-512. `HOST_AGENT_QEMU_SHA256` is accepted for test fixtures. Not secrets. |
-| `HOST_AGENT_QEMU_BIN` | no | Existing `qemu-system-*.exe` (skip fetch/install when present). |
+| `HOST_AGENT_QEMU_BIN` | no | Existing `qemu-system-*` binary. Linux: used instead of `/usr/bin/qemu-system-x86_64`. Windows: skips fetch/install. |
 | `HOST_AGENT_HYPERVISOR_NETWORK` | tests only | `1` allows non-loopback HTTP during `cargo test`. Leave unset in CI. |
 
 `tauri dev` / `cargo run` load `.env` from `host-agent/` or `host-agent/src-tauri/`.
@@ -476,7 +481,7 @@ is cleared.
 Windows and Linux are the real targets. macOS builds and runs for development,
 but GPU detection there always reports "No GPU detected" because NVML is
 Windows/Linux only. The provisioner treats macOS (and any other OS) as an
-explicit unsupported host: selection fails instead of aliasing to Firecracker.
+explicit unsupported host: selection fails instead of aliasing to another backend.
 
 GPU sharing in this UI is exclusive for the session: the selected card is
 handed to the guest, and the host loses it until logout. CPU/RAM sliders are
@@ -485,8 +490,8 @@ exclusivity copy is shown when a GPU-sharing host is registered.
 
 ## Notes for the next phase
 
-- Phase 34 finished TAP/SLIRP, Linux Pro QEMU+VFIO attach, Windows Pro
-  `Start-VM`, `/v1/teardown`, and QEMU fw_cfg bootstrap. Leftover paper is
+- Phase 34 finished SLIRP guest networking, Linux Pro QEMU+VFIO attach, Windows Pro
+  `Start-VM`, `/v1/teardown`, and the QEMU guest bootstrap (SMBIOS + fw_cfg). Leftover paper is
   pairwise ACLs, measured latency, Hyper-V guest bootstrap channel, and a
   human metal confirmation. Do not invent a live desktop. Hardware is
   implemented in code, not yet run on physical hardware.
@@ -503,7 +508,7 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   Matchmaker provision through an injectable runner (production PowerShell;
   tests refuse live `powershell.exe`; rollback on mid-step failure). The VM
   `dcl-pro-guest` must already exist; this agent does not create it and
-  now `Start-VM`s after GPU assign. Firecracker is never used for Pro.
+  now `Start-VM`s after GPU assign.
   Session guest/user tags live on Matchmaker JSON; this agent still joins as
   `tag:host` and never passes `--advertise-exit-node` or `--exit-node`.
   Complete provision locators return `guestRclone` argv (`--s3-env-auth`).
@@ -522,11 +527,10 @@ exclusivity copy is shown when a GPU-sharing host is registered.
   `POST /v1/provision` (window still plan-only). On metal, Hyper-V apply
   still needs an elevated agent, the Hyper-V feature, and an existing VM
   `dcl-pro-guest`. Phase 26
-  Packer pipeline produces signed guest disks. Phase 27 InstanceStarts
-  Firecracker on Linux Standard HTTP provision; phase 28 spawns QEMU
-  `-accel whpx` on Windows Standard; Firecracker uses TAP `dcl-tap0`;
-  QEMU uses SLIRP user-net.
-  Operator kernel is `FIRECRACKER_KERNEL` (Packer does not invent vmlinux).
+  Packer pipeline produces signed guest disks. Linux Standard provision
+  starts QEMU+KVM; Windows Standard spawns QEMU `-accel whpx`. Both use
+  SLIRP user-net and boot the disk's own kernel. (Phase 27 started
+  Firecracker; it was removed on 2026-11-15.)
 - The app icon is generated from code: `node scripts/generate-icon.mjs` writes
   `src-tauri/icons/source.png`, then `npm run tauri icon src-tauri/icons/source.png`
   derives every platform size. Replace the script when there is a real logo.

@@ -60,8 +60,9 @@ fio --name=rnd --filename=/tmp/t --size=1G --rw=randread --bs=4k --direct=1 --io
 | Memory (sysbench, 1 KiB blocks) | **4,191 MiB/s** | Fine for desktop use |
 | Disk sequential, 1 MiB, mixed R/W | **127 MiB/s read + 133 MiB/s write** | Good for large files |
 | Disk random 4 KiB read, QD32 | **1,426 IOPS** (5.7 MiB/s) | **Weak spot.** Likely the IDE `-hda` attachment; Linux kit uses virtio (`/dev/vda`) |
-| Internet download | not measured | `speed.cloudflare.com` test returned nothing (0.0); `apt` downloads worked. Retry with `curl -L -o /dev/null -w "http %{http_code}, %{speed_download} B/s\n" https://proof.ovh.net/files/100Mb.dat` |
-| Interactive feel (FPS, typing delay) | not measured | Next: `glxgears` FPS + subjective notes |
+| Internet download (guest) | **~433 kB/s average (~3.5 Mbit/s)**, 229 kB/s (~1.8 Mbit/s) at the end; stopped at 60.7 of 100 MB after 2 min 23 s | **Slow.** Cause not isolated yet: university Wi-Fi, the OVH server, or QEMU SLIRP user-net. Needs the same download on the Windows host to compare. (First `speed.cloudflare.com` attempt returned nothing.) |
+| `glxgears` (software OpenGL, 2 vCPU) | **518–672 FPS**, mostly 530–610 | Drawing inside the VM is fast (CPU only, no GPU). This is not the frame rate the browser receives; KasmVNC streams far fewer frames. |
+| Interactive feel (typing, dragging windows) | not reported yet | Owner to note: instant / slight delay / laggy |
 
 Raw output (trimmed of `apt` lines):
 
@@ -84,15 +85,48 @@ Mem:           3.8Gi       599Mi       2.7Gi       7.6Mi       807Mi       3.2Gi
 0.0 Mbit/s
 ```
 
+Internet retry and glxgears (same session):
+
+```
+$ curl -L -o /dev/null -w "http %{http_code}, %{size_download} bytes, %{speed_download} B/s\n" https://proof.ovh.net/files/100Mb.dat
+ 60  100M   60 60.7M    0     0   433k      0  0:03:56  0:02:23  0:01:33  229k^C
+$ glxgears
+2671 frames in 5.0 seconds = 534.172 FPS
+2809 frames in 5.0 seconds = 561.644 FPS
+2663 frames in 5.0 seconds = 532.537 FPS
+2895 frames in 5.0 seconds = 578.720 FPS
+2705 frames in 5.0 seconds = 540.971 FPS
+2717 frames in 5.0 seconds = 543.322 FPS
+2621 frames in 5.0 seconds = 524.198 FPS
+2740 frames in 5.0 seconds = 547.895 FPS
+2758 frames in 5.0 seconds = 551.318 FPS
+2591 frames in 5.0 seconds = 517.965 FPS
+2826 frames in 5.0 seconds = 564.886 FPS
+2824 frames in 5.0 seconds = 564.760 FPS
+2793 frames in 5.0 seconds = 558.573 FPS
+2768 frames in 5.0 seconds = 553.538 FPS
+2850 frames in 5.0 seconds = 569.934 FPS
+3217 frames in 5.0 seconds = 643.369 FPS
+3359 frames in 5.0 seconds = 671.721 FPS
+3269 frames in 5.0 seconds = 653.728 FPS
+2833 frames in 5.0 seconds = 566.273 FPS
+3224 frames in 5.0 seconds = 644.594 FPS
+3039 frames in 5.0 seconds = 607.643 FPS
+2999 frames in 5.0 seconds = 599.310 FPS
+3070 frames in 5.0 seconds = 613.643 FPS
+```
+
 ## Compare against this baseline
 
 When re-running, keep the same commands and record a new file in
 `docs/test-logs/` with the date and what changed. Planned comparisons:
 
 1. Windows disk as virtio instead of `-hda` (`lan-test.ps1` and
-   `host-agent/src-tauri/src/qemu.rs`): expect random 4 KiB IOPS to rise.
+   `host-agent/src-tauri/src/qemu_whpx.rs`): expect random 4 KiB IOPS to rise.
 2. `LAN_TEST_VCPUS=4`, `LAN_TEST_MEMORY_GIB=8`: CPU should roughly double.
 3. Host baseline on the same PC (test stopped): `winsat cpu -encryption`,
    `winsat disk -drive c`.
+   Same internet download on the host, to tell Wi-Fi from SLIRP:
+   `curl.exe -L -o NUL -w "%{speed_download} B/s" https://proof.ovh.net/files/100Mb.dat`
 4. Linux host (KVM) with the Linux kit.
 5. Signed Packer image instead of quick mode.

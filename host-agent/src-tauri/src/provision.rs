@@ -2,14 +2,14 @@
 //!
 //! Standard Lab backends are peers chosen by host OS: Linux → QEMU+KVM,
 //! Windows → QEMU+WHPX. Pro is a *different* target (QEMU+VFIO or Hyper-V GPU
-//! assignment), not Firecracker with a GPU bolted on. GPU assignment is
+//! assignment), not the Standard backend with a GPU bolted on. GPU assignment is
 //! exclusive for the session; CPU/RAM stay a concurrent slice.
 //!
 //! The HTTP port in `provision_http` verifies the signed image digest
 //! ([`crate::image::verify_image`]) **before** calling [`plan`]. Linux Standard
 //! provision may then start QEMU with KVM. Windows Standard may then
 //! start QEMU with `-accel whpx` (phase 28). `plan` itself never invokes a
-//! hypervisor — it only selects the backend. Do not put Firecracker/QEMU
+//! hypervisor — it only selects the backend. Do not put QEMU/WHPX
 //! details in the session router.
 
 use std::fmt;
@@ -28,7 +28,7 @@ pub enum HostOs {
     Linux,
     Windows,
     /// Dev-only. Hosting is unsupported; selection fails rather than pretending
-    /// this machine is a Firecracker host.
+    /// this machine can host.
     MacOs,
     Other,
 }
@@ -90,7 +90,6 @@ impl LabTier {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComputeBackend {
     QemuKvm,
-    Firecracker,
     QemuWhpx,
     QemuVfio,
     HyperVGpu,
@@ -100,7 +99,6 @@ impl ComputeBackend {
     pub fn slug(self) -> &'static str {
         match self {
             Self::QemuKvm => "qemu-kvm",
-            Self::Firecracker => "firecracker",
             Self::QemuWhpx => "qemu-whpx",
             Self::QemuVfio => "qemu-vfio",
             Self::HyperVGpu => "hyperv-gpu",
@@ -117,7 +115,6 @@ impl fmt::Display for ComputeBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::QemuKvm => "QEMU+KVM",
-            Self::Firecracker => "Firecracker",
             Self::QemuWhpx => "QEMU+WHPX",
             Self::QemuVfio => "QEMU+VFIO",
             Self::HyperVGpu => "Hyper-V GPU assignment",
@@ -168,7 +165,7 @@ pub struct ProvisionPlan {
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ProvisionError {
     #[error(
-        "hosting is not supported on {0}; this agent does not fall back to Firecracker or QEMU+WHPX"
+        "hosting is not supported on {0}; this agent does not fall back to another backend"
     )]
     UnsupportedHostOs(HostOs),
     #[error(
@@ -185,14 +182,11 @@ pub enum ProvisionError {
 }
 
 /// One stub backend. Linux/Windows Standard and Pro are all first-class
-/// implementors — Windows is not a branch inside Firecracker.
+/// implementors — Windows is not a branch inside the Linux path.
 pub trait Provisioner {
     fn backend(&self) -> ComputeBackend;
     fn plan(&self, request: &ProvisionRequest) -> Result<ProvisionPlan, ProvisionError>;
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FirecrackerStub;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QemuKvmStub;
@@ -205,16 +199,6 @@ pub struct QemuVfioStub;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HyperVGpuStub;
-
-impl Provisioner for FirecrackerStub {
-    fn backend(&self) -> ComputeBackend {
-        ComputeBackend::Firecracker
-    }
-
-    fn plan(&self, request: &ProvisionRequest) -> Result<ProvisionPlan, ProvisionError> {
-        standard_plan(self.backend(), request)
-    }
-}
 
 impl Provisioner for QemuKvmStub {
     fn backend(&self) -> ComputeBackend {
@@ -261,7 +245,6 @@ impl Provisioner for HyperVGpuStub {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StubProvisioner {
     QemuKvm(QemuKvmStub),
-    Firecracker(FirecrackerStub),
     QemuWhpx(QemuWhpxStub),
     QemuVfio(QemuVfioStub),
     HyperVGpu(HyperVGpuStub),
@@ -283,7 +266,6 @@ impl Provisioner for StubProvisioner {
     fn backend(&self) -> ComputeBackend {
         match self {
             Self::QemuKvm(inner) => inner.backend(),
-            Self::Firecracker(inner) => inner.backend(),
             Self::QemuWhpx(inner) => inner.backend(),
             Self::QemuVfio(inner) => inner.backend(),
             Self::HyperVGpu(inner) => inner.backend(),
@@ -293,7 +275,6 @@ impl Provisioner for StubProvisioner {
     fn plan(&self, request: &ProvisionRequest) -> Result<ProvisionPlan, ProvisionError> {
         match self {
             Self::QemuKvm(inner) => inner.plan(request),
-            Self::Firecracker(inner) => inner.plan(request),
             Self::QemuWhpx(inner) => inner.plan(request),
             Self::QemuVfio(inner) => inner.plan(request),
             Self::HyperVGpu(inner) => inner.plan(request),
@@ -304,7 +285,7 @@ impl Provisioner for StubProvisioner {
 /// Phase 6 entry point: choose the OS-conditional backend and return a plan.
 /// Never starts a hypervisor, Kasm, Sunshine, or VFIO. Linux Standard
 /// invoke lives in [`crate::qemu_kvm`] via the provision HTTP port.
-/// Windows Standard invoke lives in [`crate::qemu`]. Linux Pro vfio-pci apply
+/// Windows Standard invoke lives in [`crate::qemu_whpx`]. Linux Pro vfio-pci apply
 /// and Windows Pro Hyper-V DDA/GPU-P apply live in [`crate::gpu_bind`] via
 /// the same HTTP port (not `plan()`).
 pub fn plan(os: HostOs, request: &ProvisionRequest) -> Result<ProvisionPlan, ProvisionError> {

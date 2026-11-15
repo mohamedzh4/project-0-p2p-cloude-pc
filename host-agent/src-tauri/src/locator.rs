@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn placeholder_detects_rfc2606_invalid() {
-        assert!(locator_is_placeholder("https://provision.invalid/firecracker"));
+        assert!(locator_is_placeholder("https://provision.invalid/qemu-kvm"));
         assert!(locator_is_placeholder("https://example.invalid/kasm"));
         assert!(locator_is_placeholder("https://provision.invalid/sunshine"));
         assert!(!locator_is_placeholder("https://kasm.test.example/desktop"));

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Guest join: redeem Matchmaker bootstrap, tailscale up, rclone mount, FR6.
 
-Reads dcl.matchmaker= and dcl.bootstrap= from /proc/cmdline (Firecracker) or
-QEMU fw_cfg opt/org.dcl/{matchmaker,bootstrap}. Never --advertise-exit-node
-or --advertise-tags. S3 keys stay in env (--s3-env-auth).
+Reads dcl.matchmaker= and dcl.bootstrap= from, in order: /proc/cmdline,
+SMBIOS OEM strings (QEMU -smbios type=11), then QEMU fw_cfg
+opt/org.dcl/{matchmaker,bootstrap}. SMBIOS is the path that works on the
+stock Ubuntu cloud kernel, which ships no qemu_fw_cfg module. Never
+--advertise-exit-node or --advertise-tags. S3 keys stay in env (--s3-env-auth).
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ FWCFG_DIR = os.environ.get(
     "DCL_FWCFG_DIR",
     "/sys/firmware/qemu_fw_cfg/by_name",
 )
+SMBIOS_DIR = os.environ.get("DCL_SMBIOS_DIR", "/sys/firmware/dmi/entries")
 SAVED_PATH = Path(os.environ.get("DCL_SAVED_AS_OF_PATH", "/var/lib/dcl/saved-as-of"))
 MOUNT_POINT = os.environ.get("DCL_GUEST_MOUNT", "/home/ubuntu/Persistent")
 DRY_RUN = os.environ.get("DCL_GUEST_DRY_RUN", "") == "1"
@@ -43,10 +46,51 @@ def _cmdline_value(cmdline: str, key: str) -> str | None:
     return None
 
 
+def _smbios_oem_strings() -> list[str]:
+    """OEM strings (SMBIOS type 11). Sysfs first, then dmidecode. Root-only."""
+    strings: list[str] = []
+    for entry in sorted(Path(SMBIOS_DIR).glob("11-*")):
+        try:
+            raw = (entry / "raw").read_bytes()
+        except OSError:
+            continue
+        if len(raw) < 2:
+            continue
+        # raw[1] is the formatted-area length; NUL-terminated strings follow.
+        for chunk in raw[raw[1] :].split(b"\0"):
+            if chunk:
+                strings.append(chunk.decode("utf-8", "replace").strip())
+    if strings or DRY_RUN:
+        return strings
+    try:
+        out = subprocess.run(
+            ["dmidecode", "-t", "11"], capture_output=True, text=True, check=False
+        ).stdout
+    except OSError:
+        return strings
+    for line in out.splitlines():
+        head, sep, value = line.strip().partition(": ")
+        if sep and head.startswith("String "):
+            strings.append(value.strip())
+    return strings
+
+
+def _oem_value(strings: list[str], key: str) -> str | None:
+    prefix = key + "="
+    for item in strings:
+        if item.startswith(prefix):
+            return item[len(prefix) :].strip() or None
+    return None
+
+
 def read_bootstrap() -> tuple[str | None, str | None]:
     cmdline = _read_text(Path(CMDLINE_FILE)) or ""
     origin = _cmdline_value(cmdline, "dcl.matchmaker")
     token = _cmdline_value(cmdline, "dcl.bootstrap")
+    if not origin or not token:
+        oem = _smbios_oem_strings()
+        origin = origin or _oem_value(oem, "dcl.matchmaker")
+        token = token or _oem_value(oem, "dcl.bootstrap")
     fw = Path(FWCFG_DIR)
     if not origin:
         origin = _read_text(fw / "opt" / "org.dcl" / "matchmaker" / "raw")

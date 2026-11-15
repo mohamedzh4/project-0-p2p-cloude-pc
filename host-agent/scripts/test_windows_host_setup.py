@@ -41,6 +41,9 @@ class WindowsHostSetupTests(unittest.TestCase):
     def test_script_does_not_claim_bios_or_cgnat(self) -> None:
         text = PS1.read_text(encoding="utf-8")
         self.assertIn("VirtualizationFirmwareEnabled", text)
+        # A running hypervisor makes that flag read False; skip the check then.
+        check = text.split("function Assert-FirmwareVirtualization", 1)[1].split("\nfunction ", 1)[0]
+        self.assertLess(check.index("HypervisorPresent"), check.index("VirtualizationFirmwareEnabled -eq"))
         self.assertIn("CGNAT", text)
         self.assertIn("cannot", text.lower())
 

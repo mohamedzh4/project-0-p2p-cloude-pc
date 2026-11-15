@@ -30,7 +30,7 @@ describe("isLiveConnectionUrl", () => {
   it("rejects RFC 2606 .invalid Sunshine stubs the same as Kasm", () => {
     expect(isLiveConnectionUrl("https://provision.invalid/sunshine")).toBe(false);
     expect(isLiveConnectionUrl("https://provision.invalid/qemu-vfio")).toBe(false);
-    expect(isLiveKasmUrl("https://provision.invalid/firecracker")).toBe(false);
+    expect(isLiveKasmUrl("https://provision.invalid/qemu-kvm")).toBe(false);
     expect(isLiveConnectionUrl("https://example.invalid/kasm")).toBe(false);
   });
 

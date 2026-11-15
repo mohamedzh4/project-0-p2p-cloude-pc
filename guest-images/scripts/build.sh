@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build a signed Standard (Kasm) or Pro (Sunshine) guest disk.
-# Does not start Firecracker, QEMU+WHPX, or a live session. Host Agent boot is later.
+# Does not start a guest or a live session; the Host Agent boots the result.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,16 +25,14 @@ Optional:
   KASM_VNC_DEB_URL / KASM_VNC_DEB_SHA256
       Override the pinned Standard KasmVNC package.
   SUNSHINE_DEB_URL  override the official latest Ubuntu 24.04 .deb
-  FIRECRACKER_KERNEL  Linux only; copied next to rootfs as vmlinux after convert.
 
 Outputs (under output/<tier>/, not in git):
   rootfs.qcow2           QEMU/WHPX/VFIO disk
-  rootfs.img             raw (Firecracker virtio-blk / qemu -drive)
+  rootfs.img             raw disk the Host Agent boots (qemu -drive if=virtio)
   rootfs.img.sha256      GNU checksum line
   rootfs.img.sig         standard base64 Ed25519 over the raw 32-byte digest
   rootfs.img.manifest.json
   env.snippet            IMAGE_* lines to copy into Matchmaker / Host Agent .env
-  vmlinux                only if FIRECRACKER_KERNEL is set
 
 Host Agent fetch: point HOST_AGENT_STANDARD_IMAGE_URL / HOST_AGENT_PRO_IMAGE_URL
 at rootfs.img (or a URL you host). Copy digest+signature from the manifest.
@@ -129,10 +127,6 @@ if [[ ! -f "$QCOW" ]]; then
 fi
 
 qemu-img convert -O raw "$QCOW" "$OUT/rootfs.img"
-
-if [[ -n "${FIRECRACKER_KERNEL:-}" ]]; then
-  cp "$FIRECRACKER_KERNEL" "$OUT/vmlinux"
-fi
 
 python3 "$ROOT/scripts/sign_image.py" sign \
   --image "$OUT/rootfs.img" \
