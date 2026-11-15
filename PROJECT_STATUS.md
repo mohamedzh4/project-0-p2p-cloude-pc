@@ -44,6 +44,7 @@ injected fakes.
 | Guest joining Headscale, mounting storage | Never run. |
 | Public gateway across two real networks | Never run. |
 | Pro tier (GPU passthrough: Linux VFIO, Windows Hyper-V) | Never run. |
+| Platform server (Matchmaker, Headscale, renterd, gateway) | **Down since 2026-11-15:** the Azure Free Trial subscription is Disabled (credit or trial period ran out). Replaced by **Oracle Cloud Always Free** (decided 2026-11-15; account being created). The new server needs a fresh deploy and a new IP in DuckDNS, `.env.vps` and `host-agent/.env.friend`. No deploy has ever been recorded in this repo. |
 
 Logs: `docs/test-logs/`.
 
@@ -66,7 +67,11 @@ Logs: `docs/test-logs/`.
   (Standard) or Sunshine (Pro), signing, and the boot-time join script.
 
 Not built: payments (credits are recorded only), latency-based ranking,
-per-session mesh isolation, host schedules.
+per-session mesh isolation, host schedules, direct peer-to-peer
+streaming (FR17; today all desktop traffic goes through the VPS gateway),
+the "Hide my IP" / "Fastest connection" choice (FR18), volunteer relay
+nodes (FR19), Cloudflare R2 / Storj storage, Google Drive / Dropbox, and a
+"My files" download/upload page (FR20).
 
 ## Changed on 2026-11-15
 
@@ -103,7 +108,11 @@ Structure:
   left). `qemu_kvm.rs` (Linux Standard) unchanged.
 - New root `README.md` with the component map.
 - New `scripts/check.sh` and `.github/workflows/ci.yml` (tests on every
-  push; the workflow has not run yet because nothing is pushed).
+  push). Pushed to GitHub 2026-11-15; its first run was queued, result not
+  yet checked.
+- Real server details (VPS IP, user, DuckDNS domain) were scrubbed from
+  the public repo and live in the local, git-ignored `.env.vps`;
+  `scripts/vps-deploy.sh` loads it.
 - Root tidied: `DEMO_RUNBOOK.md` → `docs/runbooks/demo.md`,
   `.vps-deploy.sh` → `scripts/vps-deploy.sh`, `PHASE_PLAN.md` and
   `PROJECT_CONTEXT.md` → `docs/archive/`.
@@ -119,31 +128,106 @@ Structure:
   token to command agents. Anyone with a host kit can impersonate the
   Matchmaker to other hosts. Needs a per-host credential issued on
   approval.
+- **Move platform storage to Cloudflare R2 at the same time** (decision
+  2026-11-15: R2 now, Storj later, Sia/renterd dropped so no crypto
+  payments are needed). R2 is S3-compatible, so the Matchmaker and the
+  guest mostly need new settings. Check whether R2 API tokens limited to
+  one bucket can be created per user; if so, that is the fix for issue 1.
+  Add rclone encryption before upload and the per-user quota (20 GB free,
+  more paid in credits). You create the Cloudflare account and the R2
+  bucket/API token; renterd leaves `scripts/vps-deploy.sh`.
 
-### 2. First full end-to-end run on real machines
+### 2. Direct peer-to-peer streaming (cahier FR17, added 2026-11-15)
 
-Follow `docs/runbooks/demo.md`. In order: build and sign the Standard
-image on a Linux KVM machine (`guest-images/`), put its digest and
-signature into the Matchmaker `.env`, deploy the VPS, install the Host
-Agent on one Linux and one Windows PC, book a session from a browser on a
-different network. This is the first time fix 2 above, the mesh, storage,
-and the gateway run for real. Expect new bugs; record them in
-`docs/issues.md` and the run in `docs/test-logs/`.
+Today every desktop frame goes browser → VPS gateway → mesh → guest and
+back, so lag depends on where the VPS is, and all stream bandwidth is
+paid for on the VPS. Goal: the stream goes **directly** between the
+renter's browser and the guest; the platform carries only control
+traffic (login, matching, signaling, heartbeats).
 
-### 3. Make booking asynchronous (issue 4)
+Plan:
+
+1. Guest image: add Selkies-GStreamer (WebRTC desktop streaming, GPU
+   encode for Pro) next to KasmVNC.
+2. Matchmaker: a signaling endpoint protected by the session token.
+3. VPS: a coturn TURN relay in `scripts/vps-deploy.sh` for sessions with
+   no direct path (CGNAT, mobile networks, strict firewalls).
+4. Host Agent: forward one UDP port into the guest (QEMU SLIRP) so WebRTC
+   can cross the double NAT.
+5. Web: a streaming page that tries direct, then TURN, then falls back to
+   the existing HTTPS gateway (KasmVNC), automatically per session.
+6. Privacy choice (cahier FR18): a setting for renters (web) and hosts
+   (Host Agent), "Hide my IP" (default: platform relay only, nobody
+   learns the other's IP) or "Fastest connection" (direct allowed). The
+   Matchmaker allows direct only when both sides chose "Fastest
+   connection" and tells the browser and guest which path to use.
+7. Docs: host agreement and user terms explain both options in plain
+   words.
+
+Steps 1–6 are code; step 7 needs your wording and, later, a lawyer. The real test needs two
+separate networks (host on home Wi-Fi, renter on phone data), measuring
+lag against the gateway path and how often the relay is used. Not covered
+by FR17: renter files (rclone ↔ storage) and guest internet (exit node)
+still use platform infrastructure.
+
+### 3. First full end-to-end run on real machines
+
+First set up the Oracle Cloud server (see the hardware table). Then follow
+`docs/runbooks/demo.md`. In order: build and sign the Standard image on a
+Linux KVM machine (`guest-images/`), put its digest and signature into
+the Matchmaker `.env`, deploy the VPS, install the Host Agent on one Linux
+and one Windows PC, book a session from a browser on a different network.
+This is the first time the bootstrap fix, the mesh, storage, and the
+gateway (or direct streaming, if step 2 is done) run for real. Expect new
+bugs; record them in `docs/issues.md` and the run in `docs/test-logs/`.
+
+### 4. Make booking asynchronous (issue 4)
 
 `POST /v1/sessions` blocks for up to 330 s while the VM boots. Return 202
 with a `provisioning` state and let the web page poll. How long the signed
-image takes to boot on real hardware is not measured yet; step 2 will show
+image takes to boot on real hardware is not measured yet; step 3 will show
 whether 330 s is even enough.
 
-### 4. Re-run the LAN kit on both PCs
+### 5. User storage choices (cahier FR20)
+
+- **"My files" page** in the web app: list, download (one file or all as a
+  zip, also offered at logout) and upload, without starting a session.
+- **Google Drive and Dropbox** as alternatives to platform storage: the
+  user connects their account once (OAuth); the session mounts only an
+  app folder in it (Drive `drive.file`, Dropbox "App folder"), never the
+  whole account. Encryption is optional there.
+- **Keep the whole home folder** (settings, browser profile, user-level
+  apps), not only `~/Persistent`, plus a list of installed packages to
+  reinstall at the next boot.
+
+Needs from you: a Google Cloud project with an OAuth consent screen
+(Google reviews it before public use) and a Dropbox app registration.
+
+### 6. Re-run the LAN kit on both PCs
 
 Confirms the virtio disk speed-up on Windows and closes issues 9, 11, 12,
 14. Also find out why the desktop sometimes does not return on a second
 run (issue 3b).
 
-### 5. Smaller items
+### 7. Growth phase (later, cahier phase 5)
+
+Only once there are real users in more than one area:
+
+- **Storj** as the decentralized platform storage next to R2, paid in
+  normal money. Prefer rclone's native Storj mode (guest talks to the
+  storage nodes directly, no gateway), which copes best with distance.
+  Store each user's files in a region near where they usually work.
+
+- **Regional platform relays:** cheap-bandwidth relay servers near where
+  users are, so "Hide my IP" sessions stay fast.
+- **Volunteer relay nodes (cahier FR19):** hosts with a public IP and good
+  upload can opt in to relay other sessions' encrypted streams for
+  credits per GB. The Matchmaker picks a relay near both sides and scores
+  relays for reliability. Used only for "Fastest connection" sessions,
+  because a relay sees both IPs. Reuses the Host Agent, the Matchmaker
+  and the credits ledger; no blockchain needed.
+
+### 8. Smaller items
 
 - Reuse a session's mesh keys instead of minting new ones on every repeat
   request (issue 5).
@@ -161,8 +245,10 @@ run (issue 3b).
   (`matchmaker/.env.example` lists every key).
 - Pause is local to the agent: it stops heartbeats, so after 45 s the
   Matchmaker treats the host as gone and interrupts its session.
-- Storage is renterd (Sia), on the zen test network. Do not switch to
-  mainnet without a funded wallet (`docs/runbooks/sia-mainnet.md`).
+- Storage in the code today is renterd (Sia), on the zen test network,
+  and every file passes through the VPS. Decided 2026-11-15: replace it
+  with Cloudflare R2 (step 1), add Storj later; Sia mainnet is no longer
+  planned.
 - Mesh access is by role, not by session: any renter node can reach any
   guest node. The gateway link token is what scopes a renter to one
   session.
