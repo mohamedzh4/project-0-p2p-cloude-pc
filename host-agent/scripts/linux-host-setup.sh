@@ -132,15 +132,26 @@ agent_bin="$(command -v host-agent || true)"
   exit 1
 }
 
-listen_addr="${HOST_AGENT_LISTEN_ADDR:-127.0.0.1:7842}"
+# Default: the Host Agent fetches its commands from the server itself, so
+# nothing has to reach this PC from the internet. Only a friend.env that
+# sets HOST_AGENT_URL (or the old reverse tunnel) makes the agent listen.
 agent_url="${HOST_AGENT_URL:-}"
-if [[ -z "$agent_url" && -n "${TUNNEL_REMOTE_PORT:-}" ]]; then
+if [[ -z "$agent_url" && -n "${TUNNEL_SSH:-}" && -n "${TUNNEL_REMOTE_PORT:-}" ]]; then
   agent_url="http://127.0.0.1:${TUNNEL_REMOTE_PORT}"
 fi
-[[ "$agent_url" =~ ^https?://[^[:space:]]+$ ]] || {
-  echo "Set HOST_AGENT_URL, normally the VPS reverse-tunnel origin." >&2
-  exit 1
-}
+listen_lines=""
+listen_addr=""
+if [[ -n "$agent_url" ]]; then
+  [[ "$agent_url" =~ ^https?://[^[:space:]]+$ ]] || {
+    echo "HOST_AGENT_URL must be an http or https URL." >&2
+    exit 1
+  }
+  listen_addr="${HOST_AGENT_LISTEN_ADDR:-127.0.0.1:7842}"
+  listen_lines="HOST_AGENT_LISTEN_ADDR=$listen_addr
+HOST_AGENT_URL=$agent_url"
+else
+  echo "This PC will fetch its commands from the server. No router setup is needed."
+fi
 
 APP_DIR="${XDG_CONFIG_HOME:-"$HOME/.config"}/com.distributedcomputelab.hostagent"
 mkdir -p "$APP_DIR"
@@ -148,8 +159,7 @@ cat > "$APP_DIR/.env" <<EOF
 MATCHMAKER_URL=$MATCHMAKER_URL
 HOST_BOOTSTRAP_TOKEN=$HOST_BOOTSTRAP_TOKEN
 HOST_DISPLAY_NAME=${HOST_DISPLAY_NAME:-$(hostname)}
-HOST_AGENT_LISTEN_ADDR=$listen_addr
-HOST_AGENT_URL=$agent_url
+$listen_lines
 HEADSCALE_LOGIN_SERVER=$HEADSCALE_LOGIN_SERVER
 IMAGE_SIGNING_PUBLIC_KEY=$IMAGE_SIGNING_PUBLIC_KEY
 IMAGE_LOCAL_DIGEST=$IMAGE_STANDARD_DIGEST
@@ -160,7 +170,7 @@ HOST_AGENT_QEMU_BIN=$(command -v qemu-system-x86_64)
 EOF
 chmod 600 "$APP_DIR/.env"
 
-if [[ -n "${TUNNEL_SSH:-}" ]]; then
+if [[ -n "${TUNNEL_SSH:-}" && -n "$listen_addr" ]]; then
   key="$HERE/tunnel.pem"
   [[ -f "$key" ]] || {
     echo "TUNNEL_SSH is set but tunnel.pem is missing." >&2

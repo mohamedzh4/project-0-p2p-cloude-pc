@@ -51,8 +51,9 @@ def test_guest_bootstrap_returns_preauth_and_s3_keys_not_on_session_json(
     )
     assert redeemed.status_code == 200
     guest = redeemed.json()
-    assert guest["preauthKey"] == body["mesh"]["guest"]["preauthKey"]
-    assert guest["hostname"] == body["mesh"]["guest"]["hostname"]
+    assert guest["preauthKey"].startswith("tskey-auth-test-")
+    assert guest["preauthKey"] not in booked.text
+    assert guest["hostname"] == body["mesh"]["guestHostname"]
     assert "--advertise-exit-node" not in " ".join(guest["tailscaleUp"])
     assert "--advertise-tags" not in " ".join(guest["tailscaleUp"])
     assert guest["storage"]["accessKeyId"] == "test-renterd-access"

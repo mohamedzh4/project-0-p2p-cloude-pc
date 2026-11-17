@@ -22,6 +22,7 @@ import httpx
 
 _REQUEST_TIMEOUT_SECONDS = 10.0
 _SERVICE = "s3"
+_MAX_LIST_PAGES = 200
 
 
 class RenterdError(Exception):
@@ -52,6 +53,9 @@ class RenterdClient(Protocol):
     def list_object_keys(self, bucket: str, prefix: str) -> list[str]:
         """List object keys under `prefix` (path-style ListObjectsV2)."""
 
+    def usage_bytes(self, bucket: str, prefix: str, *, stop_at: int | None = None) -> int:
+        """Total size of objects under `prefix`. May stop early past `stop_at`."""
+
 
 class HttpRenterdClient:
     """Path-style S3 against renterd (`RENTERD_S3_ENDPOINT`). SigV4.
@@ -68,7 +72,9 @@ class HttpRenterdClient:
         region: str,
         timeout_seconds: float = _REQUEST_TIMEOUT_SECONDS,
         transport: httpx.BaseTransport | None = None,
+        session_token: str | None = None,
     ) -> None:
+        self._session_token = session_token
         self._endpoint = endpoint.rstrip("/")
         self._access_key = access_key
         self._secret_key = secret_key
@@ -99,6 +105,23 @@ class HttpRenterdClient:
             raise RenterdError(f"renterd rejected ListObjectsV2 (HTTP {status})")
         return _keys_from_list_xml(body)
 
+    def usage_bytes(self, bucket: str, prefix: str, *, stop_at: int | None = None) -> int:
+        total = 0
+        token: str | None = None
+        for _ in range(_MAX_LIST_PAGES):
+            params = {"list-type": "2", "prefix": prefix}
+            if token:
+                params["continuation-token"] = token
+            path = f"/{quote(bucket, safe='-')}?{_canonical_query(params)}"
+            status, body = self._request("GET", path, body=b"")
+            if status != 200:
+                raise RenterdError(f"S3 rejected ListObjectsV2 (HTTP {status})")
+            sizes, token = _sizes_from_list_xml(body)
+            total += sum(sizes)
+            if token is None or (stop_at is not None and total >= stop_at):
+                break
+        return total
+
     def _request(self, method: str, path: str, *, body: bytes) -> tuple[int, bytes]:
         url = f"{self._endpoint}{path}"
         headers = _sigv4_headers(
@@ -108,6 +131,7 @@ class HttpRenterdClient:
             access_key=self._access_key,
             secret_key=self._secret_key,
             region=self._region,
+            session_token=self._session_token,
         )
         try:
             with httpx.Client(
@@ -130,12 +154,13 @@ def _sigv4_headers(
     secret_key: str,
     region: str,
     now: datetime | None = None,
+    session_token: str | None = None,
 ) -> dict[str, str]:
     moment = now if now is not None else datetime.now(timezone.utc)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
     moment = moment.astimezone(timezone.utc)
-    amz_date = moment.strftime("%Y%m%dT%H:%M:%SZ")
+    amz_date = moment.strftime("%Y%m%dT%H%M%SZ")
     date_stamp = moment.strftime("%Y%m%d")
     parsed = urlparse(url)
     host = parsed.netloc
@@ -148,6 +173,10 @@ def _sigv4_headers(
         f"x-amz-date:{amz_date}\n"
     )
     signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    if session_token:
+        # Temporary credentials: the token is a signed header.
+        canonical_headers += f"x-amz-security-token:{session_token}\n"
+        signed_headers += ";x-amz-security-token"
     canonical_request = "\n".join(
         [
             method,
@@ -176,12 +205,15 @@ def _sigv4_headers(
         f"{algorithm} Credential={access_key}/{credential_scope}, "
         f"SignedHeaders={signed_headers}, Signature={signature}"
     )
-    return {
+    headers = {
         "Host": host,
         "x-amz-content-sha256": payload_hash,
         "x-amz-date": amz_date,
         "Authorization": authorization,
     }
+    if session_token:
+        headers["x-amz-security-token"] = session_token
+    return headers
 
 
 def _signing_key(secret_key: str, date_stamp: str, region: str) -> bytes:
@@ -210,3 +242,20 @@ def _keys_from_list_xml(body: bytes) -> list[str]:
         if element.tag.endswith("Key") and element.text:
             keys.append(element.text)
     return keys
+
+
+def _sizes_from_list_xml(body: bytes) -> tuple[list[int], str | None]:
+    """Object sizes on one ListObjectsV2 page, and the next page token if any."""
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError as exc:
+        raise RenterdError("S3 ListObjectsV2 XML was invalid") from exc
+    sizes: list[int] = []
+    token: str | None = None
+    for element in root.iter():
+        tag = element.tag.rsplit("}", 1)[-1]
+        if tag == "Size" and element.text and element.text.strip().isdigit():
+            sizes.append(int(element.text.strip()))
+        elif tag == "NextContinuationToken" and element.text:
+            token = element.text
+    return sizes, token

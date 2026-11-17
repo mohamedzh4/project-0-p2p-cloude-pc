@@ -18,7 +18,7 @@ Four principles run through every decision below:
 | **Control plane** | Auth, matching, billing, session lifecycle | Your custom Matchmaker service |
 | **Compute plane** | Runs the actual virtual desktops | Host PCs that stay in daily use. Isolation is a QEMU VM: KVM on Linux, WHPX on Windows; Pro sessions add GPU passthrough on top |
 | **Network plane** | Connects user ↔ VM ↔ storage securely | Tailscale / self-hosted Headscale, plus an operator-run **public HTTPS gateway** (`tag:gateway`) so a browser with zero Tailscale install can reach Standard Lab Kasm |
-| **Storage plane** | Persists user files across sessions | Storj, mounted via rclone |
+| **Storage plane** | Persists user files across sessions | Cloudflare R2 now, Storj later, or the user's own Google Drive / Dropbox; mounted inside the guest via rclone |
 
 Everything in this document fits into one of these four planes.
 
@@ -27,7 +27,10 @@ Everything in this document fits into one of these four planes.
 This file is the **target** architecture. What is built, and what has run on
 real hardware, is in `PROJECT_STATUS.md`. Two decisions changed the paper:
 
-- **Storage is Sia renterd, not Storj** (2026-09-05). See §8.
+- **Storage: Cloudflare R2 now, Storj later** (2026-11-15; replaces the
+  2026-09-05 Sia renterd choice, which needed crypto payments and routed
+  every file through the platform VPS). Users can also keep files in their
+  own Google Drive or Dropbox, and download them to their computer. See §8.
 - **Linux Standard uses QEMU+KVM, not Firecracker** (2026-11-15). The signed
   Ubuntu disk boots its own kernel, so there is no separate kernel to build
   and ship. QEMU's SLIRP user networking gives the guest outbound access
@@ -138,11 +141,13 @@ This is the one component with no off-the-shelf substitute. Most of the engineer
 
 ## 8. Data & Storage Architecture
 
-**Implemented storage (2026-09-05):** Sia **renterd** S3 gateway, not Storj
-(human decision). rclone still belongs inside the guest; session keys must
+**Decided storage (2026-11-15):** Cloudflare R2 (S3-compatible) now, Storj
+later; optional user-owned Google Drive / Dropbox (app folder only); a
+web "My files" page to download/upload. The code still uses Sia
+**renterd** until the switch. rclone still belongs inside the guest; session keys must
 not live on the volunteer host’s bare disk. See `docs/runbooks/renterd.md`.
 
-- **At rest:** Implemented path is renterd S3 (not Storj). Architecture still requires client-side encryption so no volunteer host disk holds plaintext; rclone/VFS stays inside the guest.
+- **At rest:** Files are encrypted with rclone before upload to R2 / Storj. Architecture still requires client-side encryption so no volunteer host disk holds plaintext; rclone/VFS stays inside the guest.
 - **In transit:** every hop (user↔VM, VM↔storage) rides inside the WireGuard tunnel Tailscale already provides
 - **On the host's physical disk:** rclone's local VFS cache should itself sit on an encrypted virtual disk (a LUKS-backed file on Linux, a BitLocker-backed file on Windows, or simply the guest's own virtual block device) — so even the temporary cached fragments on the host's real drive are unreadable without a session key that lives only inside the guest and is discarded at teardown
 - **Sync cadence:** the 5–10 minute background timer is a floor, not the only trigger. Pair it with an immediate flush on explicit "save" and on logout, so the worst-case data-loss window shrinks from "up to 10 minutes" to "since your last save"

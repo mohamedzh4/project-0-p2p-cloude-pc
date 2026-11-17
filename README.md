@@ -6,6 +6,7 @@ their browser, running in a VM on a host.
 
 Where the project stands and what to do next: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
 Open bugs and risks: [`docs/issues.md`](docs/issues.md).
+Plan to the closed beta: [`docs/roadmap.md`](docs/roadmap.md).
 
 ## How a session works
 
@@ -22,8 +23,8 @@ Host Agent on the volunteer's PC           host-agent/   (Rust + Tauri + React)
 Ubuntu guest VM                            guest-images/ (Packer build + join script)
    │  5. join the private mesh, mount the renter's files
    ▼
-Headscale mesh  +  renterd storage         headscale/  renterd/   (docker compose)
-   │  6. desktop reachable only inside the mesh
+Headscale mesh  +  file storage (R2)       headscale/             (docker compose)
+   │  6. desktop reachable only inside the mesh; renters are not on it
    ▼
 Public gateway ── 7. https link ────────►  gateway/      (FastAPI proxy + Caddy)
 ```
@@ -41,8 +42,8 @@ one GPU handed to the guest exclusively, streamed by Sunshine/Moonlight.
 | `web/` | Renter's browser console | React + TypeScript | `vitest` |
 | `gateway/` | Public HTTPS entry to desktops that live inside the mesh | Python (FastAPI) | `pytest` |
 | `guest-images/` | Builds and signs the guest disk; the script the guest runs at boot | Packer, Bash, Python | `pytest` |
-| `headscale/`, `renterd/` | Compose files for the mesh and the storage node | YAML | — |
-| `scripts/` | `check.sh` (all tests), `vps-deploy.sh` (server deploy) | Bash | — |
+| `headscale/`, `renterd/` | Compose files for the mesh and the development storage node (production storage is Cloudflare R2) | YAML | — |
+| `scripts/` | `check.sh` (all tests), `integration/run.py` (real Matchmaker + gateway over HTTP), `vps-deploy.sh` (server deploy) | Bash, Python | — |
 | `docs/` | Specs, runbooks, issues, hardware test logs, history | Markdown | — |
 
 Each component has its own README with setup details.
@@ -54,9 +55,9 @@ bash scripts/check.sh
 ```
 
 Runs lint and every suite and prints one summary. Name suites to run fewer:
-`bash scripts/check.sh agent web`. The Matchmaker suite needs Postgres
-(`cd matchmaker && docker compose up -d`); without it that suite is reported
-as skipped. The same suites run in GitHub Actions (`.github/workflows/ci.yml`).
+`bash scripts/check.sh agent web`. The Matchmaker and integration suites
+need Postgres (`cd matchmaker && docker compose up -d`); without it they are
+reported as skipped. The same suites run in GitHub Actions (`.github/workflows/ci.yml`).
 
 ## Docs
 
@@ -71,7 +72,7 @@ as skipped. The same suites run in GitHub Actions (`.github/workflows/ci.yml`).
 
 ## Rules that are easy to break
 
-- Never commit `.env`, signing keys, renterd seeds, or Headscale keys.
+- Never commit `.env`, signing keys, storage keys, or Headscale keys.
 - Nothing is "confirmed working" until a person has seen it on real
   hardware. Record that in `docs/test-logs/`.
 - Tests never start a real VM, touch `/sys`, run PowerShell, or call a live

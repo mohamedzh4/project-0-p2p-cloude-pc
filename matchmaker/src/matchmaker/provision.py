@@ -46,6 +46,9 @@ class ProvisionResult:
     moonlight_host: str | None = None
     moonlight_app: str | None = None
     gpu_exclusive: bool = False
+    # The agent was asked and did not produce a desktop (down, error, bad
+    # reply). Different from `None`, which means there was no agent to ask.
+    failed: bool = False
 
     def locator(self) -> str:
         if self.streamer == STREAMER_SUNSHINE:
@@ -67,6 +70,10 @@ class HostProvisioner(Protocol):
 
     def teardown(self, host: Host) -> None:
         """Best-effort POST /v1/teardown. Occupancy is already released in the DB."""
+
+
+AGENT_FAILED = ProvisionResult(connection_url="", failed=True)
+_AGENT_FAILED = AGENT_FAILED
 
 
 def locator_is_placeholder(url: str | None) -> bool:
@@ -144,6 +151,19 @@ def provision_booked_host(
         storage=storage,
         guest_mesh=guest_mesh,
     )
+    return accept_provision_result(db, host, result)
+
+
+def accept_provision_result(db: Session, host: Host, result: ProvisionResult | None) -> bool:
+    """Store a live locator from the agent. False means the booking failed.
+
+    `None` (no agent to ask: a host row with a fixed desktop URL) keeps a
+    live URL already on the row. An agent that was asked and failed is
+    always a failure, even if the row still holds the URL of an earlier
+    session: that desktop is gone.
+    """
+    if result is not None and result.failed:
+        return False
     if result is None or not result.connection_url.strip():
         return not locator_is_placeholder(host.kasm_url)
     if locator_is_placeholder(result.locator()):
@@ -167,11 +187,53 @@ def agent_origin(value: str | None) -> str | None:
     return stripped
 
 
+def result_from_agent_body(lab_tier: str, body: object) -> ProvisionResult:
+    """Turn an agent's provision reply into a result. Bad replies are failures."""
+    if not isinstance(body, dict):
+        return _AGENT_FAILED
+
+    connection_url = body.get("connectionUrl")
+    if not isinstance(connection_url, str) or not connection_url.strip():
+        return _AGENT_FAILED
+    if locator_is_placeholder(connection_url):
+        return _AGENT_FAILED
+
+    token = body.get("connectionToken")
+    connection_token = token.strip() if isinstance(token, str) and token.strip() else None
+    streamer = STREAMER_SUNSHINE if lab_tier == LabTier.PRO else STREAMER_KASM
+    raw_streamer = _optional_str(body.get("streamer"))
+    if raw_streamer in {STREAMER_KASM, STREAMER_SUNSHINE}:
+        streamer = raw_streamer
+    sunshine_url = _optional_str(body.get("sunshineUrl"))
+    moonlight_host: str | None = None
+    moonlight_app: str | None = None
+    moonlight = body.get("moonlight")
+    if isinstance(moonlight, dict):
+        moonlight_host = _optional_str(moonlight.get("host"))
+        moonlight_app = _optional_str(moonlight.get("app")) or _MOONLIGHT_APP
+    if streamer == STREAMER_SUNSHINE and sunshine_url is None:
+        sunshine_url = connection_url.strip()
+    gpu_exclusive = body.get("gpuExclusive") is True or lab_tier == LabTier.PRO
+    return ProvisionResult(
+        connection_url=connection_url.strip(),
+        connection_token=connection_token,
+        streamer=streamer,
+        sunshine_url=sunshine_url,
+        moonlight_host=moonlight_host,
+        moonlight_app=moonlight_app,
+        gpu_exclusive=gpu_exclusive,
+    )
+
+
 class HttpHostProvisioner:
-    """POST `{origin}/v1/provision` with the host bootstrap Bearer.
+    """POST `{origin}/v1/provision` with this host's command token.
+
+    The Bearer is `host.command_token` (see host_credentials.py). Hosts that
+    registered before per-host secrets fall back to the shared bootstrap token.
 
     Origin is `host.agent_url`, else the optional Matchmaker fallback URL.
-    Network/HTTP failures return None. Placeholder (`.invalid`) locators are
+    With no origin there is no agent to ask and the result is None.
+    Network/HTTP failures return a result with `failed=True`. Placeholder (`.invalid`) locators are
     never treated as success — the session router then fails the book instead
     of occupying the host with a seed URL.
     """
@@ -191,19 +253,18 @@ class HttpHostProvisioner:
         self._images = images or {}
         self._storage_endpoint = storage_endpoint
 
-    def provision(
+    def _bearer_for(self, host: Host) -> str:
+        return host.command_token or self._bearer_token
+
+    def payload_for(
         self,
         host: Host,
         *,
         lab_tier: str,
         storage: GuestStorageLocators | None = None,
         guest_mesh: GuestMeshHint | None = None,
-    ) -> ProvisionResult | None:
-        origin = agent_origin(host.agent_url) or agent_origin(self._fallback_base_url)
-        if origin is None:
-            return None
-
-        url = f"{origin}{_PROVISION_PATH}"
+    ) -> dict[str, object]:
+        """The provision request body, however it reaches the agent."""
         payload: dict[str, object] = {
             "labTier": lab_tier,
             "sharedGpuId": host.shared_gpu_id,
@@ -233,8 +294,24 @@ class HttpHostProvisioner:
             if guest_mesh.bootstrap_token:
                 mesh["bootstrapToken"] = guest_mesh.bootstrap_token
             payload["guestMesh"] = mesh
+        return payload
+
+    def provision(
+        self,
+        host: Host,
+        *,
+        lab_tier: str,
+        storage: GuestStorageLocators | None = None,
+        guest_mesh: GuestMeshHint | None = None,
+    ) -> ProvisionResult | None:
+        origin = agent_origin(host.agent_url) or agent_origin(self._fallback_base_url)
+        if origin is None:
+            return None
+
+        url = f"{origin}{_PROVISION_PATH}"
+        payload = self.payload_for(host, lab_tier=lab_tier, storage=storage, guest_mesh=guest_mesh)
         headers = {
-            "Authorization": f"Bearer {self._bearer_token}",
+            "Authorization": f"Bearer {self._bearer_for(host)}",
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
@@ -242,49 +319,16 @@ class HttpHostProvisioner:
             with httpx.Client(timeout=self._timeout_seconds, follow_redirects=False) as client:
                 response = client.post(url, json=payload, headers=headers)
         except httpx.HTTPError:
-            return None
+            return _AGENT_FAILED
 
         if response.status_code != 200:
-            return None
+            return _AGENT_FAILED
 
         try:
             body = response.json()
         except ValueError:
-            return None
-        if not isinstance(body, dict):
-            return None
-
-        connection_url = body.get("connectionUrl")
-        if not isinstance(connection_url, str) or not connection_url.strip():
-            return None
-        if locator_is_placeholder(connection_url):
-            return None
-
-        token = body.get("connectionToken")
-        connection_token = token.strip() if isinstance(token, str) and token.strip() else None
-        streamer = STREAMER_SUNSHINE if lab_tier == LabTier.PRO else STREAMER_KASM
-        raw_streamer = _optional_str(body.get("streamer"))
-        if raw_streamer in {STREAMER_KASM, STREAMER_SUNSHINE}:
-            streamer = raw_streamer
-        sunshine_url = _optional_str(body.get("sunshineUrl"))
-        moonlight_host: str | None = None
-        moonlight_app: str | None = None
-        moonlight = body.get("moonlight")
-        if isinstance(moonlight, dict):
-            moonlight_host = _optional_str(moonlight.get("host"))
-            moonlight_app = _optional_str(moonlight.get("app")) or _MOONLIGHT_APP
-        if streamer == STREAMER_SUNSHINE and sunshine_url is None:
-            sunshine_url = connection_url.strip()
-        gpu_exclusive = body.get("gpuExclusive") is True or lab_tier == LabTier.PRO
-        return ProvisionResult(
-            connection_url=connection_url.strip(),
-            connection_token=connection_token,
-            streamer=streamer,
-            sunshine_url=sunshine_url,
-            moonlight_host=moonlight_host,
-            moonlight_app=moonlight_app,
-            gpu_exclusive=gpu_exclusive,
-        )
+            return _AGENT_FAILED
+        return result_from_agent_body(lab_tier, body)
 
     def teardown(self, host: Host) -> None:
         origin = agent_origin(host.agent_url) or agent_origin(self._fallback_base_url)
@@ -292,7 +336,7 @@ class HttpHostProvisioner:
             return
         url = f"{origin}{_TEARDOWN_PATH}"
         headers = {
-            "Authorization": f"Bearer {self._bearer_token}",
+            "Authorization": f"Bearer {self._bearer_for(host)}",
             "Accept": "application/json",
         }
         try:

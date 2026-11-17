@@ -8,7 +8,7 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/dcl-guest-join
 ExecStop=/usr/local/sbin/dcl-guest-join --flush
-TimeoutStartSec=180
+TimeoutStartSec=300
 
 [Install]
 WantedBy=multi-user.target

@@ -2,23 +2,74 @@
 set -euo pipefail
 umask 077
 
-# Deploy the platform on the VPS. Run from the repository checkout:
+# Deploy the platform on the VPS (Ubuntu 24.04; older releases have no
+# Python 3.12 package). Run from the repository checkout:
 #   DCL_DOMAIN=your.domain bash scripts/vps-deploy.sh
 # DCL_DOMAIN     public domain; desktop., storage. and mesh. subdomains must
 #                resolve to this VPS too (required)
 # DCL_ROOT       repository checkout (default: the folder above this script)
 # DCL_USER       account that runs the Matchmaker service (default: you)
+# DCL_ACME_EMAIL address for TLS certificate notices (required)
+#
+# Storage. Set these four to keep renters' files on Cloudflare R2 (required
+# before real volunteers host anything):
+#   DCL_R2_ACCOUNT_ID         Cloudflare account id
+#   DCL_R2_BUCKET             one existing R2 bucket; each user gets a prefix
+#   DCL_R2_ACCESS_KEY_ID      S3 access key id of an R2 API token for that bucket
+#                             (Object Read & Write)
+#   DCL_R2_SECRET_ACCESS_KEY  its secret
+# Optional:
+#   DCL_R2_API_TOKEN          Cloudflare API token allowed to create R2
+#                             temporary credentials. Without it the Matchmaker
+#                             signs each guest's key itself, which needs no
+#                             extra permission.
+# With none of them set the script starts the local renterd node instead and
+# every guest receives the same storage key. That mode is for development
+# only: a host owner could read every renter's files.
+#
+# Values not set in the environment are read from .env.vps at the repository
+# root when that file exists (local only; ignored by git).
+_DCL_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -f "$_DCL_REPO/.env.vps" ]; then
+  while IFS='=' read -r key value; do
+    if [ -z "${!key:-}" ]; then
+      export "$key=$value"
+    fi
+  done < <(grep -E '^DCL_[A-Z0-9_]+=' "$_DCL_REPO/.env.vps")
+  echo "loaded $_DCL_REPO/.env.vps"
+fi
+R2_SET=0
+for r2_name in DCL_R2_ACCOUNT_ID DCL_R2_BUCKET DCL_R2_ACCESS_KEY_ID DCL_R2_SECRET_ACCESS_KEY; do
+  if [ -n "${!r2_name:-}" ]; then
+    R2_SET=$((R2_SET + 1))
+  fi
+done
+case "$R2_SET" in
+  4) STORAGE_MODE=r2 ;;
+  0) STORAGE_MODE=renterd ;;
+  *)
+    echo "Set all four required DCL_R2_* values or none of them (found $R2_SET of 4)." >&2
+    exit 1
+    ;;
+esac
+export DCL_R2_API_TOKEN="${DCL_R2_API_TOKEN:-}"
+echo "storage_mode=$STORAGE_MODE"
+if [ "$STORAGE_MODE" = renterd ]; then
+  echo "WARNING: development storage. Every guest gets the same storage key." >&2
+fi
 DOMAIN="${DCL_DOMAIN:?Set DCL_DOMAIN to your public domain, e.g. DCL_DOMAIN=lab.example.com bash scripts/vps-deploy.sh}"
 DESKTOP_DOMAIN="desktop.${DOMAIN}"
 STORAGE_DOMAIN="storage.${DOMAIN}"
 MESH_DOMAIN="mesh.${DOMAIN}"
 ROOT="${DCL_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 DCL_USER="${DCL_USER:-$(id -un)}"
+ACME_EMAIL="${DCL_ACME_EMAIL:?Set DCL_ACME_EMAIL: the address used for TLS certificate notices}"
 export DCL_ROOT="$ROOT"
 
 # Heredocs below are quoted (no shell expansion); fill in these placeholders.
 fill() {
-  sed -e "s|__DCL_DOMAIN__|${DOMAIN}|g" -e "s|__DCL_ROOT__|${ROOT}|g" -e "s|__DCL_USER__|${DCL_USER}|g"
+  sed -e "s|__DCL_DOMAIN__|${DOMAIN}|g" -e "s|__DCL_ROOT__|${ROOT}|g" -e "s|__DCL_USER__|${DCL_USER}|g" \
+    -e "s|__DCL_ACME_EMAIL__|${ACME_EMAIL}|g"
 }
 HS_PUBLIC="https://${MESH_DOMAIN}"
 
@@ -32,6 +83,11 @@ done
 
 sudo apt-get update -y
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3.12-venv python3-pip jq
+if ! command -v docker >/dev/null 2>&1 || ! sudo docker compose version >/dev/null 2>&1; then
+  # Ubuntu 24.04 packages. A fresh cloud image has no Docker.
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-v2
+  sudo systemctl enable --now docker
+fi
 
 if ! grep -q "$DOMAIN" /etc/hosts; then
   echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts >/dev/null
@@ -85,6 +141,7 @@ p.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
 PY
 chmod 600 "$ROOT/headscale/.env"
 
+if [ "$STORAGE_MODE" = renterd ]; then
 if [ ! -f "$ROOT/renterd/.env" ]; then
   echo "generating_renterd_seed"
   fill <<'PY' | python3 -
@@ -116,6 +173,7 @@ else
   echo "keep_renterd_env"
 fi
 chmod 600 "$ROOT/renterd/.env"
+fi # STORAGE_MODE = renterd
 
 cd "$ROOT/headscale"
 sudo docker compose up -d
@@ -195,6 +253,7 @@ if [ ! -f "$ROOT/.secret-gateway-preauth" ]; then
 fi
 chmod 600 "$ROOT/.secret-gateway-preauth"
 
+if [ "$STORAGE_MODE" = renterd ]; then
 cd "$ROOT/renterd"
 sudo docker compose up -d
 echo "waiting_renterd"
@@ -210,6 +269,7 @@ for i in $(seq 1 90); do
     exit 1
   fi
 done
+fi # STORAGE_MODE = renterd
 
 if [ ! -f "$ROOT/.secret-s3-access" ]; then
   openssl rand -hex 16 > "$ROOT/.secret-s3-access"
@@ -217,6 +277,7 @@ if [ ! -f "$ROOT/.secret-s3-access" ]; then
 fi
 chmod 600 "$ROOT/.secret-s3-access" "$ROOT/.secret-s3-secret"
 
+if [ "$STORAGE_MODE" = renterd ]; then
 fill <<'PY' | python3 -
 from pathlib import Path
 root = Path("__DCL_ROOT__")
@@ -246,6 +307,7 @@ HTTP_CODE="$(curl -sS -o /tmp/dcl-s3-put.out -w "%{http_code}" -u ":${RENTERD_AP
   --data-binary @"$ROOT/.secret-s3-put.json" || true)"
 rm -f "$ROOT/.secret-s3-put.json" /tmp/dcl-s3-put.out
 echo "renterd_s3_put_http=$HTTP_CODE"
+fi # STORAGE_MODE = renterd
 
 if [ ! -f "$ROOT/matchmaker/.env" ]; then
   PG_PASS="$(openssl rand -hex 16)"
@@ -284,8 +346,8 @@ SEED_HOST_SHARED_LOGICAL_CORES=4
 SEED_HOST_SHARED_MEMORY_BYTES=8589934592
 SEED_HOST_SHARE_GPU=false
 SEED_HOST_SHARED_GPU_ID=
-IMAGE_STANDARD_DIGEST=6ed707af13eb04a928001996ae5fc7a49ab405e73534caacf86ad65c51bab8fe
-IMAGE_STANDARD_SIGNATURE=WQjS2zyW+BjgfoZDK3IFx6OIwXPmRxO22PN4FpfEJNpjY/AgEsLmqLVak99QZyY14YKNI5hiARiPkulHNpsrCQ==
+IMAGE_STANDARD_DIGEST=e72e4f2b382bd4805b83ac25c85dee8a409540394ff38231f7bb0d2935865756
+IMAGE_STANDARD_SIGNATURE=uVdKqI2EzwJF7EBPSv0fvnlNa02bSQmfbQTABAchnyyg4rAerd6Gvpz9J+tpT867hJZT98X2ql0K05KrwBEKBA==
 IMAGE_PRO_DIGEST=b5dc04d095774efc8fee56dfcbabbe7346788f29a7576aaa27248d9b8249b118
 IMAGE_PRO_SIGNATURE=T1FrV8mlhTvhk+0laH74qnb6s6CTM2M+waEhIAtjszKlN3pZyQ+w18xDfp0xvbA3MO+FXvt8Z+B+hmXDrvBaDA==
 HEADSCALE_URL=http://127.0.0.1:8080
@@ -325,6 +387,48 @@ values.update({
     "S3_GUEST_ENDPOINT": "https://storage.__DCL_DOMAIN__",
 })
 p.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
+PY
+chmod 600 "$ROOT/matchmaker/.env"
+
+# Storage settings are rewritten on every run so switching mode takes effect.
+export STORAGE_MODE
+python3 - <<'PY'
+import os
+from pathlib import Path
+
+p = Path(os.environ["DCL_ROOT"], "matchmaker/.env")
+values = {}
+for line in p.read_text().splitlines():
+    if "=" in line and not line.lstrip().startswith("#"):
+        key, value = line.split("=", 1)
+        values[key] = value
+r2_only = ("S3_BUCKET", "R2_ACCOUNT_ID", "R2_API_TOKEN")
+if os.environ["STORAGE_MODE"] == "r2":
+    endpoint = f"https://{os.environ['DCL_R2_ACCOUNT_ID']}.r2.cloudflarestorage.com"
+    values.update({
+        "STORAGE_CREDENTIALS": "r2",
+        "S3_ENDPOINT": endpoint,
+        "S3_GUEST_ENDPOINT": endpoint,
+        "S3_REGION": "auto",
+        "S3_ACCESS_KEY": os.environ["DCL_R2_ACCESS_KEY_ID"],
+        "S3_SECRET_KEY": os.environ["DCL_R2_SECRET_ACCESS_KEY"],
+        "S3_BUCKET": os.environ["DCL_R2_BUCKET"],
+        "R2_ACCOUNT_ID": os.environ["DCL_R2_ACCOUNT_ID"],
+        "R2_API_TOKEN": os.environ.get("DCL_R2_API_TOKEN", ""),
+    })
+else:
+    root = Path(os.environ["DCL_ROOT"])
+    values.update({
+        "STORAGE_CREDENTIALS": "static",
+        "S3_ENDPOINT": "http://127.0.0.1:8081",
+        "S3_REGION": "us-east-1",
+        "S3_ACCESS_KEY": (root / ".secret-s3-access").read_text().strip(),
+        "S3_SECRET_KEY": (root / ".secret-s3-secret").read_text().strip(),
+    })
+    for key in r2_only:
+        values.pop(key, None)
+p.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
+print("wrote_storage_settings mode=" + os.environ["STORAGE_MODE"])
 PY
 chmod 600 "$ROOT/matchmaker/.env"
 
@@ -380,6 +484,8 @@ WantedBy=multi-user.target
 UNIT
 sudo systemctl daemon-reload
 sudo systemctl enable --now dcl-matchmaker.service
+# enable --now does not restart a running service; a redeploy must load new code.
+sudo systemctl restart dcl-matchmaker.service
 sleep 3
 sudo systemctl --no-pager --full status dcl-matchmaker.service | sed -n '1,25p' || true
 
@@ -393,7 +499,7 @@ preauth = (root / ".secret-gateway-preauth").read_text().strip()
 GATEWAY_DESKTOP_DOMAIN=desktop.__DCL_DOMAIN__
 GATEWAY_STORAGE_DOMAIN=storage.__DCL_DOMAIN__
 GATEWAY_MESH_DOMAIN=mesh.__DCL_DOMAIN__
-GATEWAY_ACME_EMAIL=mohamedm8931@gmail.com
+GATEWAY_ACME_EMAIL=__DCL_ACME_EMAIL__
 GATEWAY_PUBLIC_ORIGIN=https://desktop.__DCL_DOMAIN__
 GATEWAY_RESOLVE_TOKEN={resolve}
 MATCHMAKER_URL=http://127.0.0.1:8000
@@ -437,7 +543,9 @@ sleep 8
 echo "==== STATUS ===="
 cd "$ROOT/matchmaker" && sudo docker compose ps || true
 cd "$ROOT/headscale" && sudo docker compose ps || true
-cd "$ROOT/renterd" && sudo docker compose ps || true
+if [ "$STORAGE_MODE" = renterd ]; then
+  cd "$ROOT/renterd" && sudo docker compose ps || true
+fi
 cd "$ROOT/gateway" && sudo docker compose ps || true
 sudo systemctl is-active dcl-matchmaker || true
 curl -sS -o /dev/null -w "matchmaker_local_http=%{http_code}\n" http://127.0.0.1:8000/docs || true

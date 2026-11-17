@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID
+import base64
 import logging
 
 import httpx
@@ -18,6 +19,17 @@ class ResolvedSession:
     session_id: UUID
     target_url: str
     streamer: str
+    # Login for the guest desktop. The gateway presents it; the renter never
+    # sees it. None for a guest that asks for no password.
+    upstream_user: str | None = None
+    upstream_password: str | None = field(default=None, repr=False)
+
+    def upstream_authorization(self) -> str | None:
+        """`Authorization` header value for the guest, or None."""
+        if not self.upstream_user or not self.upstream_password:
+            return None
+        raw = f"{self.upstream_user}:{self.upstream_password}".encode("utf-8")
+        return "Basic " + base64.b64encode(raw).decode("ascii")
 
 
 class ResolveError(Exception):
@@ -78,8 +90,12 @@ async def resolve_token(
         parsed_id = UUID(session_id)
     except ValueError:
         return None
+    user = body.get("upstreamUser")
+    password = body.get("upstreamPassword")
     return ResolvedSession(
         session_id=parsed_id,
         target_url=target.strip(),
         streamer=streamer.strip(),
+        upstream_user=user if isinstance(user, str) and user else None,
+        upstream_password=password if isinstance(password, str) and password else None,
     )

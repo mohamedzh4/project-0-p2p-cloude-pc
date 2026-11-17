@@ -80,34 +80,30 @@ class StorageMountInfo(CamelModel):
     saved_as_of: datetime | None = None
 
 
-class MeshPeerInfo(CamelModel):
-    """One Headscale identity for this session. `preauthKey` is a secret."""
-
-    hostname: str
-    acl_tags: list[str]
-    preauth_key: str
-    ephemeral: bool
-    reusable: bool
-    expires_at: str
-    tailscale_up: list[str]
-
-
 class SessionMeshInfo(CamelModel):
-    """Per-session guest+user mesh. Host Agent join is a different route (`tag:host`)."""
+    """The guest's mesh identity, for display. Never carries a preauth key."""
 
     login_server: str
     exit_node: str | None = None
     exit_node_applied: bool = False
-    guest: MeshPeerInfo
-    user: MeshPeerInfo
+    guest_hostname: str
 
 
 class SessionResponse(CamelModel):
+    """`connection` is set only once `status` is `active`.
+
+    `provisioning` means the host is booting the desktop: poll
+    `GET /v1/sessions/{id}`. `failed` carries `failureReason`.
+    """
+
     session_id: UUID
     host_id: UUID
     lab_tier: str
+    status: str
+    failure_reason: str | None = None
     started_at: datetime
-    connection: ConnectionInfo
+    ended_at: datetime | None = None
+    connection: ConnectionInfo | None = None
     storage: StorageMountInfo
     mesh: SessionMeshInfo
 
@@ -124,6 +120,7 @@ class SessionHistoryItem(CamelModel):
     host_id: UUID
     lab_tier: str
     status: str
+    failure_reason: str | None = None
     started_at: datetime
     ended_at: datetime | None = None
     duration_seconds: int | None = None
@@ -235,6 +232,11 @@ class GuestBootstrapStorage(CamelModel):
     env_auth: bool = True
     access_key_id: str
     secret_access_key: str
+    # Set for short-lived per-user credentials (Cloudflare R2). The guest
+    # exports it as AWS_SESSION_TOKEN.
+    session_token: str | None = None
+    # True when the user is over quota: the mount is read-only.
+    read_only: bool = False
 
 
 class GuestBootstrapResponse(CamelModel):
@@ -247,6 +249,10 @@ class GuestBootstrapResponse(CamelModel):
     acl_tags: list[str]
     tailscale_up: list[str]
     storage: GuestBootstrapStorage
+    # The guest sets this as its desktop (KasmVNC) login before it joins the
+    # mesh. Only the gateway is told it; renters and hosts never are.
+    desktop_user: str | None = None
+    desktop_password: str | None = None
 
 
 class GuestSavedAsOfRequest(CamelModel):
@@ -270,3 +276,26 @@ class GatewayResolveResponse(CamelModel):
     session_id: UUID
     target_url: str
     streamer: str
+    # Login the gateway presents to the guest desktop on the renter's behalf.
+    upstream_user: str | None = None
+    upstream_password: str | None = None
+
+
+class HostCommandResponse(CamelModel):
+    """One instruction for a Host Agent that fetches its commands itself.
+
+    `commandToken` is the same Bearer the agent's own listener expects, so
+    the agent can check the command came from the Matchmaker that knows it.
+    """
+
+    command_id: UUID
+    kind: str
+    command_token: str
+    body: dict
+
+
+class HostCommandResultRequest(CamelModel):
+    """What the agent's handler answered: its HTTP-style status and body."""
+
+    status: int = Field(ge=100, le=599)
+    body: str = Field(default="", max_length=64 * 1024)

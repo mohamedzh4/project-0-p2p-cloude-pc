@@ -23,11 +23,9 @@ use thiserror::Error;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::agent_status::Occupancy;
+use crate::diagnostics::ProvisionLog;
 use crate::eligibility::{self, EligibilityRequest};
 use crate::gpu_bind::{self, GpuBindError, HyperVGpuOps, PciBindOps, PciSysfs};
-use crate::qemu_whpx::{self, QemuError, QemuRuntime};
-use crate::qemu_kvm::{self, QemuKvmError, QemuKvmRuntime};
-use crate::qemu_vfio::{self, LinuxQemuError, LinuxQemuRuntime};
 use crate::host_capabilities::HostCapabilities;
 use crate::image::{
     trust_from_env, verify_image, GuestImageStatus, ImageError, ImageManifest, ImageTrust,
@@ -36,10 +34,13 @@ use crate::launch::{self, LaunchError, LaunchRequest};
 use crate::locator::{self, LiveLocator, LocatorError, StreamerKind, StreamerWait};
 use crate::models::{HardwareSnapshot, SharingConfig};
 use crate::provision::{plan, HostOs, LabTier, ProvisionError, ProvisionPlan, ProvisionRequest};
+use crate::qemu_kvm::{self, QemuKvmError, QemuKvmRuntime};
+use crate::qemu_vfio::{self, LinuxQemuError, LinuxQemuRuntime};
+use crate::qemu_whpx::{self, QemuError, QemuRuntime};
 use crate::storage::GuestRcloneMount;
 
-const PROVISION_PATH: &str = "/v1/provision";
-const TEARDOWN_PATH: &str = "/v1/teardown";
+pub(crate) const PROVISION_PATH: &str = "/v1/provision";
+pub(crate) const TEARDOWN_PATH: &str = "/v1/teardown";
 const BODY_MAX: usize = 16 * 1024;
 const STREAMER_KASM: &str = "kasm";
 const STREAMER_SUNSHINE: &str = "sunshine";
@@ -261,6 +262,13 @@ pub struct ListenConfig {
 }
 
 impl ListenConfig {
+    /// Accept only this machine's command token (see `host_secret`) instead
+    /// of the bootstrap token every host shares.
+    pub fn with_command_token(mut self, token: impl Into<String>) -> Self {
+        self.token = token.into();
+        self
+    }
+
     pub fn new(addr: impl Into<String>, token: impl Into<String>, image_trust: ImageTrust) -> Self {
         Self {
             addr: addr.into(),
@@ -1009,6 +1017,17 @@ pub fn serve(
     occupancy: &Occupancy,
     gate: Option<ProvisionGate>,
 ) -> Result<(), ProvisionListenError> {
+    serve_with_log(config, os, occupancy, gate, None)
+}
+
+/// Like [`serve`], and records each outcome for the diagnostics report.
+pub fn serve_with_log(
+    config: &ListenConfig,
+    os: HostOs,
+    occupancy: &Occupancy,
+    gate: Option<ProvisionGate>,
+    log: Option<&ProvisionLog>,
+) -> Result<(), ProvisionListenError> {
     let server = Server::http(&config.addr).map_err(|error| ProvisionListenError::Bind {
         addr: config.addr.clone(),
         detail: error.to_string(),
@@ -1021,6 +1040,7 @@ pub fn serve(
             occupancy,
             &config.image_trust,
             gate.as_ref(),
+            log,
         );
     }
     Ok(())
@@ -1033,6 +1053,7 @@ fn dispatch(
     occupancy: &Occupancy,
     image_trust: &ImageTrust,
     gate: Option<&ProvisionGate>,
+    log: Option<&ProvisionLog>,
 ) -> std::io::Result<()> {
     let method = method_name(request.method());
     let url = request.url().to_string();
@@ -1054,6 +1075,13 @@ fn dispatch(
         image_trust,
         gate,
     );
+    // 401s are not recorded: anyone can send one, and they would bury the
+    // last real outcome.
+    if let Some(log) = log {
+        if output.status != 401 {
+            log.record(&url, output.status, &output.body);
+        }
+    }
     let mut response =
         Response::from_string(output.body).with_status_code(StatusCode(output.status));
     if let Ok(header) = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]) {
@@ -1370,6 +1398,46 @@ mod tests {
     }
 
     #[test]
+    fn listener_with_a_command_token_refuses_the_shared_bootstrap_token() {
+        let (trust, body) = signed_standard();
+        let secret = "a".repeat(43);
+        let command = crate::host_secret::command_token(&secret);
+        let config =
+            ListenConfig::new("127.0.0.1:7842", TOKEN, trust.clone()).with_command_token(&command);
+        assert_eq!(config.token, command);
+
+        for bearer in [
+            format!("Bearer {TOKEN}"),
+            format!("Bearer {secret}"),
+            format!(
+                "Bearer {}",
+                crate::host_secret::command_token("another-hosts-secret-value-000000000")
+            ),
+        ] {
+            let refused = respond(
+                "POST",
+                "/v1/provision",
+                Some(&bearer),
+                &body,
+                &config.token,
+                HostOs::Linux,
+                &trust,
+            );
+            assert_eq!(refused.status, 401, "{bearer} must be refused");
+        }
+        let accepted = respond(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {command}")),
+            &body,
+            &config.token,
+            HostOs::Linux,
+            &trust,
+        );
+        assert_ne!(accepted.status, 401);
+    }
+
+    #[test]
     fn other_paths_are_not_found() {
         let (trust, body) = signed_standard();
         let output = respond(
@@ -1448,6 +1516,7 @@ mod tests {
                 HostOs::Linux,
                 &occupancy,
                 &trust_for_server,
+                None,
                 None,
             )
             .unwrap();
@@ -1890,7 +1959,7 @@ mod tests {
         assert!(args.contains(&"cores=16".to_string()));
         assert!(args.contains(&"32G".to_string()));
         assert!(args.contains(&format!(
-            "file={},if=virtio,format=raw",
+            "file={},if=virtio,format=raw,snapshot=on",
             rootfs.to_string_lossy()
         )));
         assert!(!args.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));
@@ -1949,7 +2018,11 @@ mod tests {
             Some(&gate),
         );
         assert_eq!(output.status, 400);
-        assert!(output.body.contains("guest image is not present"), "{}", output.body);
+        assert!(
+            output.body.contains("guest image is not present"),
+            "{}",
+            output.body
+        );
         assert!(!output.body.contains("connectionUrl"));
         assert!(!occupancy.is_in_session());
         assert!(recorder.spawn_calls().is_empty());
@@ -2042,7 +2115,9 @@ mod tests {
 
     #[test]
     fn windows_standard_with_boot_inputs_invokes_whpx_and_returns_the_live_locator() {
-        use crate::qemu_whpx::{virtio_drive, RecordingQemu, ACCEL_ARG, ACCEL_WHPX, DRIVE_ARG, MACHINE_PC};
+        use crate::qemu_whpx::{
+            virtio_drive, RecordingQemu, ACCEL_ARG, ACCEL_WHPX, DRIVE_ARG, MACHINE_PC,
+        };
         use std::sync::Arc;
 
         let live_url = spawn_live_streamer();
@@ -2090,7 +2165,10 @@ mod tests {
         assert_eq!(spawns[0].1[7], "32G");
         assert_eq!(spawns[0].1[12], DRIVE_ARG);
         assert_eq!(spawns[0].1[13], virtio_drive(&rootfs.to_string_lossy()));
-        assert!(!spawns[0].1.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));
+        assert!(!spawns[0]
+            .1
+            .iter()
+            .any(|arg| arg.eq_ignore_ascii_case("tcg")));
     }
 
     #[test]
@@ -2293,8 +2371,7 @@ mod tests {
         }
 
         fn write_bind(&self, bind_path: &std::path::Path, bdf: &str) -> Result<(), GpuBindError> {
-            self.binds
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.binds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if bind_path
                 .parent()
                 .and_then(|parent| parent.file_name())
@@ -2654,9 +2731,8 @@ mod tests {
         use std::sync::Arc;
 
         let (trust, body) = signed_pro();
-        let runner = Arc::new(
-            crate::gpu_bind::RecordingHyperV::dda().fail_on("Add-VMAssignableDevice"),
-        );
+        let runner =
+            Arc::new(crate::gpu_bind::RecordingHyperV::dda().fail_on("Add-VMAssignableDevice"));
         let mut gate = windows_whpx_gate();
         gate.hyperv = Some(HyperVAssign {
             ops: runner.clone(),

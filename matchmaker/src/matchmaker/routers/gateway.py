@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from matchmaker.db import get_db
 from matchmaker.deps import require_gateway_resolver
+from matchmaker.guest_bootstrap import desktop_credentials
 from matchmaker.ingress import lookup_ingress_token
 from matchmaker.schemas import GatewayResolveRequest, GatewayResolveResponse
 
@@ -27,8 +28,11 @@ def resolve_gateway_token(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Session not found",
         )
+    credentials = desktop_credentials(db, target.session_id)
     return GatewayResolveResponse(
         session_id=target.session_id,
         target_url=target.target_url,
         streamer=target.streamer,
+        upstream_user=credentials[0] if credentials else None,
+        upstream_password=credentials[1] if credentials else None,
     )

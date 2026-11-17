@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 
 from matchmaker.config import get_settings
 from matchmaker.db import get_db
-from matchmaker.deps import bearer_scheme
+from matchmaker.deps import bearer_scheme, get_renterd_client, get_storage_credential_issuer
+from matchmaker.renterd import RenterdClient, RenterdError
+from matchmaker.storage_credentials import StorageCredentialError, StorageCredentialIssuer
 from matchmaker.guest_bootstrap import (
     bootstrap_response,
     lookup_guest_bootstrap,
@@ -47,14 +49,32 @@ def _require_bootstrap_row(
 def redeem_guest_bootstrap(
     db: Annotated[Session, Depends(get_db)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    issuer: Annotated[StorageCredentialIssuer, Depends(get_storage_credential_issuer)],
+    store: Annotated[RenterdClient, Depends(get_renterd_client)],
 ) -> GuestBootstrapResponse:
+    """Hand the guest its mesh key and a storage key for this one user."""
     row = _require_bootstrap_row(credentials, db)
     settings = get_settings()
-    return bootstrap_response(
-        row,
-        access_key=settings.renterd_s3_access_key,
-        secret_key=settings.renterd_s3_secret_key,
-    )
+    quota = settings.storage_quota_bytes
+    try:
+        used = store.usage_bytes(row.storage_bucket, row.storage_prefix, stop_at=quota)
+    except RenterdError:
+        # Unknown usage must not lock a user out of their files.
+        used = 0
+    read_only = used >= quota
+    try:
+        issued = issuer.issue(
+            bucket=row.storage_bucket,
+            prefix=row.storage_prefix,
+            read_only=read_only,
+            ttl_seconds=settings.storage_credential_ttl_seconds,
+        )
+    except StorageCredentialError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="storage credentials could not be issued",
+        ) from exc
+    return bootstrap_response(row, credentials=issued, read_only=read_only)
 
 
 @router.post("/guest/saved-as-of", response_model=GuestSavedAsOfResponse)

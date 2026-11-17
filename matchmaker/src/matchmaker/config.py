@@ -165,6 +165,33 @@ def _guest_s3_endpoint() -> str:
     return _require_first_http_url("S3_ENDPOINT", "RENTERD_S3_ENDPOINT")
 
 
+def _positive_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip() or str(default)
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if value <= 0:
+        raise RuntimeError(f"{name} must be positive")
+    return value
+
+
+def _optional_env(name: str) -> str | None:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    return raw.strip()
+
+
+def _storage_credentials_mode() -> str:
+    """`r2` issues per-user temporary keys. `static` hands every guest the
+    Matchmaker's own key and is for local development only."""
+    mode = (os.environ.get("STORAGE_CREDENTIALS", "").strip() or "static").lower()
+    if mode not in {"static", "r2"}:
+        raise RuntimeError("STORAGE_CREDENTIALS must be 'static' or 'r2'")
+    return mode
+
+
 def _require_s3_key(name: str) -> str:
     value = _require_env(name)
     if len(value) < 16:
@@ -215,6 +242,15 @@ class Settings:
     gateway_resolve_token: str | None = field(repr=False)
     gateway_token_ttl_seconds: int
     matchmaker_public_origin: str | None
+    storage_credentials_mode: str = "static"
+    storage_shared_bucket: str | None = None
+    storage_quota_bytes: int = 20 * 1024**3
+    storage_credential_ttl_seconds: int = 43200
+    r2_account_id: str | None = None
+    r2_api_token: str | None = field(default=None, repr=False)
+    # Cloudflare API origin. Only the integration test overrides it.
+    r2_api_base: str | None = None
+    provision_timeout_seconds: int = 420
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -252,6 +288,17 @@ class Settings:
             raise RuntimeError("STALE_SESSION_SWEEP_INTERVAL_SECONDS must be non-negative")
 
         gateway_origin = _gateway_public_origin()
+        storage_mode = _storage_credentials_mode()
+        r2_account_id = _optional_env("R2_ACCOUNT_ID")
+        r2_api_token = _optional_env("R2_API_TOKEN")
+        shared_bucket = _optional_env("S3_BUCKET")
+        if storage_mode == "r2":
+            # R2_API_TOKEN is optional: without it the per-user keys are
+            # signed on this server with the parent S3 key.
+            if r2_account_id is None:
+                raise RuntimeError("R2_ACCOUNT_ID is required when STORAGE_CREDENTIALS=r2")
+            if shared_bucket is None:
+                raise RuntimeError("S3_BUCKET is required when STORAGE_CREDENTIALS=r2")
         return cls(
             database_url=_require_env("DATABASE_URL"),
             jwt_secret=_require_env("JWT_SECRET"),
@@ -285,6 +332,16 @@ class Settings:
             gateway_resolve_token=_gateway_resolve_token(gateway_origin),
             gateway_token_ttl_seconds=_gateway_token_ttl_seconds(),
             matchmaker_public_origin=_matchmaker_public_origin(),
+            storage_credentials_mode=storage_mode,
+            storage_shared_bucket=shared_bucket,
+            storage_quota_bytes=_positive_int("STORAGE_QUOTA_GB", 20) * 1024**3,
+            storage_credential_ttl_seconds=_positive_int(
+                "STORAGE_CREDENTIAL_TTL_SECONDS", 43200
+            ),
+            r2_account_id=r2_account_id,
+            r2_api_token=r2_api_token,
+            r2_api_base=_optional_http_url("R2_API_BASE"),
+            provision_timeout_seconds=_positive_int("PROVISION_TIMEOUT_SECONDS", 420),
         )
 
 

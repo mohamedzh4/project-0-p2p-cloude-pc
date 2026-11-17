@@ -85,7 +85,8 @@ variable "headless" {
 }
 
 locals {
-  checksum = startswith(var.cloud_image_checksum, "sha256:") ? var.cloud_image_checksum : "sha256:${var.cloud_image_checksum}"
+  # trimprefix, not startswith: startswith is missing from Packer 1.11.
+  checksum        = "sha256:${trimprefix(var.cloud_image_checksum, "sha256:")}"
   streamer_script = var.lab_tier == "standard" ? "${path.root}/../scripts/provision-kasm.sh" : "${path.root}/../scripts/provision-sunshine.sh"
   vm_name         = "rootfs.qcow2"
 }

@@ -170,12 +170,14 @@ function Assert-FirmwareVirtualization {
 function Assert-DiskSpace {
     $drive = Get-PSDrive -Name C
     $free = [int64]($drive.Free)
-    $need = [int64]80GB
+    # 16 GiB raw disk + the agent's verified copy + a session's temporary
+    # changes (QEMU snapshot) + the 1-2 GiB compressed download.
+    $need = [int64]45GB
     if ($free -lt $need) {
-        throw ("C: has {0:N1} GiB free; need about 80 GiB (guest disk + Host Agent spare). Free space and re-run." -f ($free / 1GB))
+        throw ("C: has {0:N1} GiB free; need about 45 GiB (guest disk, its verified copy, session changes). Free space and re-run." -f ($free / 1GB))
     }
-    if ($free -lt 120GB) {
-        Write-Host ("Warning: {0:N1} GiB free. If qemu-img writes a full 64 GiB raw file, convert may fail." -f ($free / 1GB))
+    if ($free -lt 60GB) {
+        Write-Host ("Warning: {0:N1} GiB free. A long session that writes a lot may run short." -f ($free / 1GB))
     }
 }
 
@@ -397,12 +399,19 @@ function Write-HostAgentEnv {
     if (-not [string]::IsNullOrWhiteSpace($script:HostDisplayName)) {
         $displayLine = "HOST_DISPLAY_NAME=$($script:HostDisplayName)"
     }
+    # Left out when empty: the agent then fetches its commands itself.
+    $listenLine = ""
+    $agentUrlLine = ""
+    if (-not [string]::IsNullOrWhiteSpace($AgentUrl)) {
+        $listenLine = "HOST_AGENT_LISTEN_ADDR=$ListenAddr"
+        $agentUrlLine = "HOST_AGENT_URL=$AgentUrl"
+    }
     $envText = @"
 MATCHMAKER_URL=$($script:MatchmakerUrl)
 HOST_BOOTSTRAP_TOKEN=$($script:BootstrapToken)
 $displayLine
-HOST_AGENT_LISTEN_ADDR=$ListenAddr
-HOST_AGENT_URL=$AgentUrl
+$listenLine
+$agentUrlLine
 HEADSCALE_LOGIN_SERVER=$($script:HeadscaleUrl)
 IMAGE_SIGNING_PUBLIC_KEY=$($script:ImageSigningPublicKey)
 IMAGE_LOCAL_DIGEST=$($script:ImageStandardDigest)
@@ -511,7 +520,6 @@ if (-not $ResumeAfterReboot) {
     $dismCode = Enable-Whpx
 }
 
-Enable-HostFirewall
 Install-WebView2
 Install-TailscaleClient
 Disable-AcSleep
@@ -520,28 +528,25 @@ $qemuDir = Install-PinnedQemu
 Install-GuestDisk -QemuDir $qemuDir
 $agentExe = Install-HostAgentApp
 
-$listenAddr = $script:ListenAddr
-if ([string]::IsNullOrWhiteSpace($listenAddr)) {
-    $listenAddr = "0.0.0.0:7842"
-}
-
+# Default: the Host Agent fetches its commands from the server itself, so
+# nothing has to reach this PC from the internet (no port-forward, no
+# tunnel). Only a friend.env that sets HOST_AGENT_URL makes the agent listen
+# and wait to be dialled.
+$listenAddr = ""
+$agentUrl = ""
 if ($script:AgentUrlOverride) {
+    $listenAddr = $script:ListenAddr
+    if ([string]::IsNullOrWhiteSpace($listenAddr)) {
+        $listenAddr = "0.0.0.0:7842"
+    }
     $agentUrl = $script:AgentUrlOverride.Trim().TrimEnd("/")
-    Write-Host "Using HOST_AGENT_URL from friend.env (Azure dials this origin): $agentUrl"
+    Write-Host "Using HOST_AGENT_URL from friend.env (the server dials this origin): $agentUrl"
+    # Only this mode listens, so only this mode opens the port.
+    Enable-HostFirewall
     Start-ReverseTunnel
 }
 else {
-    $publicIp = Get-PublicIPv4
-    $agentUrl = "http://${publicIp}:7842"
-    Write-Host "Detected public IPv4: $publicIp"
-    if (Test-CgnatAddress $publicIp) {
-        $script:ManualSteps.Add("This ISP address is CGNAT (100.64.x.x). A home port-forward will not work. Tell the operator; Azure cannot dial this PC on TCP 7842.")
-    }
-    $lan = Get-LanIPv4
-    $upnp = Try-UpnpPort7842 -LanIp $lan
-    if (-not $upnp -and -not (Test-CgnatAddress $publicIp)) {
-        $script:ManualSteps.Add("On the home router, forward TCP 7842 to this PC ($lan). Azure must reach $agentUrl")
-    }
+    Write-Host "This PC will fetch its commands from the server. No router setup is needed."
 }
 
 Write-HostAgentEnv -AgentUrl $agentUrl -ListenAddr $listenAddr

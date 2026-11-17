@@ -47,7 +47,7 @@ export function isLiveKasmUrl(url: string): boolean {
 }
 
 export function sessionStreamer(session: SessionResponse): Streamer {
-  if (session.labTier === "pro" || session.connection.streamer === "sunshine") {
+  if (session.labTier === "pro" || session.connection?.streamer === "sunshine") {
     return "sunshine";
   }
   return "kasm";
@@ -55,9 +55,9 @@ export function sessionStreamer(session: SessionResponse): Streamer {
 
 export function sessionLocator(session: SessionResponse): string | null {
   if (sessionStreamer(session) === "sunshine") {
-    return session.connection.sunshineUrl ?? null;
+    return session.connection?.sunshineUrl ?? null;
   }
-  return session.connection.kasmUrl ?? null;
+  return session.connection?.kasmUrl ?? null;
 }
 
 /**
@@ -81,7 +81,7 @@ export function sessionMoonlightClient(session: SessionResponse): MoonlightClien
   if (sessionStreamer(session) !== "sunshine") {
     return null;
   }
-  const moonlight = session.connection.moonlight;
+  const moonlight = session.connection?.moonlight;
   if (!moonlight?.host || hostnameIsPlaceholder(moonlight.host)) {
     return null;
   }

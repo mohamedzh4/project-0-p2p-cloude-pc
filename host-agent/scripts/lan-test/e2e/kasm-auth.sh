@@ -40,3 +40,20 @@ runuser -u ubuntu -- env HOME=/home/ubuntu /usr/local/sbin/dcl-kasmvnc-start >/t
 wait_up || { echo "server never answered"; tail -30 /tmp/vnc2.log; }
 echo "no auth      -> $(code)"
 stop_vnc
+echo "=== case 3: session password from the Matchmaker"
+mkdir -p /run/dcl && printf 'SessionPw0123456789abcdefABCDEF42\n' >/run/dcl/desktop-password && touch /run/dcl/session-vm
+/usr/local/sbin/dcl-kasmvnc-auth; echo "auth rc=$?"; echo "marker: $(ls /run/dcl-kasmvnc/)"
+runuser -u ubuntu -- env HOME=/home/ubuntu /usr/local/sbin/dcl-kasmvnc-start >/tmp/vnc3.log 2>&1 &
+wait_up || { echo "server never answered"; tail -30 /tmp/vnc3.log; }
+echo "no auth      -> $(code)"
+echo "wrong pass   -> $(code -u ubuntu:nope)"
+echo "right pass   -> $(code -u ubuntu:SessionPw0123456789abcdefABCDEF42)"
+stop_vnc
+echo "=== case 4: session VM that never got its password (locked)"
+rm -f /run/dcl/desktop-password
+/usr/local/sbin/dcl-kasmvnc-auth; echo "auth rc=$?"; echo "marker: $(ls /run/dcl-kasmvnc/)"
+runuser -u ubuntu -- env HOME=/home/ubuntu /usr/local/sbin/dcl-kasmvnc-start >/tmp/vnc4.log 2>&1 &
+wait_up || { echo "server never answered"; tail -30 /tmp/vnc4.log; }
+echo "no auth      -> $(code)"
+echo "old pass     -> $(code -u ubuntu:SessionPw0123456789abcdefABCDEF42)"
+stop_vnc

@@ -1,7 +1,7 @@
 # Known issues
 
 Found in a code review on 2026-11-12. Ordered by severity. Remove an entry
-once it is fixed.
+once it is fixed and seen working on real hardware.
 
 ## 1. Every guest receives the platform's master storage key (security, high)
 
@@ -16,6 +16,31 @@ Fix: create a per-user (or per-session) S3 keypair limited to that user's
 bucket and prefix, and hand only that to the guest. Revoke it when the
 session ends.
 
+**Fixed 2026-11-16 and checked against the real R2 bucket** (from the Mac and from the deployed server: a guest key reads and writes its own user's prefix and gets 403 on another user's prefix, on listing the bucket, and on writing with a read-only key). Not yet seen from inside a real guest.
+With `STORAGE_CREDENTIALS=r2` the Matchmaker makes temporary R2
+credentials limited to one bucket and one user's prefix and the guest gets
+only those plus a session token. By default it signs them itself with the
+parent S3 key (`storage_credentials.py` `R2LocalCredentialIssuer`,
+Cloudflare's documented local signing), which needs no Cloudflare API
+token. With `R2_API_TOKEN` set it asks the Cloudflare API instead
+(`R2TempCredentialIssuer`); the token created on 2026-11-15 was refused
+there, which is why local signing is the default.
+All users share one bucket (`S3_BUCKET`), each under
+`users/<user id>/files/`. A user over the quota (`STORAGE_QUOTA_GB`,
+default 20) gets a read-only credential. Covered by
+`tests/test_storage_credentials.py` and section 3 of the integration test.
+
+Still open:
+- R2 cannot revoke one temporary credential early, so it stays valid until
+  it expires (`STORAGE_CREDENTIAL_TTL_SECONDS`, default 12 hours), not
+  until session end. A host owner who copies it can read that one renter's
+  files for that long.
+- Files are not yet encrypted before upload (rclone crypt), so Cloudflare
+  can read them.
+- `STORAGE_CREDENTIALS=static` (the default, used with renterd or MinIO)
+  still hands every guest the master key. Development only.
+- Close this entry after a real guest mounts its prefix.
+
 ## 2. One shared host token for registration and provisioning (security, high)
 
 All hosts share `HOST_BOOTSTRAP_TOKEN`. It authenticates host registration
@@ -29,6 +54,26 @@ can reach.
 Fix: keep the bootstrap token only for first registration. Issue each host
 its own credential on approval and use that for Matchmaker → agent calls.
 Consider rotating the bootstrap token per invite.
+
+**Fixed in code 2026-11-15, not yet run on a real host.** Each Host Agent
+now makes its own random secret on first run (`host_secret.rs`, file
+`host-secret` in the app config folder) and sends it in `X-DCL-Host-Secret`
+with every call. The Matchmaker binds the secret to the host id on first
+use, stores only two hashes of it (`host_credentials.py`), and answers 403
+to anyone else naming that host. For `/v1/provision` and `/v1/teardown` the
+Matchmaker sends a token derived from that host's secret, and the agent's
+listener accepts nothing else, so the shared bootstrap token can no longer
+command an agent. Covered by `tests/test_host_credentials.py`, the Rust
+tests in `host_secret.rs` and `provision_http.rs`, and sections 1 and 9 of
+the integration test.
+
+Still open:
+- The bootstrap token is still shared and still lets its holder register
+  **new** hosts (they stay pending until approved). Rotate it per invite.
+- A host registered before this change has no secret until its agent next
+  syncs; until then the bootstrap token alone still works for it.
+- If the `host-secret` file is lost the host must register again as a new
+  host.
 
 ## 3. Guest bootstrap via fw_cfg never reaches Ubuntu guests (correctness, high)
 
@@ -79,6 +124,17 @@ boots will block the API; proxies may also time out first.
 Fix: return `202 Accepted` with a `provisioning` session state, provision in
 a background task, and have `web/` poll the session status.
 
+**Fixed in code 2026-11-15.** `POST /v1/sessions` now books the host with a
+`provisioning` session and returns `202`; the agent call runs on a thread
+pool (`booking.py`). The browser polls `GET /v1/sessions/{id}`. A host that
+fails gives a `failed` session with a reason and no charge; the credit
+clock starts when the desktop is ready. Sessions stuck in `provisioning`
+(for example after a restart) are failed after `PROVISION_TIMEOUT_SECONDS`
+(default 420). Covered by `tests/test_async_booking.py` and section 2 of
+the integration test. Still open: the pool is in-process, so bookings in
+flight are lost on a Matchmaker restart (they time out and the renter must
+request again). Close after the first real booking through a cold boot.
+
 ## 5. Repeated session requests create new Headscale keys (correctness, low)
 
 When the user already has an active session, every `POST /v1/sessions` call
@@ -86,6 +142,10 @@ mints fresh Headscale preauth keys (`sessions.py:202`) instead of reusing the
 existing grant. Unused keys pile up.
 
 Fix: store the session's mesh grant and return it on repeat calls.
+
+**Fixed in code 2026-11-15.** One guest key is minted when the session is
+created and stored with the guest bootstrap row. Repeat requests return the
+session without minting (`test_repeat_requests_do_not_mint_new_mesh_keys`).
 
 ## 6. Repo housekeeping (low)
 
@@ -176,8 +236,8 @@ Through KasmVNC into `xfce4-terminal`:
 
 **Fixed 2026-11-15 in quick mode** (not yet re-run): the seed turns
 bracketed paste off in `/etc/inputrc` and adds a `dcl-bench` command, so
-benchmarks need one typed word. The signed Packer image does not have
-these yet.
+benchmarks need one typed word. **Signed image: fixed 2026-11-16** (not yet built):
+`provision-base.sh` turns bracketed paste off in `/etc/inputrc`.
 
 ## 13. LAN test has no way to move files in or out of the guest (usability, low)
 
@@ -225,6 +285,30 @@ Fix (both, guest firewall first):
   would add and remove a rule per session. Needs checking against the
   current Headscale docs and an upgrade from 0.26.1.
 
+**Fixed in code 2026-11-15 by taking renters off the mesh, not yet run on
+real hardware.** The Matchmaker no longer mints a `tag:user` key, session
+JSON carries no mesh key at all, and `headscale/acl.hujson` has no
+`tag:user` rule. The gateway and its per-session token are the only way to
+a guest. Covered by `test_session_json_names_the_guest_but_carries_no_mesh_key`,
+the ACL test in `test_headscale.py`, and section 4 of the integration test.
+
+Still open:
+- The gateway node can still reach every guest; its scope is the
+  per-session token. The guest firewall above is still worth adding.
+- **Fixed 2026-11-16:** a Host Agent (or anyone who joined the mesh with a
+  host kit) could open every renter's desktop, because KasmVNC ran with
+  no password on the mesh. Each session now has a desktop password that
+  only the guest and the gateway know (`guest_bootstrap.py`,
+  `gateway/proxy.py`, `provision-kasm.sh`, `dcl-guest-join.py`); a session
+  VM that never received its password stays locked. Checked against the
+  real KasmVNC 1.3.4 in a container (`lan-test/e2e/kasm-auth.sh`, cases 3
+  and 4) and in the integration test. Not yet seen in a real guest; the
+  signed image must be rebuilt. Sunshine (Pro) is not covered.
+- Hosts can still mint a mesh key before an operator approves them.
+- This must be revisited when direct peer-to-peer streaming (FR17) puts
+  renter devices back on a network path to guests.
+- The running Headscale has to reload the new policy file on deploy.
+
 ## 16. Direct mesh connections reveal both public IPs; mesh needs an app (privacy, medium)
 
 `100.x` mesh addresses are private, but a direct WireGuard connection is
@@ -239,6 +323,97 @@ Plan: use the mesh for the Pro tier and advanced users (Moonlight is a
 native app anyway), with the FR18 notice; for "Hide my IP" sessions and
 browser users, use the WebRTC path with the platform relay (cahier FR17)
 or the gateway.
+
+## 17. A failed boot was reported as ready when the host had an older link (correctness, high)
+
+Found 2026-11-15 by the integration test. The host row keeps the desktop
+URL of its last session. When the agent was asked to boot a guest and
+failed (HTTP error, timeout), the Matchmaker fell back to that old URL and
+marked the new session ready, pointing at a desktop that no longer exists.
+After a host's first successful session, every later failed boot would
+have looked like a success.
+
+**Fixed in code 2026-11-15.** A provisioner result now says whether the
+agent was asked and failed (`ProvisionResult.failed`); that is always a
+failed booking. Only a host with no agent at all keeps its fixed URL.
+Covered by `test_a_failed_boot_is_not_hidden_by_the_previous_sessions_link`
+and section 7 of the integration test.
+
+## 18. Storage requests were signed with a date real S3 stores reject (correctness, high)
+
+Found 2026-11-15 on the first call to the real R2 bucket. The S3 client
+(`matchmaker/src/matchmaker/renterd.py`) wrote the request date as
+`20261115T23:36:17Z`; the standard form has no colons. The unit tests
+only checked the code against itself, so every storage call would have
+failed in production.
+
+**Fixed 2026-11-15** and confirmed against R2. Covered by
+`test_sigv4_date_header_is_basic_iso8601_without_colons`.
+
+## 19. The server could only reach a host PC through a shared SSH tunnel (design, high)
+
+Found 2026-11-16 while deploying. To command a Host Agent behind a home
+router the Matchmaker dialled a reverse SSH tunnel: every kit carried the
+same private key (`tunnel.pem`) for a `dcl-tunnel` account on the server,
+and each kit used one fixed port, so two Windows hosts could not be
+online together. The deploy script never created that account, so on a
+fresh server no host could be commanded at all.
+
+**Fixed in code 2026-11-16, not yet run on a real host.** A Host Agent
+with no `HOST_AGENT_LISTEN_ADDR` now fetches its commands itself
+(`command_channel.rs`, `host_commands.py`): it polls
+`POST /v1/hosts/{id}/commands/poll` every 2 s with its own secret, runs
+the command through the same handler and token check as before, and
+posts the result. Nothing has to reach the PC from the internet. The kits
+no longer set up a tunnel unless `HOST_AGENT_URL` is given. Covered by
+`tests/test_host_commands.py`, the Rust tests in `command_channel.rs`, and
+section 9 of the integration test. Still open: a booking waits up to 2 s
+for the next poll; the old tunnel code is still in the kits as an option.
+
+## 20. Files in ~/Persistent would have belonged to root (correctness, high)
+
+Found 2026-11-16 by reading the guest join script. It runs as root and
+mounted the renter's storage without naming an owner, so the desktop user
+(`ubuntu`) could not have opened or saved files there. The join also made
+a single attempt to reach the Matchmaker, so one slow network start would
+have failed the whole session, and Ubuntu 24.04 ships `fusermount3` while
+rclone calls `fusermount`.
+
+**Fixed in code 2026-11-16, not yet run in a real guest** (rebuild the
+image): the mount is given to the desktop user (`--allow-other --uid
+--gid --umask 077`), the join retries for about a minute, and the image
+gets a `fusermount` link. Covered by `GuestDesktopPasswordTests`.
+
+## 21. Files saved in the last seconds of a session can be lost (correctness, medium)
+
+Open. rclone uploads a file a few seconds after it is closed. At session
+end the Host Agent kills the VM at once, so a file saved just before
+"End session" may never reach storage, and "saved as of" only records
+the time the guest booted. Fix idea: on teardown ask the guest to shut
+down cleanly (QEMU `system_powerdown`), wait for rclone to finish, then
+kill; have the guest report "saved as of" when its upload queue is empty.
+
+## 22. Deploy script problems found on the first real deploy (correctness, medium)
+
+Found and fixed 2026-11-16 while deploying to the Oracle server:
+- A fresh Ubuntu server has no Docker; the script now installs it.
+- An apostrophe inside a `${VAR:?message}` swallowed the `fill` helper on
+  bash 5 (macOS bash 3 did not show it).
+- A redeploy did not restart the Matchmaker, so new code was not loaded.
+- The operator's e-mail for certificates was written in the script; it is
+  now `DCL_ACME_EMAIL` in the local `.env.vps`.
+- Ubuntu 22.04 cannot run the Matchmaker (Python 3.10); use 24.04.
+
+## 23. Every session wrote into the shared guest disk (security, high)
+
+Found 2026-11-17 before the first Windows host install. QEMU booted the
+cached `rootfs.img` read-write, and the agent checks that disk only when it
+starts. The second renter on a host would have booted the first renter's
+disk: browser history, cached files, the guest's mesh identity.
+
+Fixed in code: every boot adds `snapshot=on` (KVM, WHPX, VFIO). Writes go to
+a temporary file QEMU deletes on exit; the signed disk never changes. Test
+`every_boot_leaves_the_signed_disk_untouched`. Not yet seen on real hardware.
 
 ## Accepted for now
 

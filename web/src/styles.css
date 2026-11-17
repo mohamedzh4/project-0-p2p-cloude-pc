@@ -293,12 +293,15 @@ button[aria-pressed="true"] {
   font-size: 14px;
 }
 
-.notice[data-kind="occupied"],
+.notice[data-kind="noHost"],
+.notice[data-kind="interrupted"],
+.notice[data-kind="rematched"],
 .notice[data-kind="unavailable"] {
   background: rgb(139 58 45 / 0.12);
   color: var(--occupied);
 }
 
+.notice[data-kind="failed"],
 .notice[data-kind="error"] {
   background: rgb(139 58 45 / 0.1);
   color: var(--occupied);
@@ -391,4 +394,33 @@ dd {
   border-radius: var(--radius);
   background: rgb(139 58 45 / 0.12);
   color: var(--occupied);
+}
+
+.starting {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 0.5rem;
+}
+
+.spinner {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
 }

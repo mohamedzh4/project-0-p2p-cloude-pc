@@ -1,15 +1,23 @@
 #!/usr/bin/env bash
 # Install a direct KasmVNC + XFCE browser desktop in the Standard guest.
 #
-# Authentication is deliberately disabled only on the mesh listener. Public
-# access is authenticated by the DCL gateway's short-lived session token, and
-# Headscale ACLs permit the gateway/assigned roles to reach guest port 8443.
+# The desktop asks for a password whenever the VM runs a session:
 #
-# LAN test mode: when the host passes SMBIOS OEM string dcl-lan-password=...
-# (QEMU -smbios type=11; fw_cfg opt/org.dcl/lan-password as a fallback),
-# KasmVNC turns basic auth ON (user `ubuntu`, that password) because the
-# listener is then reachable from a shared Wi-Fi without the gateway.
-# SMBIOS first: Ubuntu's cloud kernel has no qemu_fw_cfg module.
+# - Session mode (the product): the Matchmaker makes a password per session.
+#   dcl-guest-join stores it in /run/dcl/desktop-password before the guest
+#   joins the mesh, and KasmVNC basic auth is ON (user `ubuntu`). Only the
+#   gateway is told the password and sends it for the renter. Without this,
+#   any machine on the mesh that can reach port 8443 (every Host Agent can)
+#   could open a renter's desktop.
+# - A session VM that never received its password stays locked: basic auth
+#   ON with a random password nobody knows.
+# - LAN test mode: the host passes SMBIOS OEM string dcl-lan-password=...
+#   (QEMU -smbios type=11; fw_cfg opt/org.dcl/lan-password as a fallback).
+#   Basic auth ON with that password, because the listener is then reachable
+#   from a shared Wi-Fi without the gateway. SMBIOS first: Ubuntu's cloud
+#   kernel has no qemu_fw_cfg module.
+# - Only a VM with no session and no LAN password (image build, manual boot)
+#   runs with basic auth off.
 set -euo pipefail
 
 if [[ "${LAB_TIER:-}" == "pro" ]]; then
@@ -66,42 +74,68 @@ EOF
 chown ubuntu:ubuntu /home/ubuntu/.vnc/kasmvnc.yaml
 chmod 0600 /home/ubuntu/.vnc/kasmvnc.yaml
 
-# Root pre-start (dmidecode and fw_cfg are root-only). A LAN password turns
-# on KasmVNC basic auth; no password keeps the mesh/gateway behaviour.
+# Root pre-start (dmidecode and fw_cfg are root-only). Decides the desktop
+# password; the four cases are described at the top of this file.
 # KasmVNC always needs a user with write access, otherwise `vncserver`
 # stops at an interactive "create a user?" prompt that systemd cannot
-# answer. Without a LAN password the user gets a random throwaway password
-# (basic auth stays disabled, so it is never asked for).
+# answer. So a password is always set, even when basic auth stays off.
 cat >/usr/local/sbin/dcl-kasmvnc-auth <<'EOF'
 #!/bin/sh
 set -eu
 FWCFG=/sys/firmware/qemu_fw_cfg/by_name/opt/org.dcl/lan-password/raw
+SESSION_PASSWORD=/run/dcl/desktop-password
+SESSION_MARK=/run/dcl/session-vm
+BOOTSTRAP_FWCFG=/sys/firmware/qemu_fw_cfg/by_name/opt/org.dcl/bootstrap/raw
 MARKER=/run/dcl-kasmvnc/basic-auth
 rm -f "$MARKER" /home/ubuntu/.kasmpasswd
 modprobe -q qemu_fw_cfg 2>/dev/null || true
-password=""
-if command -v dmidecode >/dev/null 2>&1; then
-  password="$(dmidecode -t 11 2>/dev/null |
-    sed -n 's/^[[:space:]]*String [0-9]*: dcl-lan-password=//p' | head -n 1 | tr -d '\r\n')"
-fi
+
+oem_strings() {
+  if command -v dmidecode >/dev/null 2>&1; then
+    dmidecode -t 11 2>/dev/null || true
+  fi
+}
+
+# True when this VM was started for a renter's session.
+session_vm() {
+  [ -e "$SESSION_MARK" ] && return 0
+  grep -q 'dcl\.bootstrap=' /proc/cmdline 2>/dev/null && return 0
+  oem_strings | grep -q 'dcl\.bootstrap=' && return 0
+  [ -r "$BOOTSTRAP_FWCFG" ] && return 0
+  return 1
+}
+
+mode=open
+password="$(oem_strings |
+  sed -n 's/^[[:space:]]*String [0-9]*: dcl-lan-password=//p' | head -n 1 | tr -d '\r\n')"
 if [ -z "$password" ] && [ -r "$FWCFG" ]; then
   password="$(tr -d '\r\n' <"$FWCFG")"
 fi
-lan=1
+if [ -n "$password" ]; then
+  mode=lan
+elif [ -s "$SESSION_PASSWORD" ]; then
+  password="$(tr -d '\r\n' <"$SESSION_PASSWORD")"
+  mode=session
+fi
 if [ -z "$password" ]; then
-  lan=0
   password="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
+  if session_vm; then
+    mode=locked
+  fi
 fi
 passwd_bin="$(command -v kasmvncpasswd || command -v vncpasswd)"
 printf '%s\n%s\n' "$password" "$password" |
   runuser -u ubuntu -- env HOME=/home/ubuntu "$passwd_bin" -u ubuntu -wo >/dev/null
-if [ "$lan" -eq 1 ]; then
+if [ "$mode" != open ]; then
   touch "$MARKER"
   chown ubuntu:ubuntu "$MARKER"
-  echo "dcl-kasmvnc: LAN password from the host; basic auth on"
-else
-  echo "dcl-kasmvnc: no LAN password; basic auth off (mesh/gateway mode)"
 fi
+case "$mode" in
+  lan) echo "dcl-kasmvnc: LAN password from the host; basic auth on" ;;
+  session) echo "dcl-kasmvnc: session password from the Matchmaker; basic auth on" ;;
+  locked) echo "dcl-kasmvnc: session VM without a desktop password; locked (basic auth on)" ;;
+  open) echo "dcl-kasmvnc: no session and no LAN password; basic auth off" ;;
+esac
 EOF
 chmod 0755 /usr/local/sbin/dcl-kasmvnc-auth
 
@@ -118,7 +152,10 @@ chmod 0755 /usr/local/sbin/dcl-kasmvnc-start
 cat >/etc/systemd/system/dcl-kasmvnc.service <<'EOF'
 [Unit]
 Description=Distributed Compute Lab browser desktop
-After=network-online.target
+# After the join: it stores the session's desktop password and mounts the
+# renter's files. Ordering only; the desktop still starts if the join fails
+# (then it is locked, see dcl-kasmvnc-auth).
+After=network-online.target dcl-guest-join.service
 Wants=network-online.target
 
 [Service]

@@ -5,6 +5,7 @@ import {
   evaluateHostingOffers,
   getAgentStatus,
   getConfigFilePath,
+  getDiagnosticsReport,
   getGuestImageStatus,
   getHardwareInfo,
   getHostCapabilities,
@@ -54,6 +55,17 @@ export default function App() {
   const [savedConfig, setSavedConfig] = useState<SharingConfig | null>(null);
   const [configPath, setConfigPath] = useState("");
   const [registration, setRegistration] = useState<HostRegistration | null>(null);
+  const [reportState, setReportState] = useState<"idle" | "copied" | "failed">("idle");
+
+  async function handleCopyReport() {
+    try {
+      const report = await getDiagnosticsReport();
+      await navigator.clipboard.writeText(report);
+      setReportState("copied");
+    } catch {
+      setReportState("failed");
+    }
+  }
   const [status, setStatus] = useState<AgentStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ kind: "idle" });
@@ -503,6 +515,19 @@ export default function App() {
               Not registered with the Matchmaker yet. Save to declare these caps from Rust.
             </p>
           )}
+        </div>
+
+        <div className="registration">
+          <button type="button" className="secondary" onClick={() => void handleCopyReport()}>
+            Copy report
+          </button>
+          <p className="hint" role="status">
+            {reportState === "copied"
+              ? "Report copied. Paste it into your message to support."
+              : reportState === "failed"
+                ? "Could not copy the report. Try again."
+                : "If something fails, copy this report and send it. It contains versions, what this PC can host and the last provision error. It contains no passwords or tokens."}
+          </p>
         </div>
       </section>
     </main>

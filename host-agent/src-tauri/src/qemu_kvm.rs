@@ -176,10 +176,7 @@ pub fn argv(vcpu_count: u32, memory_mib: u64, disk: &Path) -> Vec<String> {
         MEMORY_ARG.to_string(),
         qemu_whpx::memory_flag(memory_mib),
         "-drive".to_string(),
-        format!(
-            "file={},if=virtio,format=raw",
-            disk.to_string_lossy()
-        ),
+        qemu_whpx::virtio_drive(&disk.to_string_lossy()),
         "-display".to_string(),
         "none".to_string(),
         "-monitor".to_string(),

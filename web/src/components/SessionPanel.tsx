@@ -13,6 +13,7 @@ import {
   sessionMoonlightClient,
   sessionStreamer,
 } from "../connection";
+import { sessionStatus } from "../sessionRequest";
 import type { Notice, SessionResponse, UserPublic } from "../types";
 
 interface SessionPanelProps {
@@ -27,18 +28,26 @@ interface SessionPanelProps {
   onSignOut: () => void;
 }
 
-function noticeText(notice: Notice): string {
+export function noticeText(notice: Notice): string {
   switch (notice.kind) {
-    case "occupied":
-      return "Another user already holds the host. End that session (or wait) before requesting again.";
+    case "noHost":
+      return "No computer is free right now. Every host is in use or offline. Try again in a few minutes.";
     case "unavailable":
       return "No Pro host is free. Either none is approved and live, or that GPU is already assigned. Pro is exclusive for the session, not a concurrent slice.";
+    case "failed":
+      return `The computer could not start your desktop${
+        notice.reason ? `: ${notice.reason}` : "."
+      } You were not charged. Request again to try another host.`;
+    case "interrupted":
+      return "The computer hosting your session went offline and no other one is free. Files you saved in Persistent are kept. Request a new session when you are ready.";
+    case "rematched":
+      return "The computer hosting your session went offline, so we moved you to another one. Files you saved in Persistent are kept; anything else on the old desktop is gone.";
     case "ended":
       return notice.creditsDebited != null
         ? `Session ended. ${notice.creditsDebited} credits debited on the internal ledger (not a card charge).`
-        : "Session ended. The host is free to request again.";
+        : "Session ended.";
     case "existing":
-      return "You already have an active session. Showing it instead of creating a new one.";
+      return "You already have a session. Showing it instead of creating a new one.";
     case "error":
       return notice.message;
   }
@@ -64,6 +73,7 @@ export function SessionPanel({
   const showExclusivity = gpuExclusivityVisible(mappedTier);
   const canRequest = canRequestSession(intent);
   const isPro = streamer === "sunshine";
+  const starting = session ? sessionStatus(session) === "provisioning" : false;
 
   return (
     <div className="panel">
@@ -82,7 +92,23 @@ export function SessionPanel({
         </p>
       ) : null}
 
-      {session ? (
+      {session && starting ? (
+        <>
+          <p className="starting" role="status" aria-live="polite">
+            <span className="spinner" aria-hidden="true" />
+            Starting your computer. A host is booting your desktop; this usually
+            takes one to three minutes. This page updates on its own.
+          </p>
+          <p className="hint">
+            You are not charged while it starts. You can cancel at any time.
+          </p>
+          <div className="row end-row">
+            <button type="button" className="danger" disabled={busy} onClick={onEnd}>
+              {busy ? "Working…" : "Cancel"}
+            </button>
+          </div>
+        </>
+      ) : session ? (
         <>
           <span className="placeholder-flag" data-live={live ? "true" : "false"}>
             {live
@@ -105,10 +131,10 @@ export function SessionPanel({
             {isPro ? (
               <>
                 <dt>sunshineUrl</dt>
-                <dd>{session.connection.sunshineUrl ?? "(none)"}</dd>
+                <dd>{session.connection?.sunshineUrl ?? "(none)"}</dd>
                 <dt>moonlight</dt>
                 <dd>
-                  {session.connection.moonlight
+                  {session.connection?.moonlight
                     ? `${session.connection.moonlight.host} · ${session.connection.moonlight.app}`
                     : "(none)"}
                 </dd>
@@ -116,9 +142,9 @@ export function SessionPanel({
             ) : (
               <>
                 <dt>kasmUrl</dt>
-                <dd>{session.connection.kasmUrl ?? "(none)"}</dd>
+                <dd>{session.connection?.kasmUrl ?? "(none)"}</dd>
                 <dt>kasmToken</dt>
-                <dd>{session.connection.kasmToken ?? "(none)"}</dd>
+                <dd>{session.connection?.kasmToken ?? "(none)"}</dd>
               </>
             )}
             {session.storage ? (
@@ -140,14 +166,10 @@ export function SessionPanel({
               <>
                 <dt>guest mesh</dt>
                 <dd>
-                  {session.mesh.guest.hostname} · {session.mesh.guest.aclTags.join(", ")}
+                  {session.mesh.guestHostname}
                   {session.mesh.exitNodeApplied && session.mesh.exitNode
                     ? ` · exit-node ${session.mesh.exitNode}`
                     : " · exit-node not applied"}
-                </dd>
-                <dt>user mesh</dt>
-                <dd>
-                  {session.mesh.user.hostname} · {session.mesh.user.aclTags.join(", ")}
                 </dd>
               </>
             ) : null}

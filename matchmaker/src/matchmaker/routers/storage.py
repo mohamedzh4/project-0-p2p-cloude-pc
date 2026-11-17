@@ -31,6 +31,7 @@ def _provision(db: Session, user: User, renterd: RenterdClient) -> StorageMountI
             renterd,
             endpoint=settings.renterd_s3_guest_endpoint,
             region=settings.renterd_s3_region,
+            shared_bucket=settings.storage_shared_bucket,
         )
     except RenterdError as exc:
         raise HTTPException(

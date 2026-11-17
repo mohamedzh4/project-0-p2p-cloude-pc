@@ -363,3 +363,14 @@ export function previewSetInSession(inSession: boolean): void {
     previewInSession = inSession;
   }
 }
+
+/** Plain-text support report. Holds no token or secret. */
+export function getDiagnosticsReport(): Promise<string> {
+  if (IS_PREVIEW) {
+    return Promise.resolve(
+      "Distributed Compute Lab — Host Agent report\n(browser preview: sample data only)\n",
+    );
+  }
+
+  return invoke<string>("get_diagnostics_report");
+}

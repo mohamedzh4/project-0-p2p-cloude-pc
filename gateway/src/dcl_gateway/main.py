@@ -174,6 +174,7 @@ async def _handle_http(request: Request, token: str, path: str) -> Response:
         public_prefix=public_prefix,
         client=client,
         allow_loopback=settings.allow_loopback_target,
+        upstream_authorization=resolved.upstream_authorization(),
     )
 
 
@@ -211,6 +212,7 @@ async def _handle_ws(websocket: WebSocket, token: str, path: str) -> None:
         target_url=resolved.target_url,
         suffix=path,
         query=websocket.url.query,
+        upstream_authorization=resolved.upstream_authorization(),
     )
 
 

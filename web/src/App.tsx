@@ -1,15 +1,26 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { ApiError, endSession, listSessions, login, matchmakerUrl, requestSession, signup } from "./api";
+import {
+  ApiError,
+  currentSession,
+  endSession,
+  getSession,
+  listSessions,
+  login,
+  matchmakerUrl,
+  requestSession,
+  signup,
+} from "./api";
 import { AuthForm } from "./components/AuthForm";
 import { SessionPanel } from "./components/SessionPanel";
 import { mapIntentToLabTier, canRequestSession } from "./intent";
 import {
-  activeSessionLabTier,
   creditsSummary,
   endedNotice,
+  interpretPolledSession,
   interpretSessionError,
   interpretSessionSuccess,
+  pollIntervalMs,
 } from "./sessionRequest";
 import type { AuthMode, Notice, SessionHistoryResponse, SessionResponse, UserPublic } from "./types";
 
@@ -25,6 +36,45 @@ export default function App() {
   const [intent, setIntent] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // While a session is held, ask the Matchmaker about it: every few seconds
+  // while the desktop is starting, less often once it is ready (to notice a
+  // host that went offline).
+  const heldId = session?.sessionId ?? null;
+  const heldInterval = session ? pollIntervalMs(session) : null;
+  useEffect(() => {
+    if (!token || !heldId || heldInterval == null) {
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const polled = (await getSession(token, heldId)).data;
+          const stillHeld = polled.status === "provisioning" || polled.status === "active";
+          const replacement = stillHeld ? null : await currentSession(token);
+          if (cancelled) {
+            return;
+          }
+          const view = interpretPolledSession(polled, replacement);
+          setSession(view.session);
+          if (view.notice) {
+            setNotice(view.notice);
+          }
+          if (!view.session || view.session.sessionId !== heldId) {
+            void loadHistory(token);
+          }
+        } catch {
+          // A missed poll is not an error: the next one will try again.
+        }
+      })();
+    }, heldInterval);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, heldId, heldInterval]);
 
   if (!configured) {
     return (
@@ -48,19 +98,15 @@ export default function App() {
     }
   }
 
-  async function restoreHeldSession(accessToken: string, historyData: SessionHistoryResponse | null) {
-    const labTier = activeSessionLabTier(historyData);
-    if (!labTier) {
-      return;
-    }
+  async function restoreHeldSession(accessToken: string) {
     try {
-      const held = await requestSession(accessToken, labTier);
-      const view = interpretSessionSuccess(held.status, held.data);
-      setSession(view.session);
-      setNotice(view.notice);
-    } catch (error) {
-      const view = interpretSessionError(error, labTier);
-      setNotice(view.notice);
+      const held = await currentSession(accessToken);
+      if (held) {
+        setSession(held);
+        setNotice({ kind: "existing" });
+      }
+    } catch {
+      // The history panel already shows whether the Matchmaker is reachable.
     }
   }
 
@@ -74,8 +120,8 @@ export default function App() {
       setUser(result.data.user);
       setSession(null);
       setPassword("");
-      const historyData = await loadHistory(result.data.accessToken);
-      await restoreHeldSession(result.data.accessToken, historyData);
+      await loadHistory(result.data.accessToken);
+      await restoreHeldSession(result.data.accessToken);
     } catch (error) {
       setNotice({
         kind: "error",
@@ -179,7 +225,9 @@ export default function App() {
               <ul className="history-list">
                 {history.sessions.map((item) => (
                   <li key={item.sessionId}>
-                    <span className="history-status">{item.status}</span>
+                    <span className="history-status">
+                      {item.status === "failed" ? "did not start" : item.status}
+                    </span>
                     <span>
                       {item.labTier}
                       {item.durationSeconds != null ? ` · ${item.durationSeconds}s` : ""}

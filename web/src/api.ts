@@ -125,3 +125,30 @@ export function listSessions(
     token,
   });
 }
+
+/** One session in its current state. Poll this while it is provisioning. */
+export function getSession(
+  token: string,
+  sessionId: string,
+): Promise<{ status: number; data: SessionResponse }> {
+  return request<SessionResponse>(`/v1/sessions/${sessionId}`, {
+    method: "GET",
+    token,
+  });
+}
+
+/** The session this user holds now (starting or ready), or null. */
+export async function currentSession(token: string): Promise<SessionResponse | null> {
+  try {
+    const result = await request<SessionResponse>("/v1/sessions/current", {
+      method: "GET",
+      token,
+    });
+    return result.data;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}

@@ -11,17 +11,17 @@ Joining the mesh does not boot a guest. `SEED_HOST_KASM_URL` stays
 
 **Does:** run Headscale locally with a checked-in **default-deny** ACL file;
 mint a Host Agent preauth key tagged `tag:host`; join that agent with
-`tailscale up --login-server` from Rust; mint **ephemeral** `tag:guest` and
-`tag:user` preauth keys on each session book (Headscale 0.26 `aclTags`); put
+`tailscale up --login-server` from Rust; mint one **ephemeral** `tag:guest` preauth key on each session book
+(Headscale 0.26 `aclTags`); put
 `--exit-node=$HEADSCALE_EXIT_NODE` on the **guest** join plan (default
 hostname `dcl-platform-exit` from the compose overlay).
 
 **Does not:**
 
 - Pairwise per-session ACL tags. Headscale 0.26 file policy has no mint-time
-  API to add `tag:session-<uuid>` to `tagOwners`. Grants stay role-based:
-  every `tag:user` may reach every `tag:guest`. Unique **hostnames** and
-  ephemeral keys are the per-booking identity.
+  API to add `tag:session-<uuid>` to `tagOwners`. So renters are kept off
+  the mesh entirely: there is no `tag:user`, and a renter reaches a desktop
+  only through the public gateway and its per-session token.
 - Live guest egress. Software points guests at the platform exit node; a
   guest image still has to run `tailscale up` with that plan. Until a guest
   actually joins, traffic does not flow.
@@ -37,19 +37,17 @@ Headscale 0.26.1 uses `acls` (not `grants`). Policy usernames need a trailing
 | --- | --- | --- |
 | Matchmaker coordination | `tag:host` | `tag:matchmaker` (and reverse) |
 | Matchmaker coordination | `tag:guest` | `tag:matchmaker` (and reverse) |
-| Matchmaker coordination | `tag:user` | `tag:matchmaker` (and reverse) |
-| Assigned user ↔ VM | `tag:user` | `tag:guest` (and reverse) |
 | Public HTTPS ingress | `tag:gateway` | `tag:guest` (and reverse) |
 | Guest egress via platform exit | `tag:guest` | `tag:exit` and `autogroup:internet` |
 
 **Denied** (no accept rule): guest → host, guest ↔ guest, host ↔ host,
-host → `autogroup:internet`, **gateway → host**, gateway → user,
+host → `autogroup:internet`, **gateway → host**,
 gateway → matchmaker, gateway → exit, gateway → `autogroup:internet`.
 Exit-node auto-approval is `tag:exit` only.
 
 **Headscale 0.26 leftover (unchanged):** file policy cannot mint pairwise
-`tag:session-<uuid>` owners. Every `tag:user` **and** every `tag:gateway`
-may still reach every `tag:guest`. The public URL is scoped by a
+`tag:session-<uuid>` owners. The `tag:gateway` node can reach every
+`tag:guest`; renter devices hold no mesh key and can reach none. The public URL is scoped by a
 Matchmaker ingress token, not by a unique ACL tag. See
 `docs/runbooks/gateway.md`.
 

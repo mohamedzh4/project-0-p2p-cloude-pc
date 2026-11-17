@@ -5,11 +5,11 @@
 //! starts `qemu-system-*.exe` with the flags qemu.org documents for WHPX:
 //!
 //! x86_64: `-accel whpx -M pc -smp cores=N -m SIZE -device ich9-usb-ehci1
-//! -device usb-tablet -drive file=DISK,if=virtio,format=raw`
+//! -device usb-tablet -drive file=DISK,if=virtio,format=raw,snapshot=on`
 //!
 //! aarch64: `-accel whpx -M virt -cpu host -smp cores=N -m SIZE
 //! -bios edk2-aarch64-code.fd -device ramfb -device nec-usb-xhci
-//! -device usb-kbd -device usb-tablet -drive file=DISK,if=virtio,format=raw`
+//! -device usb-kbd -device usb-tablet -drive file=DISK,if=virtio,format=raw,snapshot=on`
 //!
 //! Size is the clamped slider mapped to a QEMU `-m` suffix (`NG` when the
 //! value is whole GiB, otherwise `NM`). Guest net is SLIRP `-netdev user`
@@ -199,8 +199,13 @@ pub fn net_argv() -> Vec<String> {
 
 /// Documented WHPX argv (no TCG, no `-enable-kvm`, no Hyper-V) plus user net.
 /// `-drive` value for the verified raw guest disk on virtio-blk.
+///
+/// `snapshot=on`: the guest writes go to a temporary file QEMU deletes when
+/// it exits. The signed disk is never changed, so every session (and every
+/// renter) boots the same clean image and nothing of one renter is left for
+/// the next. The renter's own files live in object storage, not here.
 pub fn virtio_drive(disk: &str) -> String {
-    format!("file={disk},if=virtio,format=raw")
+    format!("file={disk},if=virtio,format=raw,snapshot=on")
 }
 
 pub fn argv(arch: &str, vcpu_count: u32, memory_mib: u64, disk: &Path) -> Vec<String> {
@@ -563,6 +568,17 @@ mod tests {
         let error = invoke(&request(&caps, &binary, &disk), &recorder).unwrap_err();
         assert_eq!(error, QemuError::BinaryMissing);
         assert!(recorder.spawn_calls().is_empty());
+    }
+
+    #[test]
+    fn every_boot_leaves_the_signed_disk_untouched() {
+        // Without snapshot=on a session writes into rootfs.img: the next
+        // renter would boot the previous renter's browser history, files
+        // and mesh identity.
+        let drive = virtio_drive("C:/dcl/rootfs.img");
+        assert_eq!(drive, "file=C:/dcl/rootfs.img,if=virtio,format=raw,snapshot=on");
+        let kvm = crate::qemu_kvm::argv(4, 4096, std::path::Path::new("/c/rootfs.img"));
+        assert!(kvm.iter().any(|a| a.ends_with(",snapshot=on")), "{kvm:?}");
     }
 
     #[test]

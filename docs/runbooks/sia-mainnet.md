@@ -1,5 +1,10 @@
 # Sia mainnet — operator checklist (do not run unprompted)
 
+> **Being replaced (decision 2026-11-15).** Platform storage moves to
+> Cloudflare R2 (S3-compatible) now and Storj later, so the platform needs
+> no crypto payments. This checklist is kept for reference only; Sia mainnet is no longer
+> planned.
+
 **Do not switch `RENTERD_NETWORK` away from `zen` until you explicitly
 go-ahead and fund a wallet.** That is real Siacoin (real money). This file
 is the decision checklist only.

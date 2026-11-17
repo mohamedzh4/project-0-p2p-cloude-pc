@@ -211,7 +211,7 @@ pub fn argv(arch: &str, vcpu_count: u32, memory_mib: u64, disk: &Path, pci_addre
         MEMORY_ARG.to_string(),
         memory,
         "-drive".to_string(),
-        format!("file={disk},if=virtio,format=raw"),
+        qemu_whpx::virtio_drive(&disk),
         DEVICE_ARG.to_string(),
         vfio_device_arg(pci_address),
     ];

@@ -9,28 +9,40 @@ hardware. Everything else is "passes tests".
 
 ## In one paragraph
 
-All the software pieces exist and their tests pass. Two real PCs have shown
-a desktop to a second device over Wi-Fi using the LAN test kit, which
-bypasses most of the product. The full path (browser → Matchmaker → Host
-Agent → signed guest image → mesh → gateway) has never run end to end on
-real machines. That is the next milestone; two security holes should be
-fixed before it (see "Next steps").
+All the software pieces exist and their tests pass. Roadmap phases 1 and 2
+are done in code (2026-11-15): the two security holes and the renter
+isolation hole are closed, booking no longer blocks, and an integration
+test drives a whole booking through the real Matchmaker and gateway. Two
+real PCs have shown a desktop to a second device over Wi-Fi using the LAN
+test kit, which bypasses most of the product. The full path (browser →
+Matchmaker → Host Agent → signed guest image → mesh → gateway) has still
+never run on real machines; that needs the server (phase 3) and the signed
+image (phase 4) first.
 
-## Tests (2026-11-15, macOS)
+## Tests (2026-11-16, macOS)
 
 `bash scripts/check.sh` runs all of these.
 
 | Suite | Result |
 | --- | --- |
-| Host Agent, Rust (`cargo test --lib`) | 323 passed |
-| Matchmaker (`pytest`, Postgres) | 185 passed |
-| Web (`vitest`) + typecheck | 54 passed |
-| Scripts and guest image (`pytest`) | 45 passed |
-| Gateway (`pytest`) | 16 passed |
+| Host Agent, Rust (`cargo test --lib`) | 348 passed |
+| Matchmaker (`pytest`, Postgres) | 255 passed |
+| Web (`vitest`) + typecheck | 78 passed |
+| Scripts and guest image (`pytest`) | 55 passed |
+| Gateway (`pytest`) | 28 passed |
+| Integration (`scripts/integration/run.py`) | 72 checks passed, twice in a row from an empty database |
 | Lint (`ruff`) | clean |
 
-No test starts a real VM, GPU bind, Headscale, or renterd. Those are
-injected fakes.
+No unit test starts a real VM, GPU bind, Headscale, or storage service.
+Those are injected fakes.
+
+The integration test starts the real Matchmaker and gateway as separate
+processes on a real Postgres and drives: register → approve → book → poll
+→ desktop through the gateway → end → credits, plus a failed boot and a
+host going silent. The Host Agent, guest, Headscale, storage and
+Cloudflare are stand-ins inside the test, so it proves the services agree
+with each other, not that a VM boots. It is not yet confirmed in GitHub
+Actions (nothing from this work is pushed).
 
 ## What has run on real hardware
 
@@ -41,10 +53,10 @@ injected fakes.
 | Changes made to the kit since then (virtio disk, VPN-safe address, firewall cleanup) | Not re-run on hardware. |
 | Signed Packer guest image | Never built and booted on a host. |
 | Host Agent provision path (Matchmaker tells the agent to boot a guest) | Never run on hardware. |
-| Guest joining Headscale, mounting storage | Never run. |
+| Guest joining Headscale, mounting storage | Never run in a guest. Storage keys checked against the real R2 bucket; the desktop password checked against the real KasmVNC in a container. |
 | Public gateway across two real networks | Never run. |
 | Pro tier (GPU passthrough: Linux VFIO, Windows Hyper-V) | Never run. |
-| Platform server (Matchmaker, Headscale, renterd, gateway) | **Down since 2026-11-15:** the Azure Free Trial subscription is Disabled (credit or trial period ran out). Replaced by **Oracle Cloud Always Free** (decided 2026-11-15; account being created). The new server needs a fresh deploy and a new IP in DuckDNS, `.env.vps` and `host-agent/.env.friend`. No deploy has ever been recorded in this repo. |
+| Platform server (Matchmaker, Headscale, gateway, web) | **Deployed 2026-11-16 on Oracle Cloud** (Morocco West, Ubuntu 24.04, `VM.Standard.E5.Flex`: a paid shape running on trial credit, not Always Free). Storage is Cloudflare R2, checked from the server with per-user keys. **Public over HTTPS since 2026-11-17:** web page, `/api/docs` and mesh health answer, certificates issued, gateway joined the mesh. See `docs/test-logs/2026-11-16-oracle-deploy.md`. |
 
 Logs: `docs/test-logs/`.
 
@@ -73,7 +85,68 @@ the "Hide my IP" / "Fastest connection" choice (FR18), volunteer relay
 nodes (FR19), Cloudflare R2 / Storj storage, Google Drive / Dropbox, and a
 "My files" download/upload page (FR20).
 
-## Changed on 2026-11-15
+## Changed on 2026-11-16
+
+1. **Server deployed** on Oracle Cloud with Cloudflare R2 (see the table
+   above). Four deploy-script bugs fixed on the way (issue 22).
+2. **R2 keys need no Cloudflare API token.** The Matchmaker signs each
+   guest's key itself; confirmed against the real bucket. A wrong date
+   format in the storage client, which real S3 rejects, was fixed (18).
+3. **Desktop password per session.** Guests' desktops had no password on
+   the mesh, so any host kit holder could open any renter's desktop. Now
+   only the guest and the gateway know the password (issue 15).
+4. **Host Agents fetch their commands** instead of being dialled through
+   a shared SSH tunnel that did not exist on the new server (issue 19).
+   The kits need no tunnel or port-forward any more.
+5. **Guest fixes** for the next image build: files in `~/Persistent`
+   belong to the desktop user, the join retries, `fusermount` link,
+   plain paste in terminals (issues 20, 12).
+6. The gateway forwards the WebSocket subprotocol the desktop client asks
+   for, and dials the guest before accepting the browser.
+
+Database migration `0010` adds the command queue, `hosts.pull_mode` and
+the desktop password. **The guest image must be rebuilt** to pick up 3 and
+5; an old image still works but its desktop has no password.
+
+## Roadmap phases 1 and 2 (2026-11-15, in code)
+
+None of this has run on real hardware or against real Cloudflare yet.
+
+1. **Per-host credentials (issue 2).** Each Host Agent makes its own
+   secret and sends it with every call; the Matchmaker refuses anyone else
+   naming that host, and commands an agent with a token derived from that
+   host's secret. The agent's listener accepts nothing else.
+2. **Per-user storage keys on Cloudflare R2 (issue 1).** With
+   `STORAGE_CREDENTIALS=r2` a guest gets a temporary key for one user's
+   prefix in one shared bucket, read-only above the 20 GB quota.
+   `scripts/vps-deploy.sh` takes five `DCL_R2_*` values and then skips
+   renterd. Not done: encryption before upload (rclone crypt), and early
+   revocation (R2 has none; keys expire after 12 hours).
+3. **Renters are off the mesh (issue 15).** No `tag:user` key, no mesh key
+   in session JSON, no `tag:user` rule in `headscale/acl.hujson`. The
+   gateway is the only way to a desktop.
+4. **Asynchronous booking (issue 4).** `POST /v1/sessions` returns 202 with
+   `provisioning`; the browser polls `GET /v1/sessions/{id}`. New states
+   `provisioning` and `failed`; new route `GET /v1/sessions/current`. The
+   credit clock starts when the desktop is ready.
+5. **Mesh keys are reused (issue 5).** One guest key per session.
+6. **Web error states.** No host free, host failed to start, host went
+   offline (with or without a move to another host), session ended. A
+   "starting your computer" view with Cancel.
+7. **Host Agent "Copy report".** Versions, capabilities, registration and
+   the last provision error, with secrets blanked.
+8. **Integration test** and a bug it found (issue 17): a failed boot was
+   reported as ready when the host still had the link of an earlier
+   session.
+
+API changes other code must follow: session JSON has `status`,
+`failureReason`, a nullable `connection`, and `mesh.guestHostname` instead
+of `mesh.guest`/`mesh.user`. Database migration `0009` adds the host
+secret columns, `sessions.failure_reason`, the wider occupancy indexes and
+drops the unique-bucket rule. The signed guest image must be rebuilt: the
+join script now exports `AWS_SESSION_TOKEN`.
+
+## Changed earlier on 2026-11-15
 
 Bugs fixed (in code; hardware re-test still needed where noted):
 
@@ -119,23 +192,20 @@ Structure:
 
 ## Next steps, in order
 
+**The order of work is now [`docs/roadmap.md`](docs/roadmap.md)** (phases 0–9
+to a closed beta). It differs from the list below in one way: the first
+end-to-end run (step 3 here) comes before direct peer-to-peer streaming
+(step 2 here), which moves to after the beta. The sections below remain as
+the detail for each item.
+
 ### 1. Fix the two security holes before anyone outside tests this
 
-- Issue 1: every guest receives the platform's master storage key. A host
-  owner can read it and then read every user's files. Needs a per-user or
-  per-session key limited to that user's bucket.
-- Issue 2: all hosts share one token, and the Matchmaker uses the same
-  token to command agents. Anyone with a host kit can impersonate the
-  Matchmaker to other hosts. Needs a per-host credential issued on
-  approval.
-- **Move platform storage to Cloudflare R2 at the same time** (decision
-  2026-11-15: R2 now, Storj later, Sia/renterd dropped so no crypto
-  payments are needed). R2 is S3-compatible, so the Matchmaker and the
-  guest mostly need new settings. Check whether R2 API tokens limited to
-  one bucket can be created per user; if so, that is the fix for issue 1.
-  Add rclone encryption before upload and the per-user quota (20 GB free,
-  more paid in credits). You create the Cloudflare account and the R2
-  bucket/API token; renterd leaves `scripts/vps-deploy.sh`.
+**Done in code 2026-11-15** (see "Roadmap phases 1 and 2" above and issues
+1 and 2). Left: create the Cloudflare account, one R2 bucket, an R2 API
+token and a Cloudflare API token that may create temporary credentials;
+put the five `DCL_R2_*` values in `.env.vps`; then check on the real
+account that a guest key is refused on another user's prefix. Encryption
+before upload (rclone crypt) is not written yet.
 
 ### 2. Direct peer-to-peer streaming (cahier FR17, added 2026-11-15)
 
@@ -183,10 +253,9 @@ bugs; record them in `docs/issues.md` and the run in `docs/test-logs/`.
 
 ### 4. Make booking asynchronous (issue 4)
 
-`POST /v1/sessions` blocks for up to 330 s while the VM boots. Return 202
-with a `provisioning` state and let the web page poll. How long the signed
-image takes to boot on real hardware is not measured yet; step 3 will show
-whether 330 s is even enough.
+**Done in code 2026-11-15.** How long the signed image takes to boot on
+real hardware is still not measured; step 3 will show whether the 330 s
+agent timeout and the 420 s `PROVISION_TIMEOUT_SECONDS` are enough.
 
 ### 5. User storage choices (cahier FR20)
 

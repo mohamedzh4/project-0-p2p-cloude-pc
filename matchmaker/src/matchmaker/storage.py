@@ -38,6 +38,22 @@ def bucket_name_for_user(user_id: UUID) -> str:
     return f"dcl-{user_id}"
 
 
+def shared_prefix_for_user(user_id: UUID) -> str:
+    """Per-user prefix inside one shared bucket. Credentials are limited to it."""
+    return f"users/{user_id}/{USER_FILES_PREFIX}"
+
+
+def location_for_user(user_id: UUID, *, shared_bucket: str | None) -> tuple[str, str]:
+    """(bucket, prefix) for a user: shared bucket + own prefix, or own bucket."""
+    if shared_bucket:
+        return shared_bucket, shared_prefix_for_user(user_id)
+    return bucket_name_for_user(user_id), USER_FILES_PREFIX
+
+
+def _is_r2_endpoint(endpoint: str) -> bool:
+    return endpoint.rstrip("/").lower().endswith(".r2.cloudflarestorage.com")
+
+
 def guest_rclone_remote(*, bucket: str, prefix: str) -> str:
     remote = f":s3:{bucket}"
     trimmed = prefix.strip("/")
@@ -53,9 +69,14 @@ def guest_rclone_args(
     endpoint: str,
     region: str = "us-east-1",
     mount_point: str = DEFAULT_GUEST_MOUNT,
+    read_only: bool = False,
 ) -> list[str]:
-    """rclone argv for the guest. Credentials stay in env (`--s3-env-auth`), not argv."""
-    return [
+    """rclone argv for the guest. Credentials stay in env (`--s3-env-auth`), not argv.
+
+    `--s3-no-check-bucket`: a per-user credential may not inspect or create
+    the bucket itself, only objects under its prefix.
+    """
+    args = [
         "mount",
         guest_rclone_remote(bucket=bucket, prefix=prefix),
         mount_point,
@@ -67,12 +88,18 @@ def guest_rclone_args(
         "--s3-force-path-style",
         "--s3-region",
         region,
-        "--s3-chunk-size",
-        "120MiB",
-        "--fast-list",
+        "--s3-no-check-bucket",
         "--vfs-cache-mode",
         "full",
     ]
+    if not _is_r2_endpoint(endpoint):
+        # renterd (Sia) wants large parts. On R2 this would hold up to
+        # 120 MiB x 4 in the guest's memory for every upload, so rclone's
+        # small default is kept there.
+        args += ["--s3-chunk-size", "120MiB", "--fast-list"]
+    if read_only:
+        args.append("--read-only")
+    return args
 
 
 def guest_rclone_mount_command(
@@ -156,17 +183,29 @@ def ensure_user_storage(
     *,
     endpoint: str,
     region: str,
+    shared_bucket: str | None = None,
 ) -> StorageGrant:
-    """Create the per-user bucket if needed and record it. Idempotent."""
+    """Record where this user's files live, creating the place if needed. Idempotent.
+
+    With `shared_bucket` the bucket must already exist; only the user's
+    marker object is written. Otherwise a bucket per user is created.
+    """
+    bucket, prefix = location_for_user(user.id, shared_bucket=shared_bucket)
     grant = storage_grant(
         user_id=user.id,
         endpoint=endpoint,
         region=region,
+        bucket=bucket,
+        prefix=prefix,
     )
-    created = renterd.create_bucket(grant.bucket)
+    marker_key = f"{prefix}.dcl/provisioned"
+    if shared_bucket:
+        created = db.get(UserStorage, user.id) is None
+    else:
+        created = renterd.create_bucket(grant.bucket)
     if created:
         marker = f"provisioned {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
-        renterd.put_object(grant.bucket, PROVISION_MARKER_KEY, marker.encode("utf-8"))
+        renterd.put_object(grant.bucket, marker_key, marker.encode("utf-8"))
 
     row = db.get(UserStorage, user.id)
     if row is None:
