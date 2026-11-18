@@ -71,6 +71,14 @@ function Copy-KitToStableRoot {
     if (-not $here) {
         $here = Split-Path -Parent $PSCommandPath
     }
+    # The elevated relaunch (and the after-reboot resume) runs from the stable
+    # copy itself: copying onto itself fails, and rewriting kit-origin.txt
+    # would lose where rootfs.qcow2 is.
+    $hereFull = [System.IO.Path]::GetFullPath($here).TrimEnd("\")
+    $stableFull = [System.IO.Path]::GetFullPath($script:StableRoot).TrimEnd("\")
+    if ($hereFull -ieq $stableFull) {
+        return
+    }
     $names = @(
         "windows-host-setup.ps1",
         "setup.cmd",
@@ -108,7 +116,18 @@ function Request-Administrator {
     )
     if ($ResumeAfterReboot) { $argList += "-ResumeAfterReboot" }
     Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList $argList
+    Write-Host "Setup continues in the new Administrator window. This window can close."
     exit 0
+}
+
+# The elevated window is a separate powershell.exe: without this it closes the
+# moment setup ends or fails, and the person sees nothing.
+function Wait-BeforeClose {
+    if (Test-IsAdministrator) {
+        Write-Host ""
+        Write-Host "Log saved to $($script:StableRoot)\setup.log"
+        try { Read-Host "Press Enter to close this window" | Out-Null } catch { }
+    }
 }
 
 function Get-PublicIPv4 {
@@ -354,16 +373,48 @@ function Find-HostAgentInstaller {
     return $null
 }
 
-function Install-HostAgentApp {
-    $existing = @(
-        (Join-Path $env:LOCALAPPDATA "distributedcomputelab.hostagent\Host Agent.exe"),
-        (Join-Path $env:LOCALAPPDATA "Programs\Host Agent\Host Agent.exe"),
-        (Join-Path $env:ProgramFiles "Host Agent\Host Agent.exe")
+function Find-InstalledHostAgent {
+    $names = @("Host Agent.exe", "host-agent.exe")
+    $dirs = @(
+        (Join-Path $env:LOCALAPPDATA "Host Agent"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Host Agent"),
+        (Join-Path $env:LOCALAPPDATA "distributedcomputelab.hostagent"),
+        (Join-Path $env:ProgramFiles "Host Agent")
     )
-    foreach ($path in $existing) {
-        if (Test-Path -LiteralPath $path) {
-            return $path
+    foreach ($dir in $dirs) {
+        foreach ($name in $names) {
+            $path = Join-Path $dir $name
+            if (Test-Path -LiteralPath $path) {
+                return $path
+            }
         }
+    }
+    # The installer records where it put the app in the Uninstall key.
+    $keys = @(
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    foreach ($key in $keys) {
+        $entries = @(Get-ItemProperty -Path $key -ErrorAction SilentlyContinue |
+            Where-Object { $_.PSObject.Properties["DisplayName"] -and $_.DisplayName -eq "Host Agent" })
+        foreach ($entry in $entries) {
+            if ($entry.PSObject.Properties["InstallLocation"] -and $entry.InstallLocation) {
+                foreach ($name in $names) {
+                    $path = Join-Path ($entry.InstallLocation.Trim('"')) $name
+                    if (Test-Path -LiteralPath $path) {
+                        return $path
+                    }
+                }
+            }
+        }
+    }
+    return $null
+}
+
+function Install-HostAgentApp {
+    $found = Find-InstalledHostAgent
+    if ($found) {
+        return $found
     }
     $setup = Find-HostAgentInstaller
     if (-not $setup) {
@@ -371,20 +422,17 @@ function Install-HostAgentApp {
     }
     Write-Host "Installing Host Agent. Click Yes if UAC appears..."
     $script:ManualSteps.Add("Click Yes if Windows asks to allow Host Agent setup.")
-    $setupCmd = $setup -replace '/', '\'
-    cmd.exe /c "`"$setupCmd`" /S"
-    Start-Sleep -Seconds 3
-    foreach ($path in $existing) {
-        if (Test-Path -LiteralPath $path) {
-            return $path
+    $setupPath = $setup -replace '/', '\'
+    Start-Process -FilePath $setupPath -ArgumentList "/S" -Wait
+    # A silent NSIS install can still be writing files when it returns.
+    for ($i = 0; $i -lt 60; $i++) {
+        $found = Find-InstalledHostAgent
+        if ($found) {
+            return $found
         }
+        Start-Sleep -Seconds 2
     }
-    $found = Get-ChildItem -Path $env:LOCALAPPDATA -Filter "Host Agent.exe" -Recurse -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($found) {
-        return $found.FullName
-    }
-    throw "Host Agent installer ran but Host Agent.exe was not found. Re-run setup.cmd after approving UAC."
+    throw "Host Agent installer ran but Host Agent.exe was not found in $env:LOCALAPPDATA\Host Agent or Program Files. Run host-agent-setup.exe by hand once, then run setup.cmd again."
 }
 
 function Write-HostAgentEnv {
@@ -418,9 +466,23 @@ IMAGE_LOCAL_DIGEST=$($script:ImageStandardDigest)
 IMAGE_STANDARD_DIGEST=$($script:ImageStandardDigest)
 IMAGE_STANDARD_SIGNATURE=$($script:ImageStandardSignature)
 HOST_AGENT_STANDARD_IMAGE_URL=file:///C:/dcl/images/standard/rootfs.img
+HOST_AGENT_IMAGE_CACHE=C:/dcl/images
+HOST_AGENT_IMAGE_MAX_BYTES=21474836480
 "@
     Set-Content -Path $envPath -Value $envText.Trim() -Encoding ascii
     Write-Host "Wrote $envPath"
+    # The agent uses C:\dcl\images\standard\rootfs.img in place only when this
+    # manifest sits next to it (it still re-hashes the disk and checks the
+    # signature). Without it the agent re-copies the 16 GiB disk onto itself.
+    $manifestPath = Join-Path $script:ImageDir "rootfs.manifest.json"
+    $manifest = [ordered]@{
+        labTier      = "standard"
+        digestSha256 = $script:ImageStandardDigest.ToLowerInvariant()
+        signature    = $script:ImageStandardSignature
+        url          = "file:///C:/dcl/images/standard/rootfs.img"
+    } | ConvertTo-Json
+    Set-Content -LiteralPath $manifestPath -Value $manifest -Encoding ascii
+    Write-Host "Wrote $manifestPath"
 }
 
 function Try-UpnpPort7842 {
@@ -505,8 +567,18 @@ Copy-KitToStableRoot
 Import-SidecarEnv (Join-Path $script:StableRoot "friend.env")
 Request-Administrator
 
+try { Start-Transcript -LiteralPath (Join-Path $script:StableRoot "setup.log") -Append | Out-Null } catch { }
+trap {
+    Write-Host ""
+    Write-Host "SETUP FAILED: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Send this message (or setup.log) to the person who gave you the kit."
+    try { Stop-Transcript | Out-Null } catch { }
+    Wait-BeforeClose
+    exit 1
+}
+
 if ([string]::IsNullOrWhiteSpace($script:BootstrapToken) -or $script:BootstrapToken.Length -lt 16) {
-    throw "HOST_BOOTSTRAP_TOKEN is missing. It belongs in friend.env next to setup.cmd (the operator fills this, not you)."
+    throw "HOST_BOOTSTRAP_TOKEN is missing. It belongs in friend.env next to setup.cmd (the operator fills this, not you). If you opened the kit from a .zip, extract it first (right-click > Extract All) and run setup.cmd from the extracted folder."
 }
 if ($script:BootstrapToken -eq $env:HOST_APPROVE_TOKEN) {
     throw "Do not use HOST_APPROVE_TOKEN. This script only accepts the host bootstrap token."
@@ -558,6 +630,7 @@ if ($dismCode -eq 3010 -and -not $ResumeAfterReboot) {
     $script:ManualSteps | ForEach-Object { Write-Host " - $_" }
     Write-Host "Rebooting in 15 seconds. Save your work."
     shutdown.exe /r /t 15 /c "DCL host setup needs a reboot for Windows Hypervisor Platform."
+    try { Stop-Transcript | Out-Null } catch { }
     exit 3010
 }
 
@@ -575,3 +648,5 @@ if ($script:ManualSteps.Count -gt 0) {
 else {
     Write-Host "No extra steps on this PC. Keep it plugged in and awake. The operator still has to approve the host."
 }
+try { Stop-Transcript | Out-Null } catch { }
+Wait-BeforeClose

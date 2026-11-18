@@ -57,7 +57,7 @@ def test_http_client_mints_preauth_against_mocked_headscale() -> None:
         assert body["reusable"] is False
         assert body["ephemeral"] is False
         assert body["aclTags"] == [HOST_ACL_TAG]
-        assert body["acl_tags"] == [HOST_ACL_TAG]
+        assert "acl_tags" not in body  # Headscale rejects both names together
         assert "expiration" in body
         return httpx.Response(
             200,

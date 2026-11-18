@@ -187,15 +187,19 @@ def test_a_direct_mesh_caller_without_the_password_is_refused(guest_http: str) -
 
 @pytest.fixture
 def guest_ws():
-    """A WebSocket guest: needs the password, speaks the `binary` subprotocol."""
+    """A WebSocket guest like KasmVNC: needs the password and an Origin header
+    (KasmVNC answers 404 without one), speaks the `binary` subprotocol."""
     from websockets.asyncio.server import serve
 
-    state: dict = {"port": None, "auth": [], "subprotocols": []}
+    state: dict = {"port": None, "auth": [], "subprotocols": [], "origins": []}
     ready = threading.Event()
     stop: dict = {}
 
     def check(connection, request):
         state["auth"].append(request.headers.get("Authorization"))
+        state["origins"].append(request.headers.get("Origin"))
+        if request.headers.get("Origin") is None:
+            return connection.respond(http.HTTPStatus.NOT_FOUND, "404")
         if request.headers.get("Authorization") != EXPECTED:
             return connection.respond(http.HTTPStatus.UNAUTHORIZED, "no\n")
         return None
@@ -241,6 +245,8 @@ def test_desktop_stream_passes_with_the_password_and_the_guests_subprotocol(
             assert stream.receive_text() == "echo:hello"
     assert guest_ws["auth"] == [EXPECTED]
     assert guest_ws["subprotocols"] == ["binary"]
+    # The guest's own origin, never the browser's.
+    assert guest_ws["origins"] == [f"http://127.0.0.1:{guest_ws['port']}"]
 
 
 def test_desktop_stream_is_refused_when_the_guest_rejects_the_login(

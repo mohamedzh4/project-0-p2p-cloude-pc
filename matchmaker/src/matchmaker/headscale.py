@@ -102,9 +102,9 @@ class HttpHeadscaleClient:
             "reusable": False,
             "ephemeral": ephemeral,
             "expiration": expiration,
-            # Headscale 0.26 proto JSON uses acl_tags; HTTP uses aclTags.
+            # Headscale 0.26 HTTP (grpc-gateway) accepts aclTags OR acl_tags;
+            # sending both is rejected as "duplicate field" (HTTP 400).
             "aclTags": tags,
-            "acl_tags": tags,
         }
         body = self._request_json("POST", _PREAUTH_PATH, json_body=payload)
         key = _extract_preauth_key(body)

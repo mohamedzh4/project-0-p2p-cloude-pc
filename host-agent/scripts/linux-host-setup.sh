@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
-# Ubuntu 22.04/24.04 Standard host setup (QEMU+KVM).
+# Standard host setup (QEMU+KVM) for Ubuntu/Debian (.deb) and Arch (AppImage).
 # Run from an extracted friend kit: bash linux-host-setup.sh
 set -euo pipefail
 umask 077
 
-if [[ "$(uname -s)" != "Linux" ]] || ! command -v apt-get >/dev/null; then
-  echo "This setup supports Ubuntu/Debian Linux hosts only." >&2
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "This setup runs on Linux only." >&2
+  exit 1
+fi
+if command -v apt-get >/dev/null; then
+  DISTRO=debian
+elif command -v pacman >/dev/null; then
+  DISTRO=arch
+else
+  echo "This setup supports Ubuntu/Debian and Arch Linux hosts only." >&2
   exit 1
 fi
 if [[ "${EUID}" -eq 0 ]]; then
@@ -73,9 +81,26 @@ done < "$ENV_FILE"
 }
 
 sudo -v
-sudo apt-get update
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-  ca-certificates curl qemu-system-x86 qemu-utils
+if [[ "$DISTRO" == debian ]]; then
+  sudo apt-get update
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    ca-certificates curl qemu-system-x86 qemu-utils
+else
+  # Install only what is missing. Arch does not support partial upgrades,
+  # so a missing package means a full -Syu (pacman asks before upgrading).
+  arch_pkgs=()
+  command -v curl >/dev/null || arch_pkgs+=(curl)
+  [[ -e /etc/ssl/certs/ca-certificates.crt ]] || arch_pkgs+=(ca-certificates)
+  if ! command -v qemu-system-x86_64 >/dev/null || ! command -v qemu-img >/dev/null; then
+    arch_pkgs+=(qemu-base)
+  fi
+  # The Host Agent AppImage needs FUSE 2 to mount itself.
+  [[ -e /usr/lib/libfuse.so.2 ]] || arch_pkgs+=(fuse2)
+  command -v tailscale >/dev/null || arch_pkgs+=(tailscale)
+  if ((${#arch_pkgs[@]})); then
+    sudo pacman -Syu --needed "${arch_pkgs[@]}"
+  fi
+fi
 
 if [[ ! -e /dev/kvm ]]; then
   echo "/dev/kvm is missing. Enable virtualization in firmware and load kvm." >&2
@@ -86,6 +111,11 @@ sudo usermod -aG kvm "$USER"
 if ! command -v tailscale >/dev/null; then
   curl -fsSL https://tailscale.com/install.sh | sudo sh
 fi
+# The Host Agent runs as this desktop user and calls `tailscale up` itself
+# when it registers. On Linux only root may do that unless the user is the
+# Tailscale operator ("Access denied: checkprefs access denied" otherwise).
+sudo systemctl enable --now tailscaled
+sudo tailscale set --operator="$USER"
 
 IMAGE_DIR="${XDG_CACHE_HOME:-"$HOME/.cache"}/dcl-host-agent/images/standard"
 mkdir -p "$IMAGE_DIR"
@@ -119,18 +149,41 @@ if [[ "${actual_digest,,}" != "${IMAGE_STANDARD_DIGEST,,}" ]]; then
   exit 1
 fi
 
-deb="$(find "$HERE" -maxdepth 1 -type f -name '*.deb' -print -quit)"
-[[ -n "$deb" ]] || {
-  echo "Host Agent .deb is missing from the kit." >&2
-  exit 1
-}
-sudo apt-get install -y "$deb"
+if [[ "$DISTRO" == debian ]]; then
+  deb="$(find "$HERE" -maxdepth 1 -type f -name '*.deb' -print -quit)"
+  [[ -n "$deb" ]] || {
+    echo "Host Agent .deb is missing from the kit." >&2
+    exit 1
+  }
+  sudo apt-get install -y "$deb"
 
-agent_bin="$(command -v host-agent || true)"
-[[ -n "$agent_bin" ]] || {
-  echo "Host Agent installed, but the host-agent binary was not found." >&2
-  exit 1
-}
+  agent_bin="$(command -v host-agent || true)"
+  [[ -n "$agent_bin" ]] || {
+    echo "Host Agent installed, but the host-agent binary was not found." >&2
+    exit 1
+  }
+else
+  appimage="$(find "$HERE" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+  [[ -n "$appimage" ]] || {
+    echo "Host Agent .AppImage is missing from the kit." >&2
+    exit 1
+  }
+  mkdir -p "$HOME/.local/bin"
+  agent_bin="$HOME/.local/bin/dcl-host-agent.AppImage"
+  # cat, not cp: the kit may sit on exFAT, whose files carry no exec bit.
+  cat "$appimage" >"$agent_bin.part"
+  chmod 0755 "$agent_bin.part"
+  mv "$agent_bin.part" "$agent_bin"
+  mkdir -p "$HOME/.local/share/applications"
+  cat > "$HOME/.local/share/applications/dcl-host-agent.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=DCL Host Agent
+Exec=$agent_bin
+Terminal=false
+Categories=Utility;
+EOF
+fi
 
 # Default: the Host Agent fetches its commands from the server itself, so
 # nothing has to reach this PC from the internet. Only a friend.env that
@@ -166,9 +219,23 @@ IMAGE_LOCAL_DIGEST=$IMAGE_STANDARD_DIGEST
 IMAGE_STANDARD_DIGEST=$IMAGE_STANDARD_DIGEST
 IMAGE_STANDARD_SIGNATURE=$IMAGE_STANDARD_SIGNATURE
 HOST_AGENT_STANDARD_IMAGE_URL=file://$RAW_IMAGE
+HOST_AGENT_IMAGE_CACHE=$(dirname "$IMAGE_DIR")
+HOST_AGENT_IMAGE_MAX_BYTES=21474836480
 HOST_AGENT_QEMU_BIN=$(command -v qemu-system-x86_64)
 EOF
 chmod 600 "$APP_DIR/.env"
+
+# The agent uses $RAW_IMAGE in place only when this manifest sits next to it
+# (it still re-hashes the disk and checks the signature). Without it the agent
+# re-copies the 16 GiB disk onto itself, and a failed copy deletes the disk.
+cat > "$IMAGE_DIR/rootfs.manifest.json" <<EOF
+{
+  "labTier": "standard",
+  "digestSha256": "${IMAGE_STANDARD_DIGEST,,}",
+  "signature": "$IMAGE_STANDARD_SIGNATURE",
+  "url": "file://$RAW_IMAGE"
+}
+EOF
 
 if [[ -n "${TUNNEL_SSH:-}" && -n "$listen_addr" ]]; then
   key="$HERE/tunnel.pem"

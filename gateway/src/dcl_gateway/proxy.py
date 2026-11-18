@@ -237,6 +237,11 @@ async def proxy_websocket(
     if upstream_authorization is not None:
         extra_headers["Authorization"] = upstream_authorization
 
+    # KasmVNC answers 404 to a WebSocket upgrade that carries no Origin. Send
+    # the guest's own origin (never the browser's: the guest only trusts
+    # itself, and the browser's Origin was already checked by the caller).
+    backend_origin = f"{parsed.scheme}://{parsed.netloc}"
+
     try:
         backend_ws = await websockets.connect(
             ws_url,
@@ -244,10 +249,21 @@ async def proxy_websocket(
             open_timeout=10,
             subprotocols=requested or None,
             additional_headers=extra_headers or None,
+            origin=backend_origin,
             max_size=None,
+            # KasmVNC does not answer WebSocket pings: with the library's
+            # default keepalive (20 s ping, 20 s wait) every desktop dropped
+            # after ~41 s with 1006. The browser leg keeps its own keepalive.
+            ping_interval=None,
         )
-    except Exception:
-        logger.warning("gateway proxy: websocket backend unreachable")
+    except Exception as error:
+        # Status code only: the exception text can echo request headers.
+        status_code = getattr(getattr(error, "response", None), "status_code", None)
+        logger.warning(
+            "gateway proxy: websocket backend unreachable (%s, status %s)",
+            type(error).__name__,
+            status_code,
+        )
         try:
             await websocket.close(code=1014)
         except Exception:
@@ -282,10 +298,25 @@ async def proxy_websocket(
             asyncio.create_task(client_to_backend()),
             asyncio.create_task(backend_to_client()),
         ]
-        _done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        # Which side ended the desktop stream, and how. Codes and exception
+        # type only: never message bodies or headers.
+        first = "browser" if tasks[0] in done else "guest"
+        errors = [
+            type(task.exception()).__name__
+            for task in done
+            if not task.cancelled() and task.exception() is not None
+        ]
+        logger.warning(
+            "gateway proxy: websocket relay ended by %s (guest close %s %s, error %s)",
+            first,
+            getattr(backend_ws, "close_code", None),
+            (getattr(backend_ws, "close_reason", None) or "")[:80],
+            ",".join(errors) or "none",
+        )
     except Exception:
         logger.warning("gateway proxy: websocket relay failed")
     finally:
