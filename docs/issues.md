@@ -415,6 +415,83 @@ Fixed in code: every boot adds `snapshot=on` (KVM, WHPX, VFIO). Writes go to
 a temporary file QEMU deletes on exit; the signed disk never changes. Test
 `every_boot_leaves_the_signed_disk_untouched`. Not yet seen on real hardware.
 
+## 24. Host setup failures on the first real Windows install (correctness, high)
+
+Found and fixed 2026-11-17 on a friend's Windows 11 laptop:
+- `setup.cmd` restarts itself as Administrator in a new window, which closed
+  the moment setup failed, so the person saw "nothing happened". It now
+  stays open, prints `SETUP FAILED: …` and logs to `C:\dcl\setup\setup.log`.
+- The Administrator copy runs from `C:\dcl\setup` and tried to copy the kit
+  onto itself ("cannot replace the item with itself"). It also overwrote the
+  record of where `rootfs.qcow2` was.
+- Setup looked for Host Agent in the wrong folders and waited 3 s. It is in
+  `%LOCALAPPDATA%\Host Agent`; setup now also reads the uninstall key and
+  waits up to 2 min.
+
+Found by review, same fix round, not yet seen on hardware: on Linux the agent
+runs `tailscale up` as the desktop user, which only root may do unless that
+user is the Tailscale operator. `linux-host-setup.sh` now runs
+`tailscale set --operator=$USER` (Ubuntu and Arch).
+
+## 25. Headscale refused every mesh key (correctness, high)
+
+Found 2026-11-18: "Save and register" failed with `Headscale preauth mint
+failed` (HTTP 502). The Matchmaker sent the tags as both `aclTags` and
+`acl_tags`; Headscale 0.26.1 rejects that as `duplicate field "acl_tags"`.
+No host and no session could have joined the mesh. The mocked test checked
+that both names were sent, so it passed. Fixed: send `aclTags` only; the test
+now checks that `acl_tags` is absent.
+
+## 26. The desktop stream was refused for a missing Origin header (correctness, high)
+
+Found 2026-11-18: the KasmVNC page loaded through the gateway, then showed
+"Failed to connect to server". KasmVNC 4.0 answers 404 to a WebSocket
+upgrade without an `Origin` header, and the gateway sent none. Fixed: the
+gateway sends the guest its own origin (not the browser's). The test guest
+now refuses a WebSocket without `Origin`, like KasmVNC.
+
+## 27. Every desktop disconnected after about 41 seconds (correctness, high)
+
+Found 2026-11-18. The gateway's WebSocket library pings the guest every
+20 s and closes the stream when no reply comes within 20 s. KasmVNC does not
+reply, so each desktop dropped with code 1006. Shown on the live guest: with
+pings closed at 41 s, without pings still open at 70 s. Fixed: no keepalive
+on the gateway-to-guest leg; the browser leg keeps its own. The gateway now
+logs which side ended a stream, with codes only.
+
+## 28. The agent refused the 16 GiB guest disk (correctness, high)
+
+Found 2026-11-18: every booking failed with "verified Standard guest image is
+not present". On start the agent copies the disk into its own cache, and the
+copy stops at a fixed 8 GiB limit (`DEFAULT_MAX_IMAGE_BYTES`, set before any
+real image existed). The Phase 4 disk is 16 GiB raw. Worse, pointing the
+cache at the disk's own folder would have made the failed copy delete the
+verified disk.
+
+Worked around in the host setup scripts (Windows and Linux): set
+`HOST_AGENT_IMAGE_CACHE` to the disk's folder, write the cached-image
+manifest next to the disk so the agent uses it in place (it still re-hashes
+it and checks the signature), and set `HOST_AGENT_IMAGE_MAX_BYTES` to
+20 GiB. Proper fix, open: put the exact image size in the signed manifest and
+stop the download at that size, and never delete a file the agent did not
+write.
+
+## 29. The desktop link works for anyone who has it (security, medium)
+
+Open. Found 2026-11-18: the desktop link opens in several tabs and on
+another device. It is a bearer token: anyone holding it gets the desktop
+until the session ends or the token expires (12 h). Fine for testing; for the
+beta, tie the link to the renter's login (a cookie bound to the account) or
+make it single-use. Row 9 of the Phase 5 matrix has not been run.
+
+## 30. A booking right after the host came online was never picked up (correctness, low)
+
+Open. Found 2026-11-18: the first booking after the host PC came back
+online expired after 45 s without being taken; the next one, 5 minutes
+later, worked. The host was heartbeating, so it was offered work it did not
+fetch. Not reproduced yet. Check the agent's command loop right after
+start-up.
+
 ## Accepted for now
 
 - The gateway skips TLS certificate checks to guests (`verify=False` in

@@ -145,6 +145,10 @@ Status 2026-11-17:
 - Step 4 not done: the disk has not been booted by hand, and boot time is not
   measured yet.
 
+Update 2026-11-18: the disk was not booted by hand, but it booted on a real
+Windows host in Phase 5, and boot time is now measured: 28–44 s from
+booking to desktop ready (see Phase 5). Step 3 (R2 hosting) is still open.
+
 ## Phase 5: First real end-to-end test
 
 Setup: server on Oracle, host 1 = Arch PC, host 2 = Windows PC, renter = a
@@ -167,6 +171,40 @@ Run this matrix on each host and record every row in `test-logs/`.
 | 11 | Host owner looks for secrets on their disk | No storage key that opens another user's files |
 
 Expect the first attempt to fail somewhere around rows 2–4.
+
+### Results, first run (2026-11-17 to 2026-11-18)
+
+Setup actually used: server on Oracle, **one host only**, a friend's Windows
+11 laptop (Intel i7, 15 GB RAM; shared 4 cores and 4 GB), installed from the
+USB kit. Renter: the operator's Mac browser, then a phone, on a different
+network from the host. The Arch PC (host 1) was not used.
+
+| # | Result | What happened |
+| --- | --- | --- |
+| 1 | Pass, after fixes | Setup, register and approve worked once issues 24 and 25 were fixed. Host showed idle, heartbeat every 10 s, commands fetched every 2 s (pull mode, no router setup). |
+| 2 | Pass, after fixes | Desktop opened in the browser through the gateway, also on a phone and in several tabs at once (see issue 29). Needed fixes 26, 27 and 28. |
+| 3 | Pass | Each session's guest showed up in Headscale as `dcl-guest-<session>` and was removed at session end. |
+| 4 | Not run | Persistent files not tested. |
+| 5 | Pass, partly checked | 3 sessions ended cleanly: teardown confirmed by the host in about 2 s, guest node expired, host back to idle, ledger entries written. The host's credit share was not checked on its own. |
+| 6–9 | Not run | |
+| 10 | Not run | Longest session was 11 min. It held without disconnects once issue 27 was fixed. |
+| 11 | Not run | |
+
+Boot time, booking to desktop ready (host took each order in under 1 s):
+
+| Session | Ready after | Length |
+| --- | --- | --- |
+| 1 | 44 s | 11 min |
+| 2 | 40 s | 3 min |
+| 3 | 28 s | 3 min |
+
+Later boots are faster because Windows keeps the disk in its file cache. One
+booking, the first after the host came back online, was never picked up and
+expired after 45 s (issue 30).
+
+Problems found and fixed during the run: issues 24–28. Still open: 21, 29,
+30, the proper fix for 28, and every row marked "Not run". Fixes are in
+commit `214cbe1` and live on the server.
 
 ## Phase 6: Fix and repeat
 
