@@ -23,7 +23,7 @@ pub fn is_installed() -> bool {
 pub fn try_install(app: &tauri::App) {
     match install(app) {
         Ok(()) => INSTALLED.store(true, Ordering::SeqCst),
-        Err(error) => eprintln!("host-agent tray: {error}"),
+        Err(error) => crate::agent_log!("host-agent tray: {error}"),
     }
 }
 

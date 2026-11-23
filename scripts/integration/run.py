@@ -762,7 +762,11 @@ def run_scenarios(checks, matchmaker, gateway, public_gateway, headscale, s3, cl
     check("opening the link sets a session cookie (303)", first.status == 303 and page is not None, first.status)
     check("the desktop page is served through the gateway", page is not None and page.status == 200 and f"DCL-DESKTOP {chosen.name}" in page.text, page.text if page else "")
     direct = http("GET", kasm_url.replace(public_gateway, gateway) + "index.html")
-    check("a path under the link is proxied too", direct.status == 200 and "path=/index.html" in direct.text, direct.text)
+    check("the link itself opens nothing but the cookie (no path under it)", direct.status == 404, direct.status)
+    replay = http("GET", kasm_url.replace(public_gateway, gateway))
+    check("the used link opened by another browser -> 404", replay.status == 404, replay.status)
+    page_again = http("GET", f"{gateway}/index.html", headers={"Cookie": first.headers.get("set-cookie", "").split(";", 1)[0]})
+    check("a path is proxied with the cookie", page_again.status == 200 and "path=/index.html" in page_again.text, page_again.text)
     desktop_password = (chosen.bootstraps[-1]["body"] or {}).get("desktopPassword") or ""
     check("the guest was given a desktop password", len(desktop_password) == 32, len(desktop_password))
     mesh_peer = http("GET", chosen.desktop_url + "/")

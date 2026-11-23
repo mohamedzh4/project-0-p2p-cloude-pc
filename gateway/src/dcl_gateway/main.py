@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from dcl_gateway.config import get_settings
 from dcl_gateway.proxy import proxy_http, proxy_websocket
 from dcl_gateway.rate_limit import FailClosedLimiter
-from dcl_gateway.resolve import resolve_token
+from dcl_gateway.resolve import redeem_link, resolve_token
 from dcl_gateway.ssrf import origin_is_allowed, target_is_allowed
 
 logger = logging.getLogger("dcl_gateway")
@@ -100,13 +100,16 @@ async def _bootstrap_http(request: Request, token: str) -> Response:
     ip = _client_ip(request)
     if limiter.blocked(ip):
         return JSONResponse({"detail": "Session not found"}, status_code=404)
-    resolved = await resolve_token(
+    # The URL holds a single-use desktop link (issue 29). The session's own
+    # token only ever travels in this HttpOnly cookie.
+    redeemed = await redeem_link(
         matchmaker_url=settings.matchmaker_url,
         resolve_token=settings.resolve_token,
-        grant_token=token,
+        link_token=token,
+        cookie_token=request.cookies.get(SESSION_COOKIE) or None,
     )
-    if resolved is None or not target_is_allowed(
-        resolved.target_url, allow_loopback=settings.allow_loopback_target
+    if redeemed is None or not target_is_allowed(
+        redeemed[0].target_url, allow_loopback=settings.allow_loopback_target
     ):
         limiter.record_failure(ip)
         return JSONResponse({"detail": "Session not found"}, status_code=404)
@@ -114,7 +117,7 @@ async def _bootstrap_http(request: Request, token: str) -> Response:
     response = RedirectResponse(url="/", status_code=303)
     response.set_cookie(
         SESSION_COOKIE,
-        token,
+        redeemed[1],
         secure=True,
         httponly=True,
         samesite="lax",

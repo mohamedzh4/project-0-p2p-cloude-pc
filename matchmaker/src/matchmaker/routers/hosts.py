@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
@@ -191,10 +192,10 @@ def poll_host_command(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Register a host secret before polling for commands",
         )
-    if not host.pull_mode:
-        host.pull_mode = True
-        db.commit()
-        db.refresh(host)
+    host.pull_mode = True
+    host.last_polled_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(host)
     command_token = host.command_token
     claimed = host_commands.claim_next(db, host.id)
     if claimed is None:

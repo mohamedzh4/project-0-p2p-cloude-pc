@@ -281,3 +281,27 @@ def test_pro_blank_gpu_id_is_not_selected(db: Session, make_approved_host: Calla
         shared_gpu_id="",
     )
     assert RankedHostSelector().select(db, lab_tier=LabTier.PRO) is None
+
+
+def test_pull_host_that_stopped_polling_is_not_booked(
+    db: Session, make_approved_host: Callable[..., Host]
+) -> None:
+    """Issue 30: a fresh heartbeat with no recent command poll means the
+    agent is starting up or busy; a booking would never be picked up."""
+    now = datetime.now(timezone.utc)
+    polling = make_approved_host(display_name="polling-weak", shared_logical_cores=2)
+    silent = make_approved_host(display_name="silent-strong", shared_logical_cores=16)
+    polling.pull_mode = True
+    polling.last_polled_at = now - timedelta(seconds=3)
+    silent.pull_mode = True
+    silent.last_polled_at = now - timedelta(seconds=60)
+    db.commit()
+
+    selected = RankedHostSelector().select(db, lab_tier=LabTier.STANDARD)
+    assert selected is not None
+    assert selected.id == polling.id
+
+    never = make_approved_host(display_name="never-polled", shared_logical_cores=32)
+    never.pull_mode = True
+    db.commit()
+    assert RankedHostSelector().select(db, lab_tier=LabTier.STANDARD).id == polling.id

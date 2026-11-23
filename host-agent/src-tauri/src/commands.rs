@@ -210,7 +210,7 @@ pub async fn register_declared_caps(
         let registration = matchmaker::register_from_env(&dir, &hardware, &UreqTransport)
             .map_err(|error| error.to_string())?;
         if let Err(error) = matchmaker::heartbeat_from_env(&dir, &UreqTransport) {
-            eprintln!("host-agent heartbeat after register: {error}");
+            crate::agent_log!("host-agent heartbeat after register: {error}");
         }
         if mesh::should_join(|key| std::env::var(key).ok()) {
             mesh::join_from_env(

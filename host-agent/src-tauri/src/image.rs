@@ -42,7 +42,12 @@ const STANDARD_URL_ENV: &str = "HOST_AGENT_STANDARD_IMAGE_URL";
 const PRO_URL_ENV: &str = "HOST_AGENT_PRO_IMAGE_URL";
 const NETWORK_ENV: &str = "HOST_AGENT_IMAGE_NETWORK";
 const MAX_BYTES_ENV: &str = "HOST_AGENT_IMAGE_MAX_BYTES";
-const DEFAULT_MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const STANDARD_SIZE_ENV: &str = "IMAGE_STANDARD_SIZE_BYTES";
+const PRO_SIZE_ENV: &str = "IMAGE_PRO_SIZE_BYTES";
+/// Cap for a download whose exact size is not advertised. The digest pins
+/// the bytes either way; this only stops an endless download. The real disk
+/// is 16 GiB raw (issue 28), so the old 8 GiB cap refused it.
+const DEFAULT_MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Sha256Digest([u8; 32]);
@@ -177,6 +182,8 @@ pub enum ImageError {
     Cache(String),
     #[error("{MAX_BYTES_ENV} must be a positive byte count")]
     InvalidMaxBytes,
+    #[error("{0} must be a positive byte count")]
+    InvalidImageSize(&'static str),
 }
 
 /// Load the pinned public key and local standby digest. Fail fast: no in-code
@@ -271,6 +278,9 @@ pub struct GuestImageSpec {
     pub lab_tier: LabTier,
     pub url: String,
     pub manifest: ImageManifest,
+    /// Exact image size (`IMAGE_*_SIZE_BYTES`, written by `sign_image.py`).
+    /// When known, the download stops there instead of at a fixed cap.
+    pub size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,6 +290,14 @@ struct CachedImageManifest {
     digest_sha256: String,
     signature: String,
     url: String,
+    /// Size and modification time of the file when its digest was last
+    /// checked. While both are unchanged, start-up skips re-hashing a 16 GiB
+    /// disk (it delayed the first poll, issue 30). Older manifests and the
+    /// ones the setup scripts write have none, so the first start hashes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    verified_len: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    verified_mtime_ns: Option<u128>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -317,6 +335,17 @@ impl GuestImageStatus {
 
 pub trait ImageFetcher {
     fn fetch_into(&self, url: &str, dest: &Path) -> Result<(), ImageError>;
+
+    /// Fetch an image of a known size. The default ignores the size; the
+    /// caller checks it after the fetch either way.
+    fn fetch_sized(
+        &self,
+        url: &str,
+        dest: &Path,
+        _size_bytes: Option<u64>,
+    ) -> Result<(), ImageError> {
+        self.fetch_into(url, dest)
+    }
 }
 
 /// Production/HTTP fetcher. `file://` is always allowed. Loopback HTTP is
@@ -336,8 +365,19 @@ impl Default for HttpImageFetcher {
 
 impl ImageFetcher for HttpImageFetcher {
     fn fetch_into(&self, url: &str, dest: &Path) -> Result<(), ImageError> {
+        self.fetch_sized(url, dest, None)
+    }
+
+    fn fetch_sized(
+        &self,
+        url: &str,
+        dest: &Path,
+        size_bytes: Option<u64>,
+    ) -> Result<(), ImageError> {
+        // An advertised size replaces the fixed cap: stop exactly there.
+        let max_bytes = size_bytes.unwrap_or(self.max_bytes);
         if let Some(path) = file_url_path(url) {
-            return copy_limited_file(&path, dest, url, self.max_bytes);
+            return copy_limited_file(&path, dest, url, max_bytes);
         }
         if url.starts_with("http://") || url.starts_with("https://") {
             if !http_fetch_permitted(url) {
@@ -345,7 +385,7 @@ impl ImageFetcher for HttpImageFetcher {
                     url: url.to_string(),
                 });
             }
-            return http_get_into(url, dest, self.max_bytes);
+            return http_get_into(url, dest, max_bytes);
         }
         Err(ImageError::FetchFailed {
             url: url.to_string(),
@@ -554,6 +594,7 @@ pub fn ensure_from_env(
                 STANDARD_URL_ENV,
                 STANDARD_DIGEST_ENV,
                 STANDARD_SIG_ENV,
+                STANDARD_SIZE_ENV,
                 Some(trust.local_digest()),
                 &getenv,
             )?;
@@ -579,6 +620,7 @@ pub fn ensure_from_env(
                 STANDARD_URL_ENV,
                 STANDARD_DIGEST_ENV,
                 STANDARD_SIG_ENV,
+                STANDARD_SIZE_ENV,
                 Some(trust.local_digest()),
                 &getenv,
             )?;
@@ -588,6 +630,7 @@ pub fn ensure_from_env(
                     PRO_URL_ENV,
                     PRO_DIGEST_ENV,
                     PRO_SIG_ENV,
+                    PRO_SIZE_ENV,
                     None,
                     &getenv,
                 )?)
@@ -766,26 +809,36 @@ fn locate_or_fetch_image(
     }
 
     let tmp = dest.with_extension("img.tmp");
-    if let Err(error) = fetcher.fetch_into(&spec.url, &tmp) {
-        remove_image(&dest, &manifest_path, &tmp);
+    if let Err(error) = fetcher.fetch_sized(&spec.url, &tmp, spec.size_bytes) {
+        remove_partial(&tmp);
         return Err(error);
+    }
+    if let Some(expected) = spec.size_bytes {
+        let got = fs::metadata(&tmp).map(|meta| meta.len()).unwrap_or(0);
+        if got != expected {
+            remove_partial(&tmp);
+            return Err(ImageError::FetchFailed {
+                url: spec.url.clone(),
+                detail: format!("expected {expected} bytes, got {got}"),
+            });
+        }
     }
 
     let computed = match sha256_file(&tmp) {
         Ok(digest) => digest,
         Err(error) => {
-            remove_image(&dest, &manifest_path, &tmp);
+            remove_partial(&tmp);
             return Err(error);
         }
     };
     if let Err(error) = verify_fetched_digest(public_key, &spec.manifest, computed, local_pin) {
-        remove_image(&dest, &manifest_path, &tmp);
+        remove_partial(&tmp);
         return Err(error);
     }
 
     if let Some(parent) = dest.parent() {
         if let Err(error) = fs::create_dir_all(parent) {
-            remove_image(&dest, &manifest_path, &tmp);
+            remove_partial(&tmp);
             return Err(ImageError::Cache(error.to_string()));
         }
     }
@@ -800,9 +853,11 @@ fn locate_or_fetch_image(
             digest_sha256: spec.manifest.digest_hex(),
             signature: spec.manifest.signature_base64(),
             url: spec.url.clone(),
+            verified_len: file_stamp(&dest).map(|(len, _)| len),
+            verified_mtime_ns: file_stamp(&dest).map(|(_, mtime)| mtime),
         },
     ) {
-        remove_image(&dest, &manifest_path, &tmp);
+        remove_partial(&tmp);
         return Err(error);
     }
 
@@ -831,14 +886,31 @@ fn skip_if_present(
     local_pin: Option<Sha256Digest>,
     backend: ImageBackend,
 ) -> Option<GuestImageStatus> {
-    let computed = sha256_file(dest).ok()?;
     let raw = fs::read_to_string(manifest_path).ok()?;
-    let cached = serde_json::from_str::<CachedImageManifest>(&raw).ok()?;
+    let mut cached = serde_json::from_str::<CachedImageManifest>(&raw).ok()?;
     if cached.digest_sha256 != spec.manifest.digest_hex() {
         return None;
     }
+    if let Some(expected) = spec.size_bytes {
+        if fs::metadata(dest).ok()?.len() != expected {
+            return None;
+        }
+    }
+    let stamp = file_stamp(dest)?;
+    let unchanged = cached.verified_len == Some(stamp.0) && cached.verified_mtime_ns == Some(stamp.1);
+    // Unchanged since it was hashed: the recorded digest is the file's.
+    let computed = if unchanged {
+        Sha256Digest::parse_hex(&cached.digest_sha256).ok()?
+    } else {
+        sha256_file(dest).ok()?
+    };
     if verify_fetched_digest(public_key, &spec.manifest, computed, local_pin).is_err() {
         return None;
+    }
+    if !unchanged {
+        cached.verified_len = Some(stamp.0);
+        cached.verified_mtime_ns = Some(stamp.1);
+        let _ = write_cached_manifest(manifest_path, &cached);
     }
     Some(GuestImageStatus::success(
         ImageEnsureAction::SkippedPresent,
@@ -867,10 +939,23 @@ fn write_cached_manifest(path: &Path, manifest: &CachedImageManifest) -> Result<
     fs::write(path, json).map_err(|error| ImageError::Cache(error.to_string()))
 }
 
-fn remove_image(dest: &Path, manifest: &Path, tmp: &Path) {
-    let _ = fs::remove_file(dest);
-    let _ = fs::remove_file(manifest);
+/// Only the agent's own temporary download is ever deleted. The cached disk
+/// may be one the host setup placed (issue 28); a failed or rejected fetch
+/// leaves it alone, and a verified download replaces it by rename.
+fn remove_partial(tmp: &Path) {
     let _ = fs::remove_file(tmp);
+}
+
+/// Size and modification time (ns since the epoch) of a file.
+fn file_stamp(path: &Path) -> Option<(u64, u128)> {
+    let meta = fs::metadata(path).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some((meta.len(), mtime))
 }
 
 fn sha256_file(path: &Path) -> Result<Sha256Digest, ImageError> {
@@ -901,6 +986,7 @@ fn required_spec(
     url_env: &'static str,
     digest_env: &'static str,
     sig_env: &'static str,
+    size_env: &'static str,
     digest_fallback: Option<Sha256Digest>,
     getenv: impl Fn(&str) -> Option<String>,
 ) -> Result<GuestImageSpec, ImageError> {
@@ -927,10 +1013,18 @@ fn required_spec(
             return Err(ImageError::DigestMismatch);
         }
     }
+    let size_bytes = match nonempty(getenv(size_env)) {
+        None => None,
+        Some(raw) => match raw.trim().parse::<u64>() {
+            Ok(size) if size > 0 => Some(size),
+            _ => return Err(ImageError::InvalidImageSize(size_env)),
+        },
+    };
     Ok(GuestImageSpec {
         lab_tier,
         url,
         manifest,
+        size_bytes,
     })
 }
 
@@ -1269,6 +1363,7 @@ pub(crate) mod tests {
                 lab_tier,
                 url: url.to_string(),
                 manifest,
+                size_bytes: None,
             },
         )
     }
@@ -1469,6 +1564,7 @@ pub(crate) mod tests {
             lab_tier: LabTier::Pro,
             url: "https://example.invalid/pro.img".to_string(),
             manifest: signed_fixture(FIXTURE_PRO_BYTES).1,
+            size_bytes: None,
         };
         let fetcher = DualImageFetcher {
             standard: FIXTURE_STANDARD_BYTES.to_vec(),
@@ -1686,6 +1782,163 @@ pub(crate) mod tests {
         assert_eq!(windows.action, ImageEnsureAction::Fetched);
         assert!(!linux.image_booted);
         assert!(!windows.image_booted);
+    }
+
+    fn ensure_standard(
+        cache: &Path,
+        trust: &ImageTrust,
+        spec: &GuestImageSpec,
+        fetcher: &dyn ImageFetcher,
+    ) -> Result<GuestImageStatus, ImageError> {
+        ensure(
+            HostOs::Linux,
+            &linux_standard(),
+            Some(trust),
+            cache,
+            Some(spec),
+            None,
+            fetcher,
+        )
+    }
+
+    /// Issue 28: the cache can be the folder the host setup put the disk in.
+    /// A failed or rejected fetch must never delete that disk.
+    #[test]
+    fn a_rejected_fetch_leaves_a_disk_it_did_not_write() {
+        let cache = tempfile::tempdir().unwrap();
+        let (trust, spec) = spec_for(
+            FIXTURE_STANDARD_BYTES,
+            "https://example.invalid/standard.img",
+            LabTier::Standard,
+        );
+        let disk = cached_rootfs_path(cache.path(), LabTier::Standard);
+        fs::create_dir_all(disk.parent().unwrap()).unwrap();
+        fs::write(&disk, b"someone else's disk").unwrap();
+        let tampered = ScriptedImageFetcher::new(b"tampered".to_vec());
+        assert!(ensure_standard(cache.path(), &trust, &spec, &tampered).is_err());
+        assert_eq!(fs::read(&disk).unwrap(), b"someone else's disk");
+        assert!(!disk.with_extension("img.tmp").exists());
+    }
+
+    #[test]
+    fn an_advertised_size_must_match_the_download() {
+        let cache = tempfile::tempdir().unwrap();
+        let (trust, mut spec) = spec_for(
+            FIXTURE_STANDARD_BYTES,
+            "https://example.invalid/standard.img",
+            LabTier::Standard,
+        );
+        spec.size_bytes = Some(FIXTURE_STANDARD_BYTES.len() as u64 + 1);
+        let fetcher = ScriptedImageFetcher::new(FIXTURE_STANDARD_BYTES);
+        let error = ensure_standard(cache.path(), &trust, &spec, &fetcher).unwrap_err();
+        assert!(error.to_string().contains("expected"));
+
+        spec.size_bytes = Some(FIXTURE_STANDARD_BYTES.len() as u64);
+        let status = ensure_standard(cache.path(), &trust, &spec, &fetcher).unwrap();
+        assert_eq!(status.action, ImageEnsureAction::Fetched);
+    }
+
+    #[test]
+    fn an_advertised_size_replaces_the_fixed_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("big.img");
+        fs::write(&file, vec![7u8; 64]).unwrap();
+        let url = format!("file://{}", file.display());
+        let small_cap = HttpImageFetcher { max_bytes: 16 };
+        assert!(small_cap.fetch_into(&url, &dir.path().join("a")).is_err());
+        small_cap
+            .fetch_sized(&url, &dir.path().join("b"), Some(64))
+            .unwrap();
+        assert_eq!(fs::read(dir.path().join("b")).unwrap().len(), 64);
+        assert!(small_cap
+            .fetch_sized(&url, &dir.path().join("c"), Some(32))
+            .is_err());
+    }
+
+    #[test]
+    fn size_env_is_read_and_checked() {
+        let (trust, manifest) = signed_fixture(FIXTURE_STANDARD_BYTES);
+        let digest = trust.local_digest().to_hex();
+        let sig = manifest.signature_base64();
+        let env = |size: &'static str| {
+            let digest = digest.clone();
+            let sig = sig.clone();
+            move |key: &str| match key {
+                "U" => Some("https://example.invalid/x.img".to_string()),
+                "D" => Some(digest.clone()),
+                "S" => Some(sig.clone()),
+                "Z" => Some(size.to_string()),
+                _ => None,
+            }
+        };
+        let spec = required_spec(LabTier::Standard, "U", "D", "S", "Z", None, env("17179869184"))
+            .unwrap();
+        assert_eq!(spec.size_bytes, Some(17_179_869_184));
+        assert_eq!(
+            required_spec(LabTier::Standard, "U", "D", "S", "Z", None, env("big")).unwrap_err(),
+            ImageError::InvalidImageSize("Z")
+        );
+        let none = required_spec(LabTier::Standard, "U", "D", "S", "Z", None, env("")).unwrap();
+        assert_eq!(none.size_bytes, None);
+    }
+
+    /// A verified disk is not hashed again while its size and time are
+    /// unchanged; any change to it is hashed (and here, rejected).
+    #[test]
+    fn an_unchanged_disk_is_not_rehashed_and_a_changed_one_is() {
+        let cache = tempfile::tempdir().unwrap();
+        let (trust, spec) = spec_for(
+            FIXTURE_STANDARD_BYTES,
+            "https://example.invalid/standard.img",
+            LabTier::Standard,
+        );
+        let fetcher = ScriptedImageFetcher::new(FIXTURE_STANDARD_BYTES);
+        ensure_standard(cache.path(), &trust, &spec, &fetcher).unwrap();
+        let disk = cached_rootfs_path(cache.path(), LabTier::Standard);
+        let manifest = disk.with_extension("manifest.json");
+        let cached: CachedImageManifest =
+            serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+        assert_eq!(cached.verified_len, Some(FIXTURE_STANDARD_BYTES.len() as u64));
+        assert!(cached.verified_mtime_ns.is_some());
+
+        let again = ensure_standard(cache.path(), &trust, &spec, &fetcher).unwrap();
+        assert_eq!(again.action, ImageEnsureAction::SkippedPresent);
+        assert_eq!(fetcher.hit_count(), 1);
+
+        fs::write(&disk, b"changed after verification").unwrap();
+        let refetched = ensure_standard(cache.path(), &trust, &spec, &fetcher).unwrap();
+        assert_eq!(refetched.action, ImageEnsureAction::Fetched);
+        assert_eq!(fetcher.hit_count(), 2);
+    }
+
+    /// The manifest the host setup scripts write has no stamps: the first
+    /// start hashes the disk and adds them.
+    #[test]
+    fn a_setup_written_manifest_is_hashed_once_then_stamped() {
+        let cache = tempfile::tempdir().unwrap();
+        let (trust, spec) = spec_for(
+            FIXTURE_STANDARD_BYTES,
+            "file:///placed-by-setup",
+            LabTier::Standard,
+        );
+        let disk = cached_rootfs_path(cache.path(), LabTier::Standard);
+        fs::create_dir_all(disk.parent().unwrap()).unwrap();
+        fs::write(&disk, FIXTURE_STANDARD_BYTES).unwrap();
+        let manifest = disk.with_extension("manifest.json");
+        fs::write(
+            &manifest,
+            format!(
+                "{{\"labTier\":\"standard\",\"digestSha256\":\"{}\",\"signature\":\"{}\",\"url\":\"file:///placed-by-setup\"}}",
+                spec.manifest.digest_hex(),
+                spec.manifest.signature_base64()
+            ),
+        )
+        .unwrap();
+        let fetcher = ScriptedImageFetcher::new(b"never fetched".to_vec());
+        let status = ensure_standard(cache.path(), &trust, &spec, &fetcher).unwrap();
+        assert_eq!(status.action, ImageEnsureAction::SkippedPresent);
+        assert_eq!(fetcher.hit_count(), 0);
+        assert!(fs::read_to_string(&manifest).unwrap().contains("verifiedLen"));
     }
 
     #[test]

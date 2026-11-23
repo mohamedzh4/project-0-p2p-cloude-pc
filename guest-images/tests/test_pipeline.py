@@ -283,7 +283,10 @@ class SigningHelperTests(unittest.TestCase):
         self.assertEqual(manifest["digestAlgorithm"], "sha256")
         self.assertEqual(manifest["signature"], sig)
         self.assertEqual(len(manifest["digestSha256"]), 64)
+        size = self.image.stat().st_size
+        self.assertEqual(manifest["sizeBytes"], size)
         snippet = (self.dir / "env.snippet").read_text(encoding="utf-8")
+        self.assertIn(f"IMAGE_STANDARD_SIZE_BYTES={size}", snippet)
         self.assertIn("IMAGE_STANDARD_DIGEST=", snippet)
         self.assertIn("IMAGE_STANDARD_SIGNATURE=", snippet)
         self.assertIn("IMAGE_SIGNING_PUBLIC_KEY=", snippet)
@@ -456,6 +459,54 @@ def _join_call(code: str, env_extra: dict[str, str] | None = None) -> dict:
         check=True,
     ).stdout
     return json.loads(out)
+
+
+class GuestShutdownFlushTests(unittest.TestCase):
+    """At shutdown the guest waits for rclone to upload ~/Persistent (issue 21)."""
+
+    def test_rclone_gets_a_loopback_remote_control_once(self) -> None:
+        result = _join_call(
+            "args = mod.rclone_argv({'rcloneArgs': ['mount', ':s3:b/p', '/mnt', '--s3-env-auth']})\n"
+            "again = mod.rclone_argv({'rcloneArgs': args[1:]})\n"
+            "print(json.dumps({'args': args, 'again': again}))\n"
+        )
+        args = result["args"]
+        self.assertEqual(args.count("--rc"), 1)
+        self.assertEqual(args[args.index("--rc-addr") + 1], "127.0.0.1:5572")
+        self.assertEqual(result["again"], args)
+
+    def test_waits_until_the_upload_queue_is_empty(self) -> None:
+        result = _join_call(
+            "answers = [{'diskCache': {'uploadsInProgress': 1, 'uploadsQueued': 2}},\n"
+            "           {'diskCache': {'uploadsInProgress': 1, 'uploadsQueued': 0}},\n"
+            "           {'diskCache': {'uploadsInProgress': 0, 'uploadsQueued': 0}}]\n"
+            "calls = []\n"
+            "def stats():\n"
+            "    calls.append(1)\n"
+            "    return answers[len(calls) - 1]\n"
+            "done = mod.wait_for_uploads(stats=stats, sleep=lambda s: None, clock=lambda: 0)\n"
+            "print(json.dumps({'done': done, 'calls': len(calls)}))\n"
+        )
+        self.assertEqual(result, {"done": True, "calls": 3})
+
+    def test_gives_up_at_the_deadline_and_skips_when_rclone_is_absent(self) -> None:
+        result = _join_call(
+            "now = [0]\n"
+            "def clock():\n"
+            "    now[0] += 10\n"
+            "    return now[0]\n"
+            "busy = lambda: {'diskCache': {'uploadsQueued': 1}}\n"
+            "late = mod.wait_for_uploads(stats=busy, sleep=lambda s: None, clock=clock)\n"
+            "absent = mod.wait_for_uploads(stats=lambda: None, sleep=lambda s: None)\n"
+            "print(json.dumps({'late': late, 'absent': absent,"
+            " 'odd': mod.pending_uploads({'diskCache': 'x'})}))\n"
+        )
+        self.assertEqual(result, {"late": False, "absent": True, "odd": 0})
+
+    def test_unit_gives_the_stop_step_time_to_upload(self) -> None:
+        unit = (ROOT / "scripts" / "dcl-guest-join.service").read_text(encoding="utf-8")
+        self.assertIn("ExecStop=/usr/local/sbin/dcl-guest-join --flush", unit)
+        self.assertIn("TimeoutStopSec=85", unit)
 
 
 class GuestDesktopPasswordTests(unittest.TestCase):

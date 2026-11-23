@@ -42,6 +42,13 @@ DESKTOP_USER = os.environ.get("DCL_DESKTOP_USER", "ubuntu")
 # between attempts to reach the Matchmaker.
 BOOTSTRAP_RETRY_DELAYS = (3, 5, 8, 12, 15, 20)
 BOOTSTRAP_TIMEOUT_SECONDS = 15
+# rclone's remote control, loopback only, so shutdown can wait for uploads.
+RC_ADDR = "127.0.0.1:5572"
+RC_ARGS = ["--rc", "--rc-addr", RC_ADDR, "--rc-no-auth"]
+# At shutdown, how long to wait for rclone to finish uploading. The Host
+# Agent gives the whole guest 90 s before it kills the VM.
+FLUSH_WAIT_SECONDS = 75
+FLUSH_POLL_SECONDS = 1
 
 
 def _read_text(path: Path) -> str | None:
@@ -253,9 +260,67 @@ def rclone_argv(storage: dict) -> list[str]:
     argv = ["rclone"] + [str(item) for item in args]
     if "--s3-env-auth" not in argv:
         raise RuntimeError("guest rclone must use --s3-env-auth")
+    if "--rc" not in argv:
+        argv += RC_ARGS
     if "--uid" not in argv:
         argv += mount_owner_args()
     return argv
+
+
+def pending_uploads(stats: dict) -> int:
+    """Files rclone still has to upload, from `rclone rc vfs/stats`."""
+    cache = stats.get("diskCache")
+    if not isinstance(cache, dict):
+        return 0
+    total = 0
+    for key in ("uploadsInProgress", "uploadsQueued"):
+        value = cache.get(key)
+        if isinstance(value, int):
+            total += value
+    return total
+
+
+def _vfs_stats() -> dict | None:
+    try:
+        out = subprocess.run(
+            ["rclone", "rc", "--url", f"http://{RC_ADDR}/", "vfs/stats"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout
+        body = json.loads(out)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def wait_for_uploads(stats=_vfs_stats, sleep=time.sleep, clock=time.monotonic) -> bool:
+    """Wait until rclone has uploaded every closed file. False on timeout.
+
+    rclone uploads a file a few seconds after it is closed; the session disk
+    is thrown away when the VM stops, so anything still queued would be lost.
+    No answer from rclone means there is no mount to wait for.
+    """
+    deadline = clock() + FLUSH_WAIT_SECONDS
+    while True:
+        body = stats()
+        if body is None or pending_uploads(body) == 0:
+            return True
+        if clock() >= deadline:
+            return False
+        sleep(FLUSH_POLL_SECONDS)
+
+
+def flush_storage() -> bool:
+    """Upload what is pending, then unmount so nothing new is written."""
+    if DRY_RUN:
+        return True
+    done = wait_for_uploads()
+    if not done:
+        print("dcl-guest-join: uploads still pending at shutdown", file=sys.stderr)
+    subprocess.run(["fusermount", "-u", MOUNT_POINT], capture_output=True, check=False)
+    return done
 
 
 def _run(argv: list[str], env: dict[str, str] | None = None) -> None:
@@ -272,6 +337,9 @@ def main(argv: list[str]) -> int:
         # Image can boot without a session (packer, Hyper-V leftover).
         return 0
     if flush_only:
+        flushed = flush_storage()
+        if not flushed:
+            return 1
         try:
             report_saved_as_of(origin, token)
         except (urllib.error.URLError, RuntimeError, json.JSONDecodeError):

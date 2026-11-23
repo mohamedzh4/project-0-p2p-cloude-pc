@@ -11,6 +11,8 @@
 //! Tray status and immediate pause live in
 //! Rust; the webview does not call the Matchmaker.
 
+#[macro_use]
+mod agent_log;
 mod agent_status;
 mod command_channel;
 mod commands;
@@ -22,6 +24,7 @@ mod env_file;
 mod gpu;
 mod gpu_bind;
 mod guest_bootstrap;
+mod guest_power;
 mod hardware;
 mod host_capabilities;
 mod host_secret;
@@ -102,7 +105,7 @@ fn load_local_env() {
     match env_file::load_operator_env() {
         Ok(files) => {
             if files.is_empty() {
-                eprintln!(
+                crate::agent_log!(
                     "host-agent env: no .env file found (cwd, executable dir, or {}); using process environment only",
                     env_file::CONFIG_DIR_NAME
                 );
@@ -112,7 +115,7 @@ fn load_local_env() {
                     .map(|path| path.display().to_string())
                     .collect::<Vec<_>>()
                     .join(", ");
-                eprintln!("host-agent env: loaded {listed}");
+                crate::agent_log!("host-agent env: loaded {listed}");
             }
         }
         Err(error) => panic!("{error}"),
@@ -125,7 +128,7 @@ fn spawn_heartbeat_loop(app: &tauri::App) {
         .name("host-agent-heartbeat".into())
         .spawn(move || loop {
             if let Err(error) = tick_heartbeat(&handle) {
-                eprintln!("host-agent heartbeat: {error}");
+                crate::agent_log!("host-agent heartbeat: {error}");
             }
             tray::refresh(&handle);
             std::thread::sleep(matchmaker::HEARTBEAT_INTERVAL);
@@ -281,7 +284,7 @@ fn spawn_provision_listener(app: &tauri::App) {
     let command_token = match secret {
         Ok(secret) => host_secret::command_token(&secret),
         Err(error) => {
-            eprintln!("host-agent takes no provision commands: {error}");
+            crate::agent_log!("host-agent takes no provision commands: {error}");
             return;
         }
     };
@@ -307,7 +310,7 @@ fn spawn_provision_listener(app: &tauri::App) {
                         Some(gate),
                         Some(provision_log.as_ref()),
                     ) {
-                        eprintln!("host-agent provision listener: {error}");
+                        crate::agent_log!("host-agent provision listener: {error}");
                     }
                 })
                 .expect("could not start host provision listener");
@@ -316,7 +319,7 @@ fn spawn_provision_listener(app: &tauri::App) {
             let trust = match image::trust_from_env(lookup) {
                 Ok(trust) => trust,
                 Err(error) => {
-                    eprintln!("host-agent takes no provision commands: {error}");
+                    crate::agent_log!("host-agent takes no provision commands: {error}");
                     return;
                 }
             };
@@ -334,7 +337,7 @@ fn spawn_provision_listener(app: &tauri::App) {
                         guest_image,
                         Some(dir.as_path()),
                     );
-                    eprintln!("host-agent: fetching commands from the Matchmaker");
+                    crate::agent_log!("host-agent: fetching commands from the Matchmaker");
                     let mut last_error = String::new();
                     loop {
                         let outcome = command_channel::tick(
@@ -352,7 +355,7 @@ fn spawn_provision_listener(app: &tauri::App) {
                         match outcome {
                             Ok(command_channel::TickOutcome::Ran { kind, status }) => {
                                 last_error.clear();
-                                eprintln!("host-agent command: {kind} -> HTTP {status}");
+                                crate::agent_log!("host-agent command: {kind} -> HTTP {status}");
                                 // More may be waiting (a teardown, then a provision).
                                 continue;
                             }
@@ -361,7 +364,7 @@ fn spawn_provision_listener(app: &tauri::App) {
                                 // Say it once, not every two seconds.
                                 let message = error.to_string();
                                 if message != last_error {
-                                    eprintln!("host-agent commands: {message}");
+                                    crate::agent_log!("host-agent commands: {message}");
                                     last_error = message;
                                 }
                             }
@@ -374,8 +377,21 @@ fn spawn_provision_listener(app: &tauri::App) {
     }
 }
 
+fn stop_all_guests() {
+    guest_power::shut_down_own_guests();
+    qemu_whpx::kill_running();
+    qemu_kvm::kill_running();
+    qemu_vfio::kill_running();
+}
+
 pub fn run() {
+    if let Some(dir) = env_file::app_config_dir() {
+        agent_log::init(&dir);
+    }
+    crate::agent_log!("host-agent {} starting", env!("CARGO_PKG_VERSION"));
     load_local_env();
+    // A VM left by a run that closed or crashed mid-session (issue 32).
+    guest_power::stop_leftover_guests();
     let hardware = hardware::detect();
     let os = HostOs::current();
     let capabilities = host_capabilities::probe_live(os, &hardware.gpus);
@@ -387,7 +403,7 @@ pub fn run() {
         &hypervisor::HttpBinaryFetcher,
         &hypervisor::ProcessQemuInstaller,
     ));
-    eprintln!("host-agent hypervisor: {}", hypervisor.log);
+    crate::agent_log!("host-agent hypervisor: {}", hypervisor.log);
     let guest_image = match image::max_image_bytes(|key| std::env::var(key).ok()) {
         Ok(max_bytes) => image::status_from_result(image::ensure_from_env(
             os,
@@ -397,7 +413,7 @@ pub fn run() {
         )),
         Err(error) => image::status_from_result(Err(error)),
     };
-    eprintln!("host-agent guest image: {}", guest_image.log);
+    crate::agent_log!("host-agent guest image: {}", guest_image.log);
 
     tauri::Builder::default()
         .manage(AgentState {
@@ -439,6 +455,13 @@ pub fn run() {
             commands::set_sharing_enabled,
             commands::get_diagnostics_report,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running the host agent");
+        .build(tauri::generate_context!())
+        .expect("error while building the host agent")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Quitting must not leave a renter's VM running unattended.
+                crate::agent_log!("host-agent: exiting; stopping any guest VM");
+                stop_all_guests();
+            }
+        });
 }

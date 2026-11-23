@@ -255,10 +255,13 @@ pub fn invoke(
         request.bootstrap_origin,
         request.bootstrap_token,
     ));
+    let (qga_port, guest_args) = crate::guest_power::prepare();
+    args.extend(guest_args);
     debug_assert!(!args.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));
     debug_assert!(!args.iter().any(|arg| arg.eq_ignore_ascii_case("whpx")));
     let child = spawner.spawn(request.binary, &args)?;
     spawner.detach(child);
+    crate::guest_power::remember(qga_port);
     Ok(InvokeResult {
         hypervisor_invoked: true,
         argv: args,

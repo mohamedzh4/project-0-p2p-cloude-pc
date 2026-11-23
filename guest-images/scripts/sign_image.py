@@ -137,8 +137,9 @@ def manifest_body(
     digest_hex: str,
     signature_b64: str,
     image_file: str,
-) -> dict[str, str]:
-    return {
+    size_bytes: int | None = None,
+) -> dict[str, str | int]:
+    body: dict[str, str | int] = {
         "labTier": lab_tier,
         "digestSha256": digest_hex,
         "signature": signature_b64,
@@ -146,6 +147,11 @@ def manifest_body(
         "digestAlgorithm": DIGEST_ALG,
         "imageFile": image_file,
     }
+    if size_bytes is not None:
+        # Not signed: the digest already pins the bytes. The Host Agent stops
+        # a download at this size instead of a fixed limit.
+        body["sizeBytes"] = size_bytes
+    return body
 
 
 def env_snippet(
@@ -154,6 +160,7 @@ def env_snippet(
     digest_hex: str,
     signature_b64: str,
     public_hex: str,
+    size_bytes: int | None = None,
 ) -> str:
     tier = lab_tier.upper()
     lines = [
@@ -161,6 +168,8 @@ def env_snippet(
         f"IMAGE_{tier}_SIGNATURE={signature_b64}",
         f"IMAGE_SIGNING_PUBLIC_KEY={public_hex}",
     ]
+    if size_bytes is not None:
+        lines.append(f"IMAGE_{tier}_SIZE_BYTES={size_bytes}")
     if lab_tier == "standard":
         lines.append(f"IMAGE_LOCAL_DIGEST={digest_hex}")
     return "\n".join(lines) + "\n"
@@ -212,6 +221,7 @@ def cmd_sign(args: argparse.Namespace) -> int:
         digest_hex=digest_hex,
         signature_b64=signature_b64,
         image_file=image.name,
+        size_bytes=image.stat().st_size,
     )
     manifest_path = Path(str(image) + ".manifest.json")
     manifest_path.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
@@ -220,6 +230,7 @@ def cmd_sign(args: argparse.Namespace) -> int:
         digest_hex=digest_hex,
         signature_b64=signature_b64,
         public_hex=public_key_hex(key),
+        size_bytes=image.stat().st_size,
     )
     snippet_path = image.with_name("env.snippet")
     snippet_path.write_text(snippet, encoding="utf-8")

@@ -270,6 +270,14 @@ class GatewayResolveRequest(CamelModel):
     token: str = Field(min_length=1, max_length=128)
 
 
+class GatewayRedeemRequest(CamelModel):
+    """A desktop link to trade for the session cookie, plus the cookie the
+    browser already holds, if any (a used link still works for that browser)."""
+
+    token: str = Field(min_length=1, max_length=128)
+    cookie_token: str | None = Field(default=None, max_length=128)
+
+
 class GatewayResolveResponse(CamelModel):
     """Internal locator for one scoped session. Never a default fallback."""
 
@@ -279,6 +287,12 @@ class GatewayResolveResponse(CamelModel):
     # Login the gateway presents to the guest desktop on the renter's behalf.
     upstream_user: str | None = None
     upstream_password: str | None = None
+
+
+class GatewayRedeemResponse(GatewayResolveResponse):
+    """Resolve plus the token the gateway sets as the browser's cookie."""
+
+    cookie_token: str
 
 
 class HostCommandResponse(CamelModel):

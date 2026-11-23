@@ -56,12 +56,20 @@ def _redeem(client: TestClient, provisioner: FakeHostProvisioner) -> dict:
     return redeemed.json()
 
 
+_COOKIES: dict[str, str] = {}
+
+
 def _resolve(client: TestClient, booked) -> dict:
-    grant = booked.json()["connection"]["kasmUrl"].split("/s/")[1].rstrip("/")
+    """What the gateway learns: redeem the desktop link once, then resolve
+    with the session cookie it got for it."""
+    link = booked.json()["connection"]["kasmUrl"].split("/s/")[1].rstrip("/")
+    headers = {"Authorization": f"Bearer {GATEWAY_RESOLVE}"}
+    if link not in _COOKIES:
+        redeemed = client.post("/v1/gateway/redeem", json={"token": link}, headers=headers)
+        assert redeemed.status_code == 200, redeemed.text
+        _COOKIES[link] = redeemed.json()["cookieToken"]
     resolved = client.post(
-        "/v1/gateway/resolve",
-        json={"token": grant},
-        headers={"Authorization": f"Bearer {GATEWAY_RESOLVE}"},
+        "/v1/gateway/resolve", json={"token": _COOKIES[link]}, headers=headers
     )
     assert resolved.status_code == 200, resolved.text
     return resolved.json()

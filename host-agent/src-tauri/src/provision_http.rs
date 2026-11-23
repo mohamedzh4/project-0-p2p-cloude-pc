@@ -983,6 +983,8 @@ pub fn respond_and_track_with_gate(
 }
 
 fn teardown_session(occupancy: &Occupancy, gate: Option<&ProvisionGate>) {
+    // Let the guest upload ~/Persistent and power off before QEMU is killed.
+    crate::guest_power::shut_down_own_guests();
     qemu_whpx::kill_running();
     qemu_kvm::kill_running();
     qemu_vfio::kill_running();

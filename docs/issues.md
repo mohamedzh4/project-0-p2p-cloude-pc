@@ -386,7 +386,19 @@ gets a `fusermount` link. Covered by `GuestDesktopPasswordTests`.
 
 ## 21. Files saved in the last seconds of a session can be lost (correctness, medium)
 
-Open. rclone uploads a file a few seconds after it is closed. At session
+**Fixed in code 2026-11-23, not yet run on a real host** (needs a new agent
+build; the upload wait also needs a rebuilt guest image). Every guest now gets
+a QEMU guest agent channel on a loopback port (`guest_power.rs`; the image
+already ships `qemu-guest-agent`). At session end, and when Host Agent quits,
+the agent asks the guest to power off and waits up to 90 s for QEMU to exit
+before it kills it. In the guest, `dcl-guest-join --flush` (the unit's stop
+step, `TimeoutStopSec=85`) waits up to 75 s for rclone's upload queue to empty
+(`rclone rc vfs/stats`, loopback only), unmounts, then reports "saved as of".
+A guest that does not answer is killed at once, as before. Tests:
+`a_guest_that_answers_is_powered_off_and_waited_for`,
+`a_guest_without_an_agent_is_not_waited_for`, `GuestShutdownFlushTests`.
+
+Original report: rclone uploads a file a few seconds after it is closed. At session
 end the Host Agent kills the VM at once, so a file saved just before
 "End session" may never reach storage, and "saved as of" only records
 the time the guest booted. Fix idea: on teardown ask the guest to shut
@@ -469,17 +481,45 @@ real image existed). The Phase 4 disk is 16 GiB raw. Worse, pointing the
 cache at the disk's own folder would have made the failed copy delete the
 verified disk.
 
+**Fixed in code 2026-11-23, not yet on the hosts** (new agent build):
+- `sign_image.py` records the exact size (`sizeBytes` in the manifest,
+  `IMAGE_<TIER>_SIZE_BYTES` in `env.snippet`). When that variable is set the
+  agent stops the download at that size and refuses any other size; without
+  it the cap is now 32 GiB, not 8. The size is not signed: the digest already
+  pins the bytes, the size only bounds the download.
+- A failed or rejected fetch deletes only the agent's own `.img.tmp`, never
+  the cached disk, so pointing the cache at the setup's folder is safe.
+- A verified disk is not re-hashed at start while its size and modification
+  time match what the manifest recorded (16 GiB took long enough to delay the
+  first poll, see 30). Any change is hashed again.
+Tests: `a_rejected_fetch_leaves_a_disk_it_did_not_write`,
+`an_advertised_size_must_match_the_download`,
+`an_advertised_size_replaces_the_fixed_cap`,
+`an_unchanged_disk_is_not_rehashed_and_a_changed_one_is`,
+`a_setup_written_manifest_is_hashed_once_then_stamped`.
+
 Worked around in the host setup scripts (Windows and Linux): set
 `HOST_AGENT_IMAGE_CACHE` to the disk's folder, write the cached-image
 manifest next to the disk so the agent uses it in place (it still re-hashes
 it and checks the signature), and set `HOST_AGENT_IMAGE_MAX_BYTES` to
-20 GiB. Proper fix, open: put the exact image size in the signed manifest and
-stop the download at that size, and never delete a file the agent did not
-write.
+20 GiB. The workaround keeps working with the fix.
 
 ## 29. The desktop link works for anyone who has it (security, medium)
 
-Open. Found 2026-11-18: the desktop link opens in several tabs and on
+**Fixed in code 2026-11-23, not yet deployed** (Matchmaker migration 0012 and
+the gateway). The link the website shows is now single-use and valid for
+2 minutes (`session_desktop_links`); the page asks for the session every 10 s,
+so its link stays fresh. Opening it, the gateway trades it
+(`POST /v1/gateway/redeem`) for the session's own token, which only ever
+travels as the HttpOnly cookie. A used link still opens for the browser that
+used it (second tab, double click), for nobody else. Another device signs in
+and clicks "Open desktop". Tests:
+`test_a_desktop_link_works_once_except_for_the_browser_that_used_it`,
+`test_a_used_link_opens_only_for_the_browser_that_used_it`, integration
+section 4. A link-preview bot that opens a pasted link uses it up; click
+"Open desktop" again.
+
+Found 2026-11-18: the desktop link opens in several tabs and on
 another device. It is a bearer token: anyone holding it gets the desktop
 until the session ends or the token expires (12 h). Fine for testing; for the
 beta, tie the link to the renter's login (a cookie bound to the account) or
@@ -487,11 +527,20 @@ make it single-use. Row 9 of the Phase 5 matrix has not been run.
 
 ## 30. A booking right after the host came online was never picked up (correctness, low)
 
-Open. Found 2026-11-18: the first booking after the host PC came back
-online expired after 45 s without being taken; the next one, 5 minutes
-later, worked. The host was heartbeating, so it was offered work it did not
-fetch. Not reproduced yet. Check the agent's command loop right after
-start-up.
+**Fixed in code 2026-11-23, not yet deployed** (Matchmaker migration 0011).
+The server records when a pull-mode host last asked for commands
+(`hosts.last_polled_at`) and books it only if that was within 20 s, so a host
+whose agent is starting, busy stopping a guest or gone is skipped instead of
+failing the booking after 45 s. The agent also starts faster (no re-hash of an
+unchanged disk, see 28). Tests: `test_pull_host_that_stopped_polling_is_not_booked`,
+integration section 9.
+
+Found 2026-11-18: the first booking after the host PC came back online
+expired after 45 s without being taken; the next one, 5 minutes later,
+worked. The server's command table shows why: no poll between 18:58:18 and
+19:00:00 UTC (the two waiting teardowns were taken at 19:00:00.9), while
+the last heartbeat was still recent. The agent was most likely restarting:
+it hashes the 16 GiB disk before it polls.
 
 ## 31. The agent boots with the sharing settings it read at start-up (correctness, high)
 
@@ -513,7 +562,15 @@ on save), and test that a saved change applies to the next boot.
 
 ## 32. The Windows agent went silent mid-session; its VM may have kept running (correctness, high)
 
-Open. Found 2026-11-18. During a 43-minute session the Windows host's agent
+**Follow-ups fixed in code 2026-11-23, cause still unknown.** Every guest is
+started with `-name dcl-host-agent-guest`; when Host Agent starts it finds
+any QEMU with that name left by an earlier run, asks it to power off, then
+kills it (`guest_power::stop_leftover_guests`). Quitting Host Agent now stops
+its guests too. A teardown the agent missed was already kept for 6 h on the
+server and is applied when it polls again. The log (33) and a panic line in it
+should show the cause next time.
+
+Found 2026-11-18. During a 43-minute session the Windows host's agent
 sent its last poll and heartbeat at 20:46:35 UTC; the server marked the
 session interrupted at 20:47:28. Tailscale on the same PC stayed connected
 until 21:03:29, so the PC was awake and online: the agent itself stopped
@@ -523,7 +580,13 @@ and the teardown it never fetched should still be applied.
 
 ## 33. The Windows agent writes no log (operability, medium)
 
-Open. On Linux the setup starts the agent with its output in
+**Fixed in code 2026-11-23, not yet on the hosts** (new agent build). The agent
+writes `host-agent.log` in its config folder on every platform
+(`%APPDATA%\com.distributedcomputelab.hostagent\` on Windows), each line with a
+UTC time, kept to 5 MB with one older file (`host-agent.log.1`). A panic is
+written there before the process stops. Tests in `agent_log.rs`.
+
+Found 2026-11-18. On Linux the setup starts the agent with its output in
 `host-agent.log`; on Windows it is started without one, so issue 32 could
 not be explained after the fact. Fix: the agent writes a rotating log file
 in its config directory on every platform.

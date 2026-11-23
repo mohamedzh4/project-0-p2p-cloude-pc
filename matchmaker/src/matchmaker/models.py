@@ -100,6 +100,11 @@ class Host(Base):
     )
     status: Mapped[str] = mapped_column(Text, nullable=False)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Last time a pull-mode agent asked for commands. The heartbeat runs on
+    # its own thread, so a fresh heartbeat does not prove commands are taken.
+    last_polled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
@@ -207,6 +212,33 @@ class SessionIngressToken(Base):
     )
 
     session: Mapped[LabSession] = relationship(back_populates="ingress_tokens")
+
+
+class SessionDesktopLink(Base):
+    """Single-use, short-lived desktop link (issue 29).
+
+    The session's ingress token never appears in a URL any more: the browser
+    gets it only as an HttpOnly cookie, when the gateway redeems one of these.
+    A link that was shared or copied stops working once used or after a
+    couple of minutes; another device must sign in and ask for its own.
+    """
+
+    __tablename__ = "session_desktop_links"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="session_desktop_links_token_hash_key"),
+        Index("ix_session_desktop_links_session_id", "session_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    session_id: Mapped[UUID] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
 
 
 class SessionGuestBootstrap(Base):

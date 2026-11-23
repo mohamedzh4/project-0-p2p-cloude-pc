@@ -73,6 +73,8 @@ def test_poll_is_empty_and_marks_the_host_as_pull_mode(client: TestClient, db: S
     assert _poll(client, host_id).status_code == 204
     db.expire_all()
     assert db.get(Host, host_id).pull_mode is True
+    # Matching books a pull-mode host only while it keeps polling (issue 30).
+    assert db.get(Host, host_id).last_polled_at is not None
 
 
 def test_only_the_host_itself_can_read_its_commands(client: TestClient, db: Session) -> None:

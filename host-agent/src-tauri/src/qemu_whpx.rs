@@ -367,12 +367,15 @@ pub fn invoke(
         request.bootstrap_origin,
         request.bootstrap_token,
     ));
+    let (qga_port, guest_args) = crate::guest_power::prepare();
+    args.extend(guest_args);
     debug_assert!(
         !args.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")),
         "Standard Windows must not pass TCG"
     );
     let child = spawner.spawn(request.binary, &args)?;
     spawner.detach(child);
+    crate::guest_power::remember(qga_port);
     Ok(InvokeResult {
         hypervisor_invoked: true,
         argv: args,
@@ -504,7 +507,14 @@ mod tests {
         let spawns = recorder.spawn_calls();
         assert_eq!(spawns.len(), 1);
         assert_eq!(spawns[0].0, binary);
-        assert_eq!(spawns[0].1, argv("x86_64", 4, 8192, &disk));
+        let base = argv("x86_64", 4, 8192, &disk);
+        assert_eq!(spawns[0].1[..base.len()], base[..]);
+        // Then the guest's name and its guest agent channel (clean shutdown).
+        assert_eq!(
+            spawns[0].1[base.len()..base.len() + 2],
+            ["-name", crate::guest_power::GUEST_NAME]
+        );
+        assert!(spawns[0].1.iter().any(|arg| arg.contains("org.qemu.guest_agent.0")));
         assert_eq!(result.argv, spawns[0].1);
         assert!(spawns[0].1.windows(2).any(|w| {
             w[0] == NETDEV_ARG && w[1] == NETDEV_USER
@@ -543,7 +553,8 @@ mod tests {
         let mut req = request(&caps, &binary, &disk);
         req.arch = "aarch64";
         let result = invoke(&req, &recorder).unwrap();
-        assert_eq!(result.argv, argv("aarch64", 4, 8192, &disk));
+        let base = argv("aarch64", 4, 8192, &disk);
+        assert_eq!(result.argv[..base.len()], base[..]);
         assert!(result.argv.windows(2).any(|w| {
             w[0] == NETDEV_ARG && w[1] == NETDEV_USER
         }));
