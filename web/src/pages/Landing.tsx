@@ -1,15 +1,4 @@
-import {
-  AppWindow,
-  Cpu,
-  Download,
-  Gamepad2,
-  Globe,
-  HardDrive,
-  MemoryStick,
-  MonitorPlay,
-  PauseCircle,
-  ShieldCheck,
-} from "lucide-react";
+import { PixelIcon } from "../components/PixelIcon";
 
 import { useEffect, useState, type ReactNode } from "react";
 
@@ -82,28 +71,26 @@ export function Landing({ signedIn, onDownload }: LandingProps) {
     <div className="landing">
       <header className="topbar" data-scrolled={scrolled ? "true" : "false"}>
         <Brand />
-        <nav className="pillnav" aria-label="Sections">
-          <ScrollLink to="use">Use a PC</ScrollLink>
-          <ScrollLink to="lend">Lend yours</ScrollLink>
-          <ScrollLink to="downloads">Downloads</ScrollLink>
-          <ScrollLink to="faq">FAQ</ScrollLink>
-        </nav>
-        <div className="topbar-actions">
+        <nav className="navbox" aria-label="Main">
+          <span className="navbox-links">
+            <ScrollLink to="use">Use a PC</ScrollLink>
+            <ScrollLink to="lend">Lend yours</ScrollLink>
+            <ScrollLink to="downloads">Downloads</ScrollLink>
+            <ScrollLink to="faq">FAQ</ScrollLink>
+          </span>
           {signedIn ? (
             <a className="btn btn-solid" href={routeHref("sessions")}>
-              Open dashboard
+              Dashboard
             </a>
           ) : (
             <>
-              <a className="btn btn-quiet" href={routeHref("login")}>
-                Log in
-              </a>
+              <a href={routeHref("login")}>Log in</a>
               <a className="btn btn-solid" href={routeHref("signup")}>
-                Sign up
+                Get started
               </a>
             </>
           )}
-        </div>
+        </nav>
       </header>
 
       <section className="hero" aria-labelledby="hero-title">
@@ -122,7 +109,7 @@ export function Landing({ signedIn, onDownload }: LandingProps) {
           </p>
           <div className="intro-actions">
             <a className="btn btn-rent btn-lg" href={routeHref(signedIn ? "sessions" : "signup")}>
-              <MonitorPlay size={18} aria-hidden="true" />
+              <PixelIcon name="monitor" size={18} />
               Start a session
             </a>
             <ScrollLink to="lend" className="btn btn-outline btn-lg">
@@ -152,7 +139,7 @@ export function Landing({ signedIn, onDownload }: LandingProps) {
         <div data-reveal className="tiers">
           <article className="tier" data-tier="standard">
             <div className="tier-icon">
-              <AppWindow size={22} aria-hidden="true" />
+              <PixelIcon name="window" size={18} />
             </div>
             <h3>Standard</h3>
             <p className="tier-lead">A Linux desktop in a browser tab.</p>
@@ -177,7 +164,7 @@ export function Landing({ signedIn, onDownload }: LandingProps) {
             />
             <div className="tier-body">
               <div className="tier-icon">
-                <Gamepad2 size={22} aria-hidden="true" />
+                <PixelIcon name="gamepad" size={18} />
               </div>
               <h3>Pro</h3>
               <p className="tier-lead">A whole graphics card, just for you.</p>
@@ -224,21 +211,21 @@ export function Landing({ signedIn, onDownload }: LandingProps) {
           </p>
           <ul className="features">
             <li>
-              <PauseCircle size={20} aria-hidden="true" />
+              <PixelIcon name="pause" size={18} />
               <div>
                 <h3>Pause any time</h3>
                 <p>One click and your PC stops taking new sessions.</p>
               </div>
             </li>
             <li>
-              <ShieldCheck size={20} aria-hidden="true" />
+              <PixelIcon name="shield" size={18} />
               <div>
                 <h3>Sealed off from your files</h3>
                 <p>Guests run in a separate virtual machine, never on your own desktop.</p>
               </div>
             </li>
             <li>
-              <HardDrive size={20} aria-hidden="true" />
+              <PixelIcon name="server" size={18} />
               <div>
                 <h3>Approved before it goes live</h3>
                 <p>An operator checks each new host before any session lands on it.</p>
@@ -251,9 +238,15 @@ export function Landing({ signedIn, onDownload }: LandingProps) {
             <span>Host Agent</span>
             <span className="agent-mock-state">Sharing</span>
           </div>
-          <SegmentBar icon={<Cpu size={15} />} label="CPU cores" readout="6 of 16" filled={4} />
-          <SegmentBar icon={<MemoryStick size={15} />} label="Memory" readout="12 of 32 GiB" filled={4} />
-          <SegmentBar icon={<Gamepad2 size={15} />} label="Graphics card" readout="Not lent" filled={0} />
+          <SegmentBar icon={<PixelIcon name="cpu" size={18} />} label="CPU cores" readout="6 of 16" filled={4}
+            preview={(n) => `${Math.round((n / 10) * 16)} of 16`}
+          />
+          <SegmentBar icon={<PixelIcon name="memory" size={18} />} label="Memory" readout="12 of 32 GiB" filled={4}
+            preview={(n) => `${Math.round((n / 10) * 32)} of 32 GiB`}
+          />
+          <SegmentBar icon={<PixelIcon name="gamepad" size={18} />} label="Graphics card" readout="Not lent" filled={0}
+            preview={(n) => (n === 0 ? "Not lent" : "Lent for Pro")}
+          />
           <p className="agent-mock-note">Earned this week: 148 credits</p>
         </div>
       </section>
@@ -268,25 +261,25 @@ export function Landing({ signedIn, onDownload }: LandingProps) {
         </div>
         <div data-reveal className="downloads">
           <article className="download" data-tone="share">
-            <WindowsIcon />
+            <PixelIcon name="windows" size={27} className="download-icon" />
             <h3>Host Agent for Windows</h3>
             <p>Windows 10 or 11, 64-bit. Setup also fetches the desktop disk, about 1.3 GB.</p>
             <button type="button" className="btn btn-share" onClick={() => onDownload("windows")}>
-              <Download size={16} aria-hidden="true" />
+              <PixelIcon name="download" size={18} />
               Download for Windows
             </button>
           </article>
           <article className="download" data-tone="share">
-            <LinuxIcon />
+            <PixelIcon name="terminal" size={27} className="download-icon" />
             <h3>Host Agent for Linux</h3>
             <p>Ubuntu, Debian or Arch with KVM. One script installs everything it needs.</p>
             <button type="button" className="btn btn-share" onClick={() => onDownload("linux")}>
-              <Download size={16} aria-hidden="true" />
+              <PixelIcon name="download" size={18} />
               Download for Linux
             </button>
           </article>
           <article className="download" data-tone="rent">
-            <Globe size={26} aria-hidden="true" className="download-icon" />
+            <PixelIcon name="globe" size={27} className="download-icon" />
             <h3>Nothing to install to use one</h3>
             <p>Standard opens in your browser. Pro streams through Moonlight, a free app.</p>
             <a className="btn btn-outline" href={routeHref(signedIn ? "sessions" : "signup")}>
@@ -336,26 +329,5 @@ function ScrollLink({ to, className, children }: { to: string; className?: strin
     >
       {children}
     </a>
-  );
-}
-
-function WindowsIcon() {
-  return (
-    <svg className="download-icon" width="26" height="26" viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        fill="currentColor"
-        d="M3 5.1 10.4 4v7.2H3V5.1Zm8.4-1.2L21 2.5v8.7h-9.6V3.9ZM3 12.8h7.4V20L3 18.9v-6.1Zm8.4 0H21v8.7l-9.6-1.4v-7.3Z"
-      />
-    </svg>
-  );
-}
-
-function LinuxIcon() {
-  return (
-    <svg className="download-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <rect x="3" y="4" width="18" height="16" rx="2.5" stroke="currentColor" strokeWidth="1.6" />
-      <path d="m7 10 3 2.5L7 15" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M12.5 15H17" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
   );
 }

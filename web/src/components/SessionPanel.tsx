@@ -1,4 +1,4 @@
-import { AppWindow, Gamepad2, Loader2 } from "lucide-react";
+import { PixelIcon } from "./PixelIcon";
 
 import {
   INTENT_PRESETS,
@@ -57,7 +57,7 @@ export function noticeText(notice: Notice): string {
 }
 
 function TierIcon({ tier }: { tier: string }) {
-  return tier === "pro" ? <Gamepad2 size={20} aria-hidden="true" /> : <AppWindow size={20} aria-hidden="true" />;
+  return tier === "pro" ? <PixelIcon name="gamepad" size={18} /> : <PixelIcon name="window" size={18} />;
 }
 
 export function SessionPanel({
@@ -98,7 +98,7 @@ export function SessionPanel({
           </div>
           <h2 id="session-title">Starting your computer</h2>
           <p className="starting" role="status" aria-live="polite">
-            <Loader2 className="spin" size={18} aria-hidden="true" />
+            <PixelIcon name="spark" size={18} className="spin" />
             Starting your computer. A host is booting your desktop; this usually takes one to three
             minutes. This page updates on its own.
           </p>

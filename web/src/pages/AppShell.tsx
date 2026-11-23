@@ -1,4 +1,4 @@
-import { LogOut } from "lucide-react";
+import { PixelIcon } from "../components/PixelIcon";
 import type { ReactNode } from "react";
 
 import { Brand } from "../components/Brand";
@@ -24,21 +24,21 @@ export function AppShell({ route, user, onSignOut, children }: AppShellProps) {
     <div className="shell">
       <header className="topbar">
         <Brand />
-        <nav className="pillnav" aria-label="Dashboard">
-          {TABS.map((tab) => (
-            <a key={tab.route} href={routeHref(tab.route)} aria-current={route === tab.route ? "page" : undefined}>
-              {tab.label}
-            </a>
-          ))}
-        </nav>
-        <div className="topbar-actions">
+        <nav className="navbox" aria-label="Dashboard">
+          <span className="navbox-links navbox-links-keep">
+            {TABS.map((tab) => (
+              <a key={tab.route} href={routeHref(tab.route)} aria-current={route === tab.route ? "page" : undefined}>
+                {tab.label}
+              </a>
+            ))}
+          </span>
           <a className="avatar" href={routeHref("account")} title={user.email} aria-label="Account">
             {initial}
           </a>
-          <button type="button" className="btn btn-quiet btn-icon" onClick={onSignOut} aria-label="Sign out" title="Sign out">
-            <LogOut size={17} aria-hidden="true" />
+          <button type="button" className="navbox-icon" onClick={onSignOut} aria-label="Sign out" title="Sign out">
+            <PixelIcon name="logout" size={18} />
           </button>
-        </div>
+        </nav>
       </header>
       <main className="shell-main">{children}</main>
     </div>

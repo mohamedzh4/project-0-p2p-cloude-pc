@@ -1,4 +1,4 @@
-import { HardDrive } from "lucide-react";
+import { PixelIcon } from "../components/PixelIcon";
 
 import { SessionPanel } from "../components/SessionPanel";
 import { routeHref } from "../router";
@@ -70,7 +70,7 @@ export function Dashboard({ history, ...panel }: DashboardProps) {
             <p className="hint">Credits are kept on the lab's ledger. Nothing is charged to a card.</p>
           </div>
           <a className="card promo-card" href={routeHref("share")}>
-            <HardDrive size={22} aria-hidden="true" />
+            <PixelIcon name="server" size={18} />
             <div>
               <h3>Lend your PC</h3>
               <p>Earn credits while your computer sits idle.</p>

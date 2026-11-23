@@ -1,4 +1,4 @@
-import { Moon, Monitor, Sun } from "lucide-react";
+import { PixelIcon, type PixelIconName } from "../components/PixelIcon";
 
 import type { ThemeChoice } from "../theme";
 import type { SessionHistoryResponse, UserPublic } from "../types";
@@ -11,10 +11,10 @@ interface AccountPageProps {
   onSignOut: () => void;
 }
 
-const THEMES: { value: ThemeChoice; label: string; icon: typeof Moon }[] = [
-  { value: "night", label: "Night", icon: Moon },
-  { value: "day", label: "Day", icon: Sun },
-  { value: "system", label: "Match my device", icon: Monitor },
+const THEMES: { value: ThemeChoice; label: string; icon: PixelIconName }[] = [
+  { value: "night", label: "Night", icon: "moon" },
+  { value: "day", label: "Day", icon: "sun" },
+  { value: "system", label: "Match my device", icon: "half" },
 ];
 
 export function AccountPage({ user, history, theme, onTheme, onSignOut }: AccountPageProps) {
@@ -47,7 +47,7 @@ export function AccountPage({ user, history, theme, onTheme, onSignOut }: Accoun
             <p>Saved in this browser only.</p>
           </div>
           <div className="setting-body theme-picker" role="radiogroup" aria-label="Theme">
-            {THEMES.map(({ value, label, icon: Icon }) => (
+            {THEMES.map(({ value, label, icon }) => (
               <label key={value} className="theme-option" data-theme-option={value}>
                 <input
                   type="radio"
@@ -57,7 +57,7 @@ export function AccountPage({ user, history, theme, onTheme, onSignOut }: Accoun
                   onChange={() => onTheme(value)}
                 />
                 <span className="theme-swatch" aria-hidden="true">
-                  <Icon size={18} />
+                  <PixelIcon name={icon} size={18} />
                 </span>
                 {label}
               </label>

@@ -1,7 +1,4 @@
-import "@fontsource/atkinson-hyperlegible/400.css";
-import "@fontsource/atkinson-hyperlegible/700.css";
-import "@fontsource/newsreader/300.css";
-import "@fontsource/newsreader/400.css";
+import "@fontsource-variable/literata/wght.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
