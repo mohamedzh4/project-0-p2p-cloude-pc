@@ -424,3 +424,15 @@ dd {
     animation: none;
   }
 }
+
+.share-pc-os {
+  margin-top: 16px;
+}
+
+.share-pc-os ol {
+  padding-left: 20px;
+}
+
+.share-pc-os li + li {
+  margin-top: 4px;
+}

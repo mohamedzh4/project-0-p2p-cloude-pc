@@ -152,3 +152,56 @@ export async function currentSession(token: string): Promise<SessionResponse | n
     throw error;
   }
 }
+
+export type HostKitOs = "windows" | "linux";
+
+export interface HostKitOffer {
+  os: HostKitOs;
+  available: boolean;
+}
+
+/** Which setup kits the server can make right now. */
+export function listHostKits(
+  token: string,
+): Promise<{ status: number; data: { kits: HostKitOffer[] } }> {
+  return request<{ kits: HostKitOffer[] }>("/v1/host-kits", { method: "GET", token });
+}
+
+/**
+ * Download a setup kit made for this user: the setup script plus a
+ * single-use registration code. Returns the zip and its file name.
+ */
+export async function downloadHostKit(
+  token: string,
+  os: HostKitOs,
+): Promise<{ blob: Blob; filename: string }> {
+  const base = matchmakerUrl();
+  if (!base) {
+    throw new ApiError(0, "VITE_MATCHMAKER_URL is required");
+  }
+  let response: Response;
+  try {
+    response = await fetch(`${base}/v1/host-kits`, {
+      method: "POST",
+      headers: {
+        Accept: "application/zip",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ os }),
+    });
+  } catch {
+    throw new ApiError(0, "Matchmaker is unreachable. Is it running?");
+  }
+  if (!response.ok) {
+    const body = await parseBody(response);
+    throw new ApiError(response.status, detailMessage(body, `Download failed (${response.status})`));
+  }
+  return { blob: await response.blob(), filename: kitFilename(response, os) };
+}
+
+export function kitFilename(response: Response, os: HostKitOs): string {
+  const header = response.headers.get("Content-Disposition") ?? "";
+  const match = /filename="([^"]+)"/.exec(header);
+  return match?.[1] ?? `dcl-host-setup-${os}.zip`;
+}

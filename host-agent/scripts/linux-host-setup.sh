@@ -33,7 +33,8 @@ allowed_key() {
     HOST_BOOTSTRAP_TOKEN|MATCHMAKER_URL|HEADSCALE_LOGIN_SERVER|\
     IMAGE_SIGNING_PUBLIC_KEY|IMAGE_STANDARD_DIGEST|IMAGE_STANDARD_SIGNATURE|\
     HOST_DISPLAY_NAME|HOST_AGENT_LISTEN_ADDR|HOST_AGENT_URL|\
-    IMAGE_RAW_URL|IMAGE_QCOW2_URL|TUNNEL_SSH|TUNNEL_REMOTE_PORT) return 0 ;;
+    IMAGE_RAW_URL|IMAGE_QCOW2_URL|TUNNEL_SSH|TUNNEL_REMOTE_PORT|\
+    HOST_AGENT_DEB_URL|HOST_AGENT_APPIMAGE_URL) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -149,8 +150,22 @@ if [[ "${actual_digest,,}" != "${IMAGE_STANDARD_DIGEST,,}" ]]; then
   exit 1
 fi
 
+# A kit from the website carries links instead of the packages.
+download_package() {
+  local url="$1" name="$2" dir
+  dir="$(mktemp -d)"
+  chmod 0755 "$dir"
+  echo "Downloading $name..." >&2
+  curl --fail --location --retry 5 --output "$dir/$name" "$url"
+  chmod 0644 "$dir/$name"
+  printf '%s\n' "$dir/$name"
+}
+
 if [[ "$DISTRO" == debian ]]; then
   deb="$(find "$HERE" -maxdepth 1 -type f -name '*.deb' -print -quit)"
+  if [[ -z "$deb" && -n "${HOST_AGENT_DEB_URL:-}" ]]; then
+    deb="$(download_package "$HOST_AGENT_DEB_URL" host-agent.deb)"
+  fi
   [[ -n "$deb" ]] || {
     echo "Host Agent .deb is missing from the kit." >&2
     exit 1
@@ -164,6 +179,9 @@ if [[ "$DISTRO" == debian ]]; then
   }
 else
   appimage="$(find "$HERE" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+  if [[ -z "$appimage" && -n "${HOST_AGENT_APPIMAGE_URL:-}" ]]; then
+    appimage="$(download_package "$HOST_AGENT_APPIMAGE_URL" host-agent.AppImage)"
+  fi
   [[ -n "$appimage" ]] || {
     echo "Host Agent .AppImage is missing from the kit." >&2
     exit 1

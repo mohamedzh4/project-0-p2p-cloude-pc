@@ -16,7 +16,7 @@ from matchmaker.deps import (
     get_host_selector,
     get_provision_scheduler,
 )
-from matchmaker.routers import auth, gateway, guest, hosts, images, sessions, storage
+from matchmaker.routers import auth, gateway, guest, host_kits, hosts, images, sessions, storage
 from matchmaker.silence import reclaim_stale_sessions
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(auth.router, prefix="/v1/auth", tags=["auth"])
     app.include_router(hosts.router, prefix="/v1", tags=["hosts"])
+    app.include_router(host_kits.router, prefix="/v1", tags=["hosts"])
     app.include_router(images.router, prefix="/v1", tags=["images"])
     app.include_router(sessions.router, prefix="/v1", tags=["sessions"])
     app.include_router(guest.router, prefix="/v1", tags=["guest"])

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hmac
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
@@ -23,7 +25,8 @@ from matchmaker.host_credentials import (
     secret_is_well_formed,
     secret_matches,
 )
-from matchmaker.models import Host, User
+from matchmaker.host_kits import find_code as find_enrollment_code
+from matchmaker.models import Host, HostEnrollmentCode, User
 from matchmaker.provision import HostProvisioner, HttpHostProvisioner
 from matchmaker.renterd import HttpRenterdClient, RenterdClient
 from matchmaker.storage_credentials import (
@@ -155,10 +158,49 @@ def get_renterd_client() -> RenterdClient:
     )
 
 
+@dataclass(frozen=True)
+class HostBearer:
+    """Who sent a host request: the shared token (`code` None) or the
+    registration code of a kit downloaded from the website."""
+
+    code: HostEnrollmentCode | None = None
+
+
 def require_host_bootstrap(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-) -> None:
-    _require_static_bearer(credentials, get_settings().host_bootstrap_token)
+    db: Annotated[Session, Depends(get_db)],
+) -> HostBearer:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    if hmac.compare_digest(credentials.credentials, get_settings().host_bootstrap_token):
+        return HostBearer()
+    code = find_enrollment_code(db, credentials.credentials)
+    if code is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    return HostBearer(code=code)
+
+
+def bind_enrollment_code(bearer: HostBearer, host: Host) -> None:
+    """A kit's code registers one new host, then belongs to it."""
+    code = bearer.code
+    if code is None:
+        return
+    if code.host_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This registration code was already used by another PC",
+        )
+    code.host_id = host.id
+    code.used_at = datetime.now(timezone.utc)
+    host.owner_user_id = code.user_id
+
+
+def check_enrollment_code(bearer: HostBearer, host: Host) -> None:
+    if bearer.code is not None and bearer.code.host_id != host.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Host credential does not match this host",
+        )
 
 
 def host_secret_header(
@@ -197,13 +239,14 @@ def check_host_secret(host: Host, secret: str | None) -> None:
 def get_authorized_host(
     host_id: UUID,
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_host_bootstrap)],
+    bearer: Annotated[HostBearer, Depends(require_host_bootstrap)],
     secret: Annotated[str | None, Depends(host_secret_header)],
 ) -> Host:
     """Bootstrap Bearer, then this host's own secret. 404 for an unknown id."""
     host = db.get(Host, host_id)
     if host is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Host not found")
+    check_enrollment_code(bearer, host)
     check_host_secret(host, secret)
     return host
 

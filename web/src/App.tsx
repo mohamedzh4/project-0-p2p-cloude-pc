@@ -3,8 +3,10 @@ import { useEffect, useState } from "react";
 import {
   ApiError,
   currentSession,
+  downloadHostKit,
   endSession,
   getSession,
+  listHostKits,
   listSessions,
   login,
   matchmakerUrl,
@@ -13,6 +15,8 @@ import {
 } from "./api";
 import { AuthForm } from "./components/AuthForm";
 import { SessionPanel } from "./components/SessionPanel";
+import { SharePcPanel } from "./components/SharePcPanel";
+import type { HostKitOffer, HostKitOs } from "./api";
 import { mapIntentToLabTier, canRequestSession } from "./intent";
 import {
   creditsSummary,
@@ -36,6 +40,50 @@ export default function App() {
   const [intent, setIntent] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
+  const [kits, setKits] = useState<HostKitOffer[] | null>(null);
+  const [kitBusy, setKitBusy] = useState<HostKitOs | null>(null);
+  const [kitMessage, setKitMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!token) {
+      setKits(null);
+      return;
+    }
+    let cancelled = false;
+    listHostKits(token)
+      .then((result) => {
+        if (!cancelled) setKits(result.data.kits);
+      })
+      .catch(() => {
+        if (!cancelled) setKits([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  async function handleKitDownload(os: HostKitOs) {
+    if (!token) {
+      return;
+    }
+    setKitBusy(os);
+    setKitMessage(null);
+    try {
+      const { blob, filename } = await downloadHostKit(token, os);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (error) {
+      setKitMessage(error instanceof ApiError ? error.message : "Could not download the setup");
+    } finally {
+      setKitBusy(null);
+    }
+  }
 
   // While a session is held, ask the Matchmaker about it: every few seconds
   // while the desktop is starting, less often once it is ready (to notice a
@@ -214,6 +262,12 @@ export default function App() {
             onRequest={() => void handleRequest()}
             onEnd={() => void handleEnd()}
             onSignOut={handleSignOut}
+          />
+          <SharePcPanel
+            kits={kits}
+            busy={kitBusy}
+            message={kitMessage}
+            onDownload={(os) => void handleKitDownload(os)}
           />
           <section className="panel history">
             <h2>Session history</h2>

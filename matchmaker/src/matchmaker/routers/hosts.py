@@ -11,6 +11,9 @@ from matchmaker.config import get_settings
 from matchmaker.db import get_db
 from matchmaker.booking import ProvisionScheduler
 from matchmaker.deps import (
+    HostBearer,
+    bind_enrollment_code,
+    check_enrollment_code,
     get_provision_scheduler,
     check_host_secret,
     claim_host_secret,
@@ -52,12 +55,14 @@ router = APIRouter()
 def register_host(
     payload: HostInventoryRequest,
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_host_bootstrap)],
+    bearer: Annotated[HostBearer, Depends(require_host_bootstrap)],
     secret: Annotated[str | None, Depends(host_secret_header)],
 ) -> HostResponse:
     host = new_pending_host(payload)
     claim_host_secret(host, secret)
     db.add(host)
+    db.flush()
+    bind_enrollment_code(bearer, host)
     db.commit()
     db.refresh(host)
     return host_response(host)
@@ -69,7 +74,7 @@ def update_host(
     payload: HostInventoryRequest,
     response: Response,
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_host_bootstrap)],
+    bearer: Annotated[HostBearer, Depends(require_host_bootstrap)],
     secret: Annotated[str | None, Depends(host_secret_header)],
 ) -> HostResponse:
     existing = db.get(Host, host_id)
@@ -77,11 +82,14 @@ def update_host(
         host = new_pending_host(payload, host_id=host_id)
         claim_host_secret(host, secret)
         db.add(host)
+        db.flush()
+        bind_enrollment_code(bearer, host)
         db.commit()
         db.refresh(host)
         response.status_code = status.HTTP_201_CREATED
         return host_response(host)
 
+    check_enrollment_code(bearer, existing)
     check_host_secret(existing, secret)
     claim_host_secret(existing, secret)
     apply_declared_caps(

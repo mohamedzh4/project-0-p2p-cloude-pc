@@ -251,6 +251,14 @@ class Settings:
     # Cloudflare API origin. Only the integration test overrides it.
     r2_api_base: str | None = None
     provision_timeout_seconds: int = 420
+    # Setup kits downloaded from the website (see host_kits.py). Kits are
+    # offered only when the public key, the disk and the installer are set.
+    image_signing_public_key: str | None = None
+    host_kit_qcow2_url: str | None = None
+    host_kit_windows_installer_url: str | None = None
+    host_kit_deb_url: str | None = None
+    host_kit_appimage_url: str | None = None
+    host_kit_scripts_dir: str | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -342,6 +350,12 @@ class Settings:
             r2_api_token=r2_api_token,
             r2_api_base=_optional_http_url("R2_API_BASE"),
             provision_timeout_seconds=_positive_int("PROVISION_TIMEOUT_SECONDS", 420),
+            image_signing_public_key=_optional_env("IMAGE_SIGNING_PUBLIC_KEY"),
+            host_kit_qcow2_url=_optional_http_url("HOST_KIT_QCOW2_URL"),
+            host_kit_windows_installer_url=_optional_http_url("HOST_KIT_WINDOWS_INSTALLER_URL"),
+            host_kit_deb_url=_optional_http_url("HOST_KIT_DEB_URL"),
+            host_kit_appimage_url=_optional_http_url("HOST_KIT_APPIMAGE_URL"),
+            host_kit_scripts_dir=_optional_env("HOST_KIT_SCRIPTS_DIR"),
         )
 
 

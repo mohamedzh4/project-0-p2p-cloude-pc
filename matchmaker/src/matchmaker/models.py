@@ -105,6 +105,10 @@ class Host(Base):
     last_polled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The account that downloaded this host's setup kit from the website.
+    owner_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
@@ -212,6 +216,36 @@ class SessionIngressToken(Base):
     )
 
     session: Mapped[LabSession] = relationship(back_populates="ingress_tokens")
+
+
+class HostEnrollmentCode(Base):
+    """Registration code inside a setup kit downloaded from the website.
+
+    Used in place of the shared HOST_BOOTSTRAP_TOKEN, so a kit never holds
+    that secret. Unused, it registers one new host within its lifetime; then
+    it belongs to that host and to nothing else.
+    """
+
+    __tablename__ = "host_enrollment_codes"
+    __table_args__ = (
+        UniqueConstraint("code_hash", name="host_enrollment_codes_code_hash_key"),
+        Index("ix_host_enrollment_codes_user_id", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    code_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    lab_os: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    host_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("hosts.id", ondelete="CASCADE"), nullable=True
+    )
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
 
 
 class SessionDesktopLink(Base):
