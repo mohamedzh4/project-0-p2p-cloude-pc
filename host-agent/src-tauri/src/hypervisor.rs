@@ -274,6 +274,7 @@ fn read_limited_file(path: &Path, url: &str, max_bytes: usize) -> Result<Vec<u8>
 fn http_get(url: &str, max_bytes: usize) -> Result<Vec<u8>, HypervisorError> {
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(60))
+        .resolver(crate::resolver::FallbackResolver)
         .build();
     match agent.get(url).call() {
         Ok(response) => read_limited(response.into_reader(), url, max_bytes),

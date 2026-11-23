@@ -220,39 +220,53 @@ pub struct HyperVDeviceProbe {
     pub partitionable_name: Option<String>,
     pub valid_partition_counts: Vec<u32>,
     pub partition_count: u32,
+    /// Windows Server (`ProductType` 2 or 3). Microsoft supports DDA only
+    /// there; client Windows (Pro, Enterprise, Education) supports GPU-P.
+    pub server_edition: bool,
 }
 
 impl HyperVDeviceProbe {
-    pub fn method(&self) -> Result<HyperVMethod, GpuBindError> {
-        if self.dda_assignable {
-            if self.location_path.as_deref().unwrap_or("").is_empty() {
-                return Err(GpuBindError::HyperVNotAssignable {
-                    reason: "DDA needs a PCI location path (DEVPKEY_Device_LocationPaths); none was returned".to_string(),
-                });
+    /// Every method this GPU supports, the one this edition supports first
+    /// (issue 36): DDA then GPU-P on Windows Server, GPU-P then DDA on client
+    /// Windows. Apply tries them in order and moves on only after a clean
+    /// rollback.
+    pub fn methods(&self) -> Result<Vec<HyperVMethod>, GpuBindError> {
+        let dda = if !self.dda_assignable {
+            Err("it is not DDA-assignable".to_string())
+        } else if self.location_path.as_deref().unwrap_or("").is_empty() {
+            Err("DDA needs a PCI location path (DEVPKEY_Device_LocationPaths); none was returned".to_string())
+        } else {
+            Ok(HyperVMethod::Dda)
+        };
+        let gpu_p = if !self.partitionable {
+            Err("it is not GPU-P partitionable".to_string())
+        } else if !self.valid_partition_counts.contains(&1) {
+            Err("GPU-P cannot be exclusive on this GPU: partition count 1 is not in ValidPartitionCounts, so the host would keep a slice".to_string())
+        } else if self.partitionable_name.as_deref().unwrap_or("").is_empty() {
+            Err("GPU-P needs the partitionable GPU Name (InstancePath); none was returned".to_string())
+        } else {
+            Ok(HyperVMethod::GpuP)
+        };
+
+        let ordered = if self.server_edition {
+            [dda, gpu_p]
+        } else {
+            [gpu_p, dda]
+        };
+        let mut methods = Vec::new();
+        let mut reasons = Vec::new();
+        for candidate in ordered {
+            match candidate {
+                Ok(method) => methods.push(method),
+                Err(reason) => reasons.push(reason),
             }
-            return Ok(HyperVMethod::Dda);
         }
-        if self.partitionable {
-            if !self.valid_partition_counts.contains(&1) {
-                return Err(GpuBindError::HyperVNotAssignable {
-                    reason: "GPU-P cannot be exclusive on this GPU: partition count 1 is not in ValidPartitionCounts, so the host would keep a slice".to_string(),
-                });
-            }
-            if self
-                .partitionable_name
-                .as_deref()
-                .unwrap_or("")
-                .is_empty()
-            {
-                return Err(GpuBindError::HyperVNotAssignable {
-                    reason: "GPU-P needs Get-VMHostPartitionableGpu Name (InstancePath); none was returned".to_string(),
-                });
-            }
-            return Ok(HyperVMethod::GpuP);
+        if methods.is_empty() {
+            return Err(GpuBindError::HyperVNotAssignable {
+                reason: format!("this GPU cannot be assigned: {}", reasons.join("; ")),
+            });
         }
-        Err(GpuBindError::HyperVNotAssignable {
-            reason: "this GPU is not DDA-assignable and not GPU-P partitionable".to_string(),
-        })
+        Ok(methods)
     }
 }
 
@@ -260,6 +274,15 @@ impl HyperVDeviceProbe {
 pub enum HyperVMethod {
     Dda,
     GpuP,
+}
+
+impl HyperVMethod {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dda => "DDA",
+            Self::GpuP => "GPU-P",
+        }
+    }
 }
 
 /// Injectable Hyper-V / PnP runner. Production spawns PowerShell; tests record
@@ -790,7 +813,7 @@ fn assign_windows(
     if !request.apply {
         let plan = plan_windows_dda(gpu_id, vm_name, None);
         let log = format!(
-            "plan: Hyper-V DDA for GPU {gpu_id} on VM {vm_name} (Disable-PnpDevice, Dismount-VMHostAssignableDevice -Force, Add-VMAssignableDevice). {warning} Not applied. Hypervisor not invoked. GPU-P is used only when apply finds no DDA location path."
+            "plan: Hyper-V DDA for GPU {gpu_id} on VM {vm_name} (Disable-PnpDevice, Dismount-VMHostAssignableDevice -Force, Add-VMAssignableDevice). {warning} Not applied. Hypervisor not invoked. Apply uses DDA first on Windows Server and GPU-P first on client Windows, falling back to the other after a clean rollback."
         );
         return Ok(status_from_plan(
             &plan,
@@ -805,11 +828,30 @@ fn assign_windows(
     refuse_live_hyperv_in_tests(ops)?;
 
     let probe = ops.probe_device(gpu_id)?;
-    let method = probe.method()?;
-    match method {
-        HyperVMethod::Dda => apply_windows_dda(gpu_id, vm_name, &probe, ops, &warning),
-        HyperVMethod::GpuP => apply_windows_gpu_p(gpu_id, vm_name, &probe, ops, &warning),
+    let mut failures = Vec::new();
+    for method in probe.methods()? {
+        let attempt = match method {
+            HyperVMethod::Dda => apply_windows_dda(gpu_id, vm_name, &probe, ops, &warning),
+            HyperVMethod::GpuP => apply_windows_gpu_p(gpu_id, vm_name, &probe, ops, &warning),
+        };
+        match attempt {
+            Ok(mut status) => {
+                if !failures.is_empty() {
+                    status.log = format!("{} Tried first: {}.", status.log, failures.join("; "));
+                }
+                return Ok(status);
+            }
+            // Clean rollback: the GPU is back on the host, so the other
+            // method can start from scratch.
+            Err(GpuBindError::ApplyFailed(failure)) if failure.rolled_back => {
+                failures.push(format!("{} failed ({})", method.label(), failure.detail));
+            }
+            // Anything else (rollback failed, timeout) leaves the GPU in an
+            // unknown state: stop here rather than stack a second method on it.
+            Err(error) => return Err(error),
+        }
     }
+    Err(apply_failed(failures.join("; "), true, Some("pnp")))
 }
 
 fn plan_windows_dda(gpu_id: &str, vm_name: &str, location_path: Option<&str>) -> GpuBindPlan {
@@ -1226,7 +1268,7 @@ Set-VM -HighMemoryMappedIoSpace 33280Mb -VMName {vm}"
             instance_path,
             count,
         } => format!(
-            "$ErrorActionPreference = 'Stop'; Set-VMHostPartitionableGpu -Name {} -PartitionCount {count}",
+            "$ErrorActionPreference = 'Stop'; if (Get-Command Set-VMHostPartitionableGpu -ErrorAction SilentlyContinue) {{ Set-VMHostPartitionableGpu -Name {0} -PartitionCount {count} }} else {{ Set-VMPartitionableGpu -Name {0} -PartitionCount {count} }}",
             ps_quote(instance_path)
         ),
         HyperVCmdlet::AddGpuPartitionAdapter {
@@ -1287,13 +1329,17 @@ try {{ \
   $prop = Get-PnpDeviceProperty -InstanceId $instanceId -KeyName 'DEVPKEY_Device_LocationPaths'; \
   if ($prop -and $prop.Data -and $prop.Data.Count -gt 0) {{ $locationPath = [string]$prop.Data[0] }} \
 }} catch {{}}; \
+$server = $false; \
+try {{ $server = ((Get-CimInstance Win32_OperatingSystem).ProductType -ne 1) }} catch {{}}; \
 $partitionable = $false; $partName = $null; $counts = @(); $partCount = 0; \
+$key = $instanceId.Replace('\\', '#'); \
 try {{ \
-  $gpu = Get-VMHostPartitionableGpu | Where-Object {{ $_.Name -like ('*' + $instanceId + '*') -or $_.Name -eq $gpuId }} | Select-Object -First 1; \
+  $all = if (Get-Command Get-VMHostPartitionableGpu -ErrorAction SilentlyContinue) {{ Get-VMHostPartitionableGpu }} else {{ Get-VMPartitionableGpu }}; \
+  $gpu = $all | Where-Object {{ $_.Name -like ('*' + $key + '*') -or $_.Name -eq $gpuId }} | Select-Object -First 1; \
   if ($gpu) {{ $partitionable = $true; $partName = [string]$gpu.Name; $counts = @($gpu.ValidPartitionCounts); $partCount = [int]$gpu.PartitionCount }} \
 }} catch {{}}; \
 $dda = [bool]($locationPath); \
-[ordered]@{{ instanceId = $instanceId; locationPath = $locationPath; ddaAssignable = $dda; partitionable = $partitionable; partitionableName = $partName; validPartitionCounts = $counts; partitionCount = $partCount }} | ConvertTo-Json -Compress"
+[ordered]@{{ instanceId = $instanceId; locationPath = $locationPath; ddaAssignable = $dda; partitionable = $partitionable; partitionableName = $partName; validPartitionCounts = $counts; partitionCount = $partCount; serverEdition = $server }} | ConvertTo-Json -Compress"
     )
 }
 
@@ -1314,6 +1360,7 @@ fn parse_hyperv_probe(stdout: &str) -> Result<HyperVDeviceProbe, GpuBindError> {
     let partitionable_name = json_string(&value, "partitionableName").filter(|s| !s.is_empty());
     let valid_partition_counts = json_u32_list(&value, "validPartitionCounts");
     let partition_count = json_u32(&value, "partitionCount").unwrap_or(0);
+    let server_edition = json_bool(&value, "serverEdition").unwrap_or(false);
     Ok(HyperVDeviceProbe {
         instance_id,
         location_path,
@@ -1322,6 +1369,7 @@ fn parse_hyperv_probe(stdout: &str) -> Result<HyperVDeviceProbe, GpuBindError> {
         partitionable_name,
         valid_partition_counts,
         partition_count,
+        server_edition,
     })
 }
 
@@ -1760,7 +1808,7 @@ pub(crate) const TEST_HYPERV_PARTITION_NAME: &str =
 #[cfg(test)]
 pub(crate) struct RecordingHyperV {
     probe: HyperVDeviceProbe,
-    fail_on: Option<&'static str>,
+    fail_on: Vec<&'static str>,
     log: Mutex<Vec<String>>,
     pnp_disabled: Mutex<bool>,
     dismounted: Mutex<bool>,
@@ -1779,6 +1827,7 @@ impl RecordingHyperV {
             partitionable_name: None,
             valid_partition_counts: Vec::new(),
             partition_count: 0,
+            server_edition: true,
         })
     }
 
@@ -1791,13 +1840,28 @@ impl RecordingHyperV {
             partitionable_name: Some(TEST_HYPERV_PARTITION_NAME.to_string()),
             valid_partition_counts: vec![1, 2, 4],
             partition_count: 4,
+            server_edition: false,
+        })
+    }
+
+    /// A GPU that offers both, as most do: the edition decides the order.
+    pub(crate) fn both(server_edition: bool) -> Self {
+        Self::new(HyperVDeviceProbe {
+            instance_id: TEST_HYPERV_INSTANCE_ID.to_string(),
+            location_path: Some(TEST_HYPERV_LOCATION_PATH.to_string()),
+            dda_assignable: true,
+            partitionable: true,
+            partitionable_name: Some(TEST_HYPERV_PARTITION_NAME.to_string()),
+            valid_partition_counts: vec![1, 2, 4],
+            partition_count: 4,
+            server_edition,
         })
     }
 
     fn new(probe: HyperVDeviceProbe) -> Self {
         Self {
             probe,
-            fail_on: None,
+            fail_on: Vec::new(),
             log: Mutex::new(Vec::new()),
             pnp_disabled: Mutex::new(false),
             dismounted: Mutex::new(false),
@@ -1807,7 +1871,7 @@ impl RecordingHyperV {
     }
 
     pub(crate) fn fail_on(mut self, cmdlet: &'static str) -> Self {
-        self.fail_on = Some(cmdlet);
+        self.fail_on.push(cmdlet);
         self
     }
 
@@ -1847,7 +1911,7 @@ impl HyperVGpuOps for RecordingHyperV {
             .lock()
             .expect("hyperv log")
             .push(cmdlet.name().to_string());
-        if self.fail_on == Some(cmdlet.name()) {
+        if self.fail_on.contains(&cmdlet.name()) {
             return Err(GpuBindError::Io(format!(
                 "injected {} failure",
                 cmdlet.name()
@@ -2378,17 +2442,138 @@ mod tests {
         assert!(status.bound);
         assert_eq!(status.target_driver.as_deref(), Some(GPU_P_TARGET));
         assert!(status.log.contains("GPU-P"));
-        assert_eq!(
-            runner.names(),
-            vec![
-                "Set-VMHostPartitionableGpu",
-                "Add-VMGpuPartitionAdapter",
-                "Set-VMGpuPartitionAdapter",
-                "Get-VMGpuPartitionAdapter",
-                "Start-VM",
-            ]
-        );
+        assert_eq!(runner.names(), GPU_P_SEQUENCE.to_vec());
         assert!(runner.gpu_p_assigned());
+    }
+
+    const GPU_P_SEQUENCE: [&str; 5] = [
+        "Set-VMHostPartitionableGpu",
+        "Add-VMGpuPartitionAdapter",
+        "Set-VMGpuPartitionAdapter",
+        "Get-VMGpuPartitionAdapter",
+        "Start-VM",
+    ];
+
+    // Issue 36: client Windows supports GPU-P, not DDA, so a GPU that
+    // offers both must go GPU-P first and never touch DDA cmdlets.
+    #[test]
+    fn client_windows_tries_gpu_p_first() {
+        let caps = windows_pro_caps();
+        let (_dir, sysfs) = mock_gpu_tree(true);
+        let runner = RecordingHyperV::both(false);
+        let status = assign(windows_request(&caps, &sysfs, true, Some(&runner)), &SysfsBindOps)
+            .unwrap();
+
+        assert_eq!(status.target_driver.as_deref(), Some(GPU_P_TARGET));
+        assert_eq!(runner.names(), GPU_P_SEQUENCE.to_vec());
+        assert!(!status.log.contains("Tried first"));
+    }
+
+    #[test]
+    fn windows_server_tries_dda_first() {
+        let caps = windows_pro_caps();
+        let (_dir, sysfs) = mock_gpu_tree(true);
+        let runner = RecordingHyperV::both(true);
+        let status = assign(windows_request(&caps, &sysfs, true, Some(&runner)), &SysfsBindOps)
+            .unwrap();
+
+        assert_eq!(status.target_driver.as_deref(), Some(DDA_TARGET));
+        assert!(runner.dda_assigned());
+        assert!(!runner.names().iter().any(|n| n.contains("Partition")));
+    }
+
+    #[test]
+    fn a_cleanly_rolled_back_method_falls_back_to_the_other() {
+        let caps = windows_pro_caps();
+        let (_dir, sysfs) = mock_gpu_tree(true);
+        let runner = RecordingHyperV::both(false).fail_on("Add-VMGpuPartitionAdapter");
+        let status = assign(windows_request(&caps, &sysfs, true, Some(&runner)), &SysfsBindOps)
+            .unwrap();
+
+        assert_eq!(status.target_driver.as_deref(), Some(DDA_TARGET));
+        assert!(runner.dda_assigned());
+        assert!(!runner.gpu_p_assigned());
+        assert!(
+            status.log.contains("Tried first: GPU-P failed (") && status.log.contains("injected Add-VMGpuPartitionAdapter failure"),
+            "{}",
+            status.log
+        );
+    }
+
+    #[test]
+    fn both_methods_failing_reports_both_and_leaves_nothing_assigned() {
+        let caps = windows_pro_caps();
+        let (_dir, sysfs) = mock_gpu_tree(true);
+        let runner = RecordingHyperV::both(false)
+            .fail_on("Add-VMGpuPartitionAdapter")
+            .fail_on("Dismount-VMHostAssignableDevice");
+        let error = assign(windows_request(&caps, &sysfs, true, Some(&runner)), &SysfsBindOps)
+            .unwrap_err();
+
+        let GpuBindError::ApplyFailed(failure) = &error else {
+            panic!("expected ApplyFailed, got {error:?}");
+        };
+        assert!(failure.rolled_back);
+        assert!(failure.detail.contains("GPU-P failed"), "{}", failure.detail);
+        assert!(failure.detail.contains("DDA failed"), "{}", failure.detail);
+        assert!(!runner.leftover_assigned());
+    }
+
+    #[test]
+    fn a_failed_rollback_does_not_try_the_other_method() {
+        let caps = windows_pro_caps();
+        let (_dir, sysfs) = mock_gpu_tree(true);
+        // Set-VMGpuPartitionAdapter fails, then removing the adapter fails:
+        // the GPU is half-assigned, so DDA must not run on top of it.
+        let runner = RecordingHyperV::both(false)
+            .fail_on("Set-VMGpuPartitionAdapter")
+            .fail_on("Remove-VMGpuPartitionAdapter");
+        let error = assign(windows_request(&caps, &sysfs, true, Some(&runner)), &SysfsBindOps)
+            .unwrap_err();
+
+        assert!(matches!(&error, GpuBindError::ApplyFailed(f) if !f.rolled_back), "{error:?}");
+        assert!(!runner.names().iter().any(|n| n == "Dismount-VMHostAssignableDevice"));
+    }
+
+    #[test]
+    fn methods_explain_why_neither_is_possible() {
+        let probe = HyperVDeviceProbe {
+            instance_id: "x".into(),
+            location_path: None,
+            dda_assignable: false,
+            partitionable: true,
+            partitionable_name: Some("n".into()),
+            valid_partition_counts: vec![2, 4],
+            partition_count: 4,
+            server_edition: false,
+        };
+        let reason = probe.methods().unwrap_err().to_string();
+        assert!(reason.contains("partition count 1"), "{reason}");
+        assert!(reason.contains("not DDA-assignable"), "{reason}");
+    }
+
+    #[test]
+    fn probe_finds_gpu_p_by_name_and_reports_the_edition() {
+        let probe = probe_powershell(GPU_ID);
+        // Partitionable GPU names use '#' where the instance id has '\'.
+        assert!(probe.contains("$instanceId.Replace('\\', '#')"), "{probe}");
+        assert!(probe.contains("Get-VMPartitionableGpu"), "older Windows 11 / 10 name");
+        assert!(probe.contains("ProductType -ne 1"));
+        assert!(probe.contains("serverEdition = $server"));
+
+        let set = powershell_command(&HyperVCmdlet::SetHostPartitionCount {
+            instance_path: "n".into(),
+            count: 1,
+        });
+        assert!(set.contains("Set-VMHostPartitionableGpu -Name 'n' -PartitionCount 1"));
+        assert!(set.contains("Set-VMPartitionableGpu -Name 'n' -PartitionCount 1"));
+
+        let parsed = parse_hyperv_probe(
+            r#"{"instanceId":"PCI-VEN_10DE","locationPath":null,"ddaAssignable":false,"partitionable":true,"partitionableName":"n","validPartitionCounts":[1],"partitionCount":1,"serverEdition":true}"#,
+        )
+        .unwrap();
+        assert!(parsed.server_edition);
+        assert!(!parse_hyperv_probe(r#"{"instanceId":"x"}"#).unwrap().server_edition);
     }
 
     #[test]

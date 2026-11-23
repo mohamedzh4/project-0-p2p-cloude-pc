@@ -18,6 +18,12 @@ pub const KASM_HTTPS_PORT: u16 = 8443;
 /// configuration UI is 47990 (exposed in LizardByte's documented port range).
 pub const SUNSHINE_WEBUI_PORT: u16 = 47990;
 
+/// Sunshine GameStream HTTP port. The Host Agent probes this one, not the web
+/// UI: the web UI can change credentials and run commands in the guest, so the
+/// mesh ACL lets the host reach 47989 and never 47990. `/serverinfo` needs no
+/// login; any HTTP answer, or an open port, counts as "up".
+pub const SUNSHINE_PROBE_PORT: u16 = 47989;
+
 pub const MOONLIGHT_APP: &str = "Desktop";
 
 // A cold browser-desktop guest can need several minutes to boot even after QEMU
@@ -179,6 +185,16 @@ pub fn sunshine_web_url(mesh_hostname: &str) -> String {
     )
 }
 
+/// What the Host Agent polls for readiness. Kasm is probed at its own URL.
+/// Sunshine is probed on the GameStream port, not the web UI (see
+/// [`SUNSHINE_PROBE_PORT`]); the returned locator is unchanged.
+pub fn sunshine_probe_url(mesh_hostname: &str) -> String {
+    format!(
+        "http://{}:{SUNSHINE_PROBE_PORT}/serverinfo",
+        host_for_url(mesh_hostname.trim())
+    )
+}
+
 pub fn locator_is_placeholder(url: &str) -> bool {
     let Some(host) = hostname_from_url(url) else {
         return true;
@@ -196,7 +212,11 @@ pub fn await_live_locator(
     if locator_is_placeholder(&url) {
         return Err(LocatorError::Placeholder(url));
     }
-    await_reachable(&url, wait)?;
+    let probe_url = match (kind, wait.override_url.as_deref(), mesh_hostname) {
+        (StreamerKind::Sunshine, None, Some(host)) => sunshine_probe_url(host),
+        _ => url.clone(),
+    };
+    await_reachable(&probe_url, wait)?;
     // Return a concrete tailnet IP when possible. The Host Agent has native
     // Tailscale DNS, while the containerized public gateway may not inherit
     // the host resolver even though it shares the Tailscale network stack.
@@ -413,6 +433,40 @@ mod tests {
             "https://dcl-guest-aaaa:8443/"
         );
         assert_eq!(KASM_HTTPS_PORT, 8443);
+    }
+
+    #[test]
+    fn sunshine_is_probed_on_47989_never_the_web_ui_port() {
+        assert_eq!(
+            sunshine_probe_url("dcl-guest-bbbb"),
+            "http://dcl-guest-bbbb:47989/serverinfo"
+        );
+        assert_ne!(SUNSHINE_PROBE_PORT, SUNSHINE_WEBUI_PORT);
+        assert_eq!(port_from_url(&sunshine_probe_url("dcl-guest-bbbb")), 47989);
+    }
+
+    #[test]
+    fn sunshine_wait_probes_47989_but_returns_the_web_ui_locator() {
+        use std::sync::Mutex;
+        struct Recording(Mutex<Vec<String>>);
+        impl StreamerProbe for Recording {
+            fn is_reachable(&self, url: &str) -> bool {
+                self.0.lock().unwrap().push(url.to_string());
+                true
+            }
+        }
+        let probe = Arc::new(Recording(Mutex::new(Vec::new())));
+        let wait = StreamerWait {
+            timeout: Duration::from_millis(50),
+            interval: Duration::from_millis(5),
+            probe: probe.clone(),
+            override_url: None,
+        };
+        let live = await_live_locator(StreamerKind::Sunshine, Some("dcl-guest-eeee"), &wait).unwrap();
+        let probed = probe.0.lock().unwrap().clone();
+        assert_eq!(probed, vec!["http://dcl-guest-eeee:47989/serverinfo".to_string()]);
+        assert!(probed.iter().all(|u| !u.contains("47990")));
+        assert!(live.connection_url.contains(":47990"));
     }
 
     #[test]

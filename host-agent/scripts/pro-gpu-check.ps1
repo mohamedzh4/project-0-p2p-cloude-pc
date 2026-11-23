@@ -35,7 +35,7 @@ if ($os.Caption -match 'Home') {
 } elseif ($os.Caption -match 'Server') {
   Ok "Windows Server: DDA (whole-GPU assignment) is supported"
 } else {
-  Warn "Client Windows: Microsoft supports DDA only on Windows Server. The agent tries DDA first; expect it to fail here and GPU-P to be the path (issue 36)"
+  Warn "Client Windows: Microsoft supports DDA only on Windows Server. The agent tries GPU-P first here, then DDA (issue 36)"
 }
 
 Section "Hyper-V"
@@ -53,7 +53,7 @@ foreach ($c in $cmdlets) {
   else { Write-Host "  cmdlet $c : MISSING" }
 }
 if (-not (Get-Command Get-VMHostPartitionableGpu -ErrorAction SilentlyContinue)) {
-  Warn "Get-VMHostPartitionableGpu is missing; the agent's GPU-P path calls it by that name (older builds name it Get-VMPartitionableGpu)"
+  Write-Host "  (Get-VMHostPartitionableGpu is missing; the agent falls back to Get-VMPartitionableGpu)"
 }
 
 Section "GPUs"

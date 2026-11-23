@@ -41,6 +41,7 @@ mod provision_http;
 mod qemu_kvm;
 mod qemu_vfio;
 mod qemu_whpx;
+mod resolver;
 mod storage;
 mod tray;
 

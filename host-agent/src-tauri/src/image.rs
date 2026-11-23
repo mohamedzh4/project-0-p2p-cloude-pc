@@ -454,6 +454,7 @@ fn copy_limited_file(src: &Path, dest: &Path, url: &str, max_bytes: u64) -> Resu
 fn http_get_into(url: &str, dest: &Path, max_bytes: u64) -> Result<(), ImageError> {
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(60))
+        .resolver(crate::resolver::FallbackResolver)
         .build();
     match agent.get(url).call() {
         Ok(response) => write_limited(response.into_reader(), dest, url, max_bytes),

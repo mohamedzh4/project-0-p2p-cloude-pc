@@ -229,6 +229,7 @@ impl Transport for UreqTransport {
         let agent = ureq::AgentBuilder::new()
             .timeout(REQUEST_TIMEOUT)
             .redirects(0)
+            .resolver(crate::resolver::FallbackResolver)
             .build();
 
         let call = match request.method {
