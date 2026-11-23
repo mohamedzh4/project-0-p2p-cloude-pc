@@ -84,7 +84,10 @@ ask_yes() {
 }
 
 detect_pkg() {
-  if command -v apt-get >/dev/null; then
+  # Tests set this so they never reach the machine's real package manager.
+  if [[ -n "${LAN_TEST_PKG_MANAGER:-}" ]]; then
+    echo "$LAN_TEST_PKG_MANAGER"
+  elif command -v apt-get >/dev/null; then
     echo apt
   elif command -v pacman >/dev/null; then
     echo pacman

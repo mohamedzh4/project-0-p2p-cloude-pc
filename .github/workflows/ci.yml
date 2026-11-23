@@ -19,7 +19,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff
+      # Pinned: a new ruff release adds rules and fails unchanged code.
+      - run: pip install ruff==0.12.3
       - run: ruff check matchmaker gateway guest-images host-agent/scripts
 
   matchmaker:
@@ -101,6 +102,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pytest
+      # pack-lan-test-kit.sh builds the cloud-init seed.iso with xorriso.
+      - run: sudo apt-get install -y --no-install-recommends xorriso
       - run: python -m pytest -q host-agent/scripts guest-images/tests
 
   web:
