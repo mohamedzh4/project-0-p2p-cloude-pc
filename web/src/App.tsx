@@ -13,13 +13,17 @@ import {
   requestSession,
   signup,
 } from "./api";
-import { AuthForm } from "./components/AuthForm";
-import { SessionPanel } from "./components/SessionPanel";
-import { SharePcPanel } from "./components/SharePcPanel";
+import { AccountPage } from "./pages/AccountPage";
+import { AppShell } from "./pages/AppShell";
+import { AuthPage } from "./pages/AuthPage";
+import { Dashboard } from "./pages/Dashboard";
+import { Landing } from "./pages/Landing";
+import { SharePage } from "./pages/SharePage";
+import { isAppRoute, navigate, useRoute } from "./router";
+import { useTheme } from "./theme";
 import type { HostKitOffer, HostKitOs } from "./api";
 import { mapIntentToLabTier, canRequestSession } from "./intent";
 import {
-  creditsSummary,
   endedNotice,
   interpretPolledSession,
   interpretSessionError,
@@ -30,7 +34,10 @@ import type { AuthMode, Notice, SessionHistoryResponse, SessionResponse, UserPub
 
 export default function App() {
   const configured = matchmakerUrl();
-  const [mode, setMode] = useState<AuthMode>("signup");
+  const route = useRoute();
+  const [theme, setTheme] = useTheme();
+  const [mode, setMode] = useState<AuthMode>(route === "login" ? "login" : "signup");
+  const [pendingKit, setPendingKit] = useState<HostKitOs | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [token, setToken] = useState<string | null>(null);
@@ -61,6 +68,34 @@ export default function App() {
       cancelled = true;
     };
   }, [token]);
+
+  // Keep the auth tab in step with the address, and keep signed-out
+  // visitors out of the dashboard pages.
+  useEffect(() => {
+    if (route === "login" || route === "signup") {
+      setMode(route);
+      if (token) navigate("sessions");
+    } else if (isAppRoute(route) && !token) {
+      navigate("login");
+    }
+  }, [route, token]);
+
+  // A download picked on the landing page before signing in starts once the
+  // kit list for the new account has loaded.
+  useEffect(() => {
+    if (!token || !pendingKit || kits === null) return;
+    const os = pendingKit;
+    setPendingKit(null);
+    if (kits.some((kit) => kit.os === os && kit.available)) {
+      void handleKitDownload(os);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, pendingKit, kits]);
+
+  function handleLandingDownload(os: HostKitOs) {
+    setPendingKit(os);
+    navigate(token ? "share" : "signup");
+  }
 
   async function handleKitDownload(os: HostKitOs) {
     if (!token) {
@@ -168,6 +203,7 @@ export default function App() {
       setUser(result.data.user);
       setSession(null);
       setPassword("");
+      navigate(pendingKit ? "share" : "sessions");
       await loadHistory(result.data.accessToken);
       await restoreHeldSession(result.data.accessToken);
     } catch (error) {
@@ -230,81 +266,64 @@ export default function App() {
     setHistory(null);
     setIntent("");
     setNotice(null);
+    setPendingKit(null);
+    navigate("home");
   }
 
-  return (
-    <main className="app">
-      <header className="reveal">
-        <p className="kicker">Distributed Compute Lab</p>
-        <h1>Your cloud computer</h1>
-        <p className="lede">
-          Sign in, describe your work, and we will connect you to an available
-          computer. Standard sessions open in your browser; Pro sessions use
-          an exclusive host GPU with Sunshine and Moonlight.
-        </p>
-      </header>
-
-      {notice && !user ? (
-        <p className="notice" data-kind={notice.kind} role="status">
-          {notice.kind === "error" ? notice.message : null}
-        </p>
-      ) : null}
-
-      {user && token ? (
-        <>
-          <SessionPanel
-            user={user}
+  if (user && token && isAppRoute(route)) {
+    return (
+      <AppShell route={route} user={user} onSignOut={handleSignOut}>
+        {route === "sessions" ? (
+          <Dashboard
             session={session}
+            history={history}
             notice={notice}
             busy={busy}
             intent={intent}
             onIntent={setIntent}
             onRequest={() => void handleRequest()}
             onEnd={() => void handleEnd()}
-            onSignOut={handleSignOut}
           />
-          <SharePcPanel
+        ) : route === "share" ? (
+          <SharePage
             kits={kits}
             busy={kitBusy}
             message={kitMessage}
             onDownload={(os) => void handleKitDownload(os)}
           />
-          <section className="panel history">
-            <h2>Session history</h2>
-            <p className="hint">{creditsSummary(history)}</p>
-            {history && history.sessions.length === 0 ? (
-              <p className="hint">No sessions yet.</p>
-            ) : null}
-            {history && history.sessions.length > 0 ? (
-              <ul className="history-list">
-                {history.sessions.map((item) => (
-                  <li key={item.sessionId}>
-                    <span className="history-status">
-                      {item.status === "failed" ? "did not start" : item.status}
-                    </span>
-                    <span>
-                      {item.labTier}
-                      {item.durationSeconds != null ? ` · ${item.durationSeconds}s` : ""}
-                      {` · ${item.creditsDebited} credits`}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </section>
-        </>
-      ) : (
-        <AuthForm
-          mode={mode}
-          busy={busy}
-          email={email}
-          password={password}
-          onMode={setMode}
-          onEmail={setEmail}
-          onPassword={setPassword}
-          onSubmit={() => void handleAuth()}
-        />
-      )}
-    </main>
-  );
+        ) : (
+          <AccountPage
+            user={user}
+            history={history}
+            theme={theme}
+            onTheme={setTheme}
+            onSignOut={handleSignOut}
+          />
+        )}
+      </AppShell>
+    );
+  }
+
+  if (route === "login" || route === "signup") {
+    return (
+      <AuthPage
+        mode={mode}
+        busy={busy}
+        email={email}
+        password={password}
+        error={notice?.kind === "error" && !user ? notice.message : null}
+        reason={
+          pendingKit
+            ? `Sign in and your Host Agent download for ${pendingKit === "windows" ? "Windows" : "Linux"} starts right after.`
+            : null
+        }
+        onMode={setMode}
+        onEmail={setEmail}
+        onPassword={setPassword}
+        onSubmit={() => void handleAuth()}
+      />
+    );
+  }
+
+  return <Landing signedIn={Boolean(user && token)} onDownload={handleLandingDownload} />;
 }
