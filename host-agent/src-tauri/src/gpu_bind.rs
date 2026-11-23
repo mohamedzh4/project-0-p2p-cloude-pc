@@ -1351,7 +1351,7 @@ fn json_u32_list(value: &serde_json::Value, key: &str) -> Vec<u32> {
     }
 }
 
-fn run_powershell(script: &str, timeout: Duration) -> Result<String, GpuBindError> {
+pub(crate) fn run_powershell(script: &str, timeout: Duration) -> Result<String, GpuBindError> {
     if cfg!(not(windows)) {
         return Err(GpuBindError::HyperVOnlyOnWindows);
     }

@@ -384,7 +384,12 @@ export default function App() {
             detail={
               gpus.length === 0
                 ? hardware.gpuNote
-                : gpus.map((gpu) => formatGpuLabel(gpu.model, gpu.vramBytes)).join(" · ")
+                : gpus
+                    .map(
+                      (gpu) =>
+                        formatGpuLabel(gpu.model, gpu.vramBytes) + (gpu.integrated ? " (integrated)" : ""),
+                    )
+                    .join(" · ")
             }
             empty={gpus.length === 0}
           />
@@ -444,7 +449,7 @@ export default function App() {
           gpus={gpus}
           shareGpu={config.shareGpu}
           sharedGpuId={config.sharedGpuId}
-          disabled={gpus.length === 0}
+          disabled={!gpus.some((gpu) => !gpu.integrated)}
           onShareChange={(shareGpu) => update({ shareGpu })}
           onGpuChange={(sharedGpuId) => update({ sharedGpuId })}
         />

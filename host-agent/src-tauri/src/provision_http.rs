@@ -88,7 +88,12 @@ pub enum PlanHttpError {
 pub struct ProvisionGate {
     pub capabilities: HostCapabilities,
     pub hardware: HardwareSnapshot,
+    /// Sliders read when the gate was built. Used only when `config_dir` is
+    /// unset or its file cannot be read: see [`sharing_for_gate`].
     pub sharing: Option<SharingConfig>,
+    /// Where the owner's saved sliders live. Read again for every command,
+    /// so a change saved after start-up applies to the next boot.
+    pub config_dir: Option<PathBuf>,
     pub spare_disk_bytes: Option<u64>,
     /// When set on Linux Standard, QEMU+KVM runs with SLIRP user networking
     /// (or provision fails).
@@ -728,7 +733,14 @@ fn refuse_unoffered_tier(
 }
 
 fn sharing_for_gate(gate: &ProvisionGate, request: &ProvisionHttpRequest) -> SharingConfig {
-    gate.sharing.clone().unwrap_or_else(|| SharingConfig {
+    // The owner may change the sliders after the agent started; the
+    // Matchmaker already has the new values, so boot with them too. A copy
+    // taken at start-up made the agent refuse a host the server had matched.
+    let saved = gate
+        .config_dir
+        .as_deref()
+        .and_then(|dir| crate::config::load_for_hardware(dir, &gate.hardware).ok());
+    saved.or_else(|| gate.sharing.clone()).unwrap_or_else(|| SharingConfig {
         version: crate::models::CONFIG_VERSION,
         sharing_enabled: true,
         shared_logical_cores: gate.hardware.cpu.logical_cores,
@@ -1734,6 +1746,7 @@ mod tests {
             }),
             hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
             sharing: None,
+            config_dir: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             qemu_kvm: None,
             qemu: None,
@@ -1766,6 +1779,7 @@ mod tests {
             }),
             hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
             sharing: None,
+            config_dir: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             qemu_kvm: None,
             qemu: None,
@@ -1830,6 +1844,70 @@ mod tests {
         assert_eq!(output.status, 400);
         assert!(output.body.contains("needs at least 4 GiB"));
         assert!(!occupancy.is_in_session());
+    }
+
+    fn sliders(memory_gib: u64) -> SharingConfig {
+        use crate::models::{BYTES_PER_GIB, CONFIG_VERSION};
+        SharingConfig {
+            version: CONFIG_VERSION,
+            sharing_enabled: true,
+            shared_logical_cores: 4,
+            shared_memory_bytes: memory_gib * BYTES_PER_GIB,
+            share_gpu: false,
+            shared_gpu_id: None,
+        }
+    }
+
+    fn provision_on(gate: &ProvisionGate) -> (u16, String) {
+        let (trust, body) = signed_standard();
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+            Some(gate),
+        );
+        (output.status, output.body)
+    }
+
+    // Issue 31: the owner raised RAM to 4 GiB after the agent started. The
+    // Matchmaker matched the host on 4 GiB; the agent must not refuse with
+    // the 2 GiB it read at start-up.
+    #[test]
+    fn sliders_saved_after_start_up_apply_to_the_next_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::config::save(dir.path(), &sliders(2)).unwrap();
+        let mut gate = linux_kvm_gate();
+        gate.sharing = Some(sliders(2)); // what start-up read
+        gate.config_dir = Some(dir.path().to_path_buf());
+
+        let (status, body) = provision_on(&gate);
+        assert_eq!(status, 400, "{body}");
+
+        crate::config::save(dir.path(), &sliders(8)).unwrap();
+        let (status, body) = provision_on(&gate);
+        assert!(!body.contains("needs at least"), "{body}");
+        assert_ne!(status, 400, "{body}");
+    }
+
+    // The other direction: an owner who lowers what they lend is obeyed at
+    // once, not after a restart.
+    #[test]
+    fn lowering_the_sliders_after_start_up_is_obeyed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut gate = linux_kvm_gate();
+        gate.sharing = Some(sliders(8));
+        gate.config_dir = Some(dir.path().to_path_buf());
+        crate::config::save(dir.path(), &sliders(2)).unwrap();
+
+        let (status, body) = provision_on(&gate);
+        assert_eq!(status, 400);
+        assert!(body.contains("needs at least 4 GiB"), "{body}");
     }
 
     #[test]
@@ -2079,6 +2157,7 @@ mod tests {
             }),
             hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
             sharing: None,
+            config_dir: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             qemu_kvm: None,
             qemu: None,

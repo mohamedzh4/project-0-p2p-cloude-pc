@@ -1,6 +1,6 @@
 // Mirrors the serde representations in src-tauri/src/models.rs.
 
-export type GpuVendor = "nvidia" | "unknown";
+export type GpuVendor = "nvidia" | "amd" | "intel" | "unknown";
 
 export interface CpuInfo {
   model: string;
@@ -13,11 +13,13 @@ export interface MemoryInfo {
 }
 
 export interface GpuInfo {
-  /** NVML UUID, or `nvidia:{index}` if the driver did not report one. */
+  /** Linux: NVML UUID for NVIDIA, PCI address otherwise. Windows: PnP instance ID. */
   id: string;
   model: string;
   vendor: GpuVendor;
   vramBytes: number | null;
+  /** An iGPU: keeps the owner's screen, never offered for dedication. */
+  integrated?: boolean;
 }
 
 export interface HardwareSnapshot {

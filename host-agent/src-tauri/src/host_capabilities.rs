@@ -119,7 +119,10 @@ pub struct EvaluateInput<'a> {
 /// Intel/AMD integrated names, or 2+ GPUs, mean the host can keep a display
 /// while one card is dedicated. A single discrete GPU is not a second path.
 pub fn looks_like_integrated(model: &str) -> bool {
-    let name = model.to_ascii_lowercase();
+    let name = model
+        .to_ascii_lowercase()
+        .replace("(tm)", "")
+        .replace("(r)", "");
     if name.contains("geforce")
         || name.contains("quadro")
         || name.contains("rtx ")
@@ -140,7 +143,10 @@ pub fn looks_like_integrated(model: &str) -> bool {
 }
 
 pub fn has_second_display_path(gpus: &[GpuInfo]) -> bool {
-    gpus.len() >= 2 || gpus.iter().any(|gpu| looks_like_integrated(&gpu.model))
+    gpus.len() >= 2
+        || gpus
+            .iter()
+            .any(|gpu| gpu.integrated || looks_like_integrated(&gpu.model))
 }
 
 /// Mockable KVM check: any path, including a tempfile in tests.
@@ -474,6 +480,8 @@ mod tests {
             model: "Intel UHD Graphics 770".to_string(),
             vendor: crate::models::GpuVendor::Unknown,
             vram_bytes: None,
+            // Left unset on purpose: the name alone must still count.
+            integrated: false,
         }
     }
 

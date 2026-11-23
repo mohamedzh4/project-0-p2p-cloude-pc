@@ -428,7 +428,8 @@ Found and fixed 2026-11-17 on a friend's Windows 11 laptop:
   `%LOCALAPPDATA%\Host Agent`; setup now also reads the uninstall key and
   waits up to 2 min.
 
-Found by review, same fix round, not yet seen on hardware: on Linux the agent
+Found by review, same fix round, seen working on a real Ubuntu host on
+2026-11-18 (the host joined the mesh on its own): on Linux the agent
 runs `tailscale up` as the desktop user, which only root may do unless that
 user is the Tailscale operator. `linux-host-setup.sh` now runs
 `tailscale set --operator=$USER` (Ubuntu and Arch).
@@ -492,8 +493,93 @@ later, worked. The host was heartbeating, so it was offered work it did not
 fetch. Not reproduced yet. Check the agent's command loop right after
 start-up.
 
+## 31. The agent boots with the sharing settings it read at start-up (correctness, high)
+
+Fixed in code 2026-11-18, not yet on the hosts (needs a new agent build and
+a reinstall): the provision gate keeps the config directory and re-reads
+the saved sliders for every command. Tests
+`sliders_saved_after_start_up_apply_to_the_next_boot` and
+`lowering_the_sliders_after_start_up_is_obeyed` fail without the fix.
+
+Found 2026-11-18 on the Ubuntu host: the server matched the host
+with the 4 GB it had registered, and the agent refused with "this PC would
+lend 3 GiB of RAM, but a session needs at least 4 GiB". The agent builds its
+provision gate once when it starts (`build_provision_gate` in
+`host-agent/src-tauri/src/lib.rs`) and keeps that copy of the sliders. A
+change saved later reaches the Matchmaker but not the gate, so the server
+and the agent disagree until Host Agent is restarted (the workaround used).
+Fix: load the sharing config for each provision command (or refresh the gate
+on save), and test that a saved change applies to the next boot.
+
+## 32. The Windows agent went silent mid-session; its VM may have kept running (correctness, high)
+
+Open. Found 2026-11-18. During a 43-minute session the Windows host's agent
+sent its last poll and heartbeat at 20:46:35 UTC; the server marked the
+session interrupted at 20:47:28. Tailscale on the same PC stayed connected
+until 21:03:29, so the PC was awake and online: the agent itself stopped
+(closed, crashed or hung). Cause unknown (see 33). Two follow-ups whatever the
+cause: when the agent starts it should stop any guest VM it left behind,
+and the teardown it never fetched should still be applied.
+
+## 33. The Windows agent writes no log (operability, medium)
+
+Open. On Linux the setup starts the agent with its output in
+`host-agent.log`; on Windows it is started without one, so issue 32 could
+not be explained after the fact. Fix: the agent writes a rotating log file
+in its config directory on every platform.
+
 ## Accepted for now
 
 - The gateway skips TLS certificate checks to guests (`verify=False` in
   `gateway/src/dcl_gateway/main.py`). Acceptable because that hop travels
   inside the encrypted Headscale mesh.
+
+## 34. The Linux host's desktop kept dropping after 11 minutes (correctness, medium)
+
+Open. Found 2026-11-18 on the Ubuntu host (2 cores, 4 GB shared). The
+desktop stream held from 21:18:56 to 21:30:20 UTC, then the guest side cut
+it again and again (code 1006) after 4–60 s. The guest still answered HTTP
+at once, the mesh path was direct, the host kept its heartbeat, and the
+Windows guest held a stream for 60 s in the same minute. Likely cause, not
+confirmed: memory pressure in the 4 GB guest or on the host (no `free` or
+OOM output was collected before the PC was cleaned). Next time: collect
+`free -h` and `dmesg | grep -i oom` in the guest, and the host's free RAM,
+and test with 6–8 GB shared.
+
+## 35. The agent only sees NVIDIA GPUs, so a normal PC is refused Pro (correctness, high)
+
+Fixed in code 2026-11-23, not yet on the hosts (needs a new agent build).
+`gpu.rs` now lists every PCI display device (Linux sysfs, Windows
+`Win32_VideoController`) and adds NVML's UUID/VRAM by PCI address. iGPUs are
+flagged `integrated`: they count as the second display path and are never
+offered or defaulted for dedication. IDs: Linux NVIDIA keeps its NVML UUID,
+other cards use the PCI address; Windows uses the PnP instance ID for every
+card, which also fixes Hyper-V never finding an NVML UUID in
+`probe_powershell` (`Get-PnpDevice -InstanceId`). A saved Windows
+`sharedGpuId` (old UUID) falls back to the first dedicatable card. Tests:
+`linux_igpu_plus_nvidia_lists_both_with_the_card_first`,
+`windows_ids_are_pnp_instance_ids_with_nvml_details`,
+`an_igpu_is_never_picked_for_dedication` and others in `gpu.rs`/`models.rs`.
+The Linux/Windows probe code was not compiled on the Mac (CI builds Linux).
+
+Found 2026-11-23 reading the code before the first Pro test. GPU
+detection (`host-agent/src-tauri/src/gpu.rs`) only asks NVIDIA's driver
+(NVML). An Intel or AMD iGPU and any AMD card are invisible. The Pro check
+(`has_second_display_path` in `host_capabilities.rs`) wants two detected
+GPUs or one whose name looks integrated, so the most common Pro host, an
+iGPU plus one NVIDIA card, is refused with "needs a second display path",
+and an AMD-card host has no GPU at all. Fix: list PCI display devices
+(Linux sysfs class `0x03`, Windows `Win32_VideoController`) for the
+display-path check and for AMD cards, and keep NVML only for VRAM/UUID.
+`host-agent/scripts/pro-gpu-check.{sh,ps1}` show what the agent will see.
+
+## 36. Windows Pro tries DDA first, which client Windows does not support (correctness, medium)
+
+Open, not yet seen on hardware. Microsoft supports Discrete Device
+Assignment only on Windows Server; the friend PCs run client Windows. The
+agent (`gpu_bind.rs`) picks DDA whenever the GPU has a location path, which
+it always has, so GPU-P (the path client Windows supports) is never tried.
+GPU-P was also designed around Windows guests that reuse the host's driver;
+whether a Linux guest running Sunshine gets a usable GPU through it is not
+known. Confirm on the Windows PC with `pro-gpu-check.ps1`, then try DDA
+and fall back to GPU-P on failure, or pick by edition.

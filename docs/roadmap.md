@@ -202,8 +202,17 @@ Later boots are faster because Windows keeps the disk in its file cache. One
 booking, the first after the host came back online, was never picked up and
 expired after 45 s (issue 30).
 
+Second host, 2026-11-18: a friend's Ubuntu PC ("Pedri", 2 cores and 4 GB
+shared), installed with `linux-host-setup.sh`. Setup, register, mesh join
+(as the desktop user, the issue 24 Linux fix) and approve worked on the
+first try. The first three bookings failed on issue 31; after restarting
+Host Agent the guest was ready **17.5 s** after booking (QEMU + KVM, versus
+28–44 s on the Windows host with WHPX) and the desktop opened from another
+account. The same evening the Windows host's agent went silent while a
+session was running (issue 32).
+
 Problems found and fixed during the run: issues 24–28. Still open: 21, 29,
-30, the proper fix for 28, and every row marked "Not run". Fixes are in
+30, 31, 32, 33, the proper fix for 28, and every row marked "Not run". Fixes are in
 commit `214cbe1` and live on the server.
 
 ## Phase 6: Fix and repeat

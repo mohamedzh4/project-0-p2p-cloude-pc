@@ -227,6 +227,7 @@ fn build_provision_gate(
         capabilities,
         hardware,
         sharing,
+        config_dir: config_dir.map(std::path::Path::to_path_buf),
         spare_disk_bytes: crate::disk_space::available_bytes(&cache),
         qemu_kvm,
         qemu,
