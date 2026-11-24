@@ -20,6 +20,8 @@ import {
   setSharingEnabled,
 } from "./api";
 import { CapabilityPanel } from "./components/CapabilityPanel";
+import { PixelIcon } from "./components/PixelIcon";
+import { SkyCanvas } from "./components/SkyCanvas";
 import { HardwareCard } from "./components/HardwareCard";
 import { GpuShareField } from "./components/GpuShareField";
 import { ResourceSlider } from "./components/ResourceSlider";
@@ -289,20 +291,18 @@ export default function App() {
 
   return (
     <main className="app">
+      <SkyCanvas />
       <header className="header reveal" data-reveal={0}>
         <div>
           <div className="brand-row">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <rect x="2.5" y="3.5" width="19" height="13" rx="2.5" stroke="currentColor" strokeWidth="1.6" />
-              <rect x="11" y="8" width="7" height="5" rx="1" fill="var(--share)" />
-              <path d="M8 20.5h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-            </svg>
+            <PixelIcon name="cloud" size={22} />
             Blue Sky
           </div>
           <h1>Host Agent</h1>
           <p>Choose how much of this machine you can spare while you keep using it. Pause at any time — that stops Matchmaker pings immediately.</p>
         </div>
         <span className="pill" data-presence={presence === "inSession" ? "in-session" : presence}>
+          <PixelIcon name={presence === "paused" ? "pause" : "server"} size={18} />
           {presenceLabel(presence)}
         </span>
       </header>
@@ -371,6 +371,7 @@ export default function App() {
         <h2>Detected hardware</h2>
         <div className="cards">
           <HardwareCard
+            icon="cpu"
             title="CPU"
             value={hardware.cpu.model}
             detail={
@@ -379,8 +380,9 @@ export default function App() {
                 : formatCores(hardware.cpu.logicalCores)
             }
           />
-          <HardwareCard title="Memory" value={formatGib(hardware.memory.totalBytes)} detail="Total installed RAM" />
+          <HardwareCard icon="memory" title="Memory" value={formatGib(hardware.memory.totalBytes)} detail="Total installed RAM" />
           <HardwareCard
+            icon="gpu"
             title="GPU"
             value={
               gpus.length === 0
@@ -432,6 +434,7 @@ export default function App() {
 
         <ResourceSlider
           id="shared-cores"
+          icon="cpu"
           label="CPU cores"
           readout={`${config.sharedLogicalCores} of ${hardware.cpu.logicalCores}`}
           min={0}
@@ -443,6 +446,7 @@ export default function App() {
 
         <ResourceSlider
           id="shared-memory"
+          icon="memory"
           label="Memory"
           readout={`${sharedMemoryGib} of ${maxMemoryGib} GiB`}
           min={0}
