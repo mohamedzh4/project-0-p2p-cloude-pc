@@ -108,11 +108,13 @@ text = (
     f'IMAGE_STANDARD_DIGEST={vals["IMAGE_STANDARD_DIGEST"]}\n'
     f'IMAGE_STANDARD_SIGNATURE={vals["IMAGE_STANDARD_SIGNATURE"]}\n'
     f'HOST_DISPLAY_NAME={display}\n'
-    f'HOST_AGENT_LISTEN_ADDR={vals.get("HOST_AGENT_LISTEN_ADDR") or "127.0.0.1:7842"}\n'
-    f'HOST_AGENT_URL={vals.get("HOST_AGENT_URL") or "http://127.0.0.1:17842"}\n'
-    f'TUNNEL_SSH={vals.get("TUNNEL_SSH") or "dcl-tunnel@203.0.113.10"}\n'
-    f'TUNNEL_REMOTE_PORT={vals.get("TUNNEL_REMOTE_PORT") or "17842"}\n'
-    f'IMAGE_QCOW2_URL={qcow_url}\n'
+    # Only when set: by default the agent fetches its commands itself.
+    + "".join(
+        f"{key}={vals[key]}\n"
+        for key in ("HOST_AGENT_LISTEN_ADDR", "HOST_AGENT_URL", "TUNNEL_SSH", "TUNNEL_REMOTE_PORT")
+        if vals.get(key)
+    )
+    + f'IMAGE_QCOW2_URL={qcow_url}\n'
     f'HOST_AGENT_INSTALLER_URL={installer_url}\n'
 )
 out = Path(os.environ["_DCL_FRIEND_OUT"]) / "friend.env"

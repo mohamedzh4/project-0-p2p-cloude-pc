@@ -278,3 +278,25 @@ def test_renterd_compose_requires_seed_and_exposes_s3() -> None:
     assert "zen" in env_example
     assert "RENTERD_SEED=" in env_example
     assert "never commit" in env_example.lower() or "Never commit" in env_example
+
+
+def test_sigv4_date_header_is_basic_iso8601_without_colons() -> None:
+    """Real S3 stores (Cloudflare R2) reject `20261115T23:36:17Z`.
+
+    Found 2026-11-15 on the first call to a real R2 account.
+    """
+    from datetime import datetime, timezone
+
+    from matchmaker.renterd import _sigv4_headers
+
+    headers = _sigv4_headers(
+        method="GET",
+        url="https://account.r2.cloudflarestorage.com/",
+        body=b"",
+        access_key="access-key-id-0000",
+        secret_key="secret-access-key-0000",
+        region="auto",
+        now=datetime(2026, 11, 15, 23, 36, 17, tzinfo=timezone.utc),
+    )
+    assert headers["x-amz-date"] == "20261115T233617Z"
+    assert "/20261115/auto/s3/aws4_request" in headers["Authorization"]

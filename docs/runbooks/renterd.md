@@ -1,5 +1,10 @@
 # renterd (Sia) — operator runbook
 
+> **Being replaced (decision 2026-11-15).** Platform storage moves to
+> Cloudflare R2 (S3-compatible) now and Storj later, so the platform needs
+> no crypto payments. renterd is what the code still uses until that switch
+> (`PROJECT_STATUS.md` step 1). Sia mainnet is no longer planned.
+
 **This is not Storj.** Persistent files use a self-hosted Sia
 [`renterd`](https://github.com/SiaFoundation/renterd) S3 gateway
 (`ghcr.io/siafoundation/renterd:2.9.3`). rclone belongs **inside the guest**,

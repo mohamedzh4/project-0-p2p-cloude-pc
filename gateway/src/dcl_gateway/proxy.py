@@ -87,12 +87,20 @@ def _strip_named_cookie(header: str, name: str) -> str | None:
     return "; ".join(kept)
 
 
-def _forward_request_headers(headers: Mapping[str, str], target_url: str) -> dict[str, str]:
+def _forward_request_headers(
+    headers: Mapping[str, str],
+    target_url: str,
+    upstream_authorization: str | None = None,
+) -> dict[str, str]:
+    """Headers for the guest. With `upstream_authorization` the gateway logs
+    in to the guest desktop itself and whatever the browser sent is dropped."""
     parsed = urlparse(target_url)
     forwarded: dict[str, str] = {}
     for key, value in headers.items():
         lowered = key.lower()
         if lowered in _HOP_BY_HOP:
+            continue
+        if lowered == "authorization" and upstream_authorization is not None:
             continue
         if lowered == "cookie":
             stripped = _strip_named_cookie(value, _SESSION_COOKIE)
@@ -103,6 +111,8 @@ def _forward_request_headers(headers: Mapping[str, str], target_url: str) -> dic
     if parsed.netloc:
         forwarded["Host"] = parsed.netloc
     forwarded["X-Forwarded-Proto"] = "https"
+    if upstream_authorization is not None:
+        forwarded["Authorization"] = upstream_authorization
     return forwarded
 
 
@@ -110,11 +120,15 @@ def _forward_response_headers(
     headers: Mapping[str, str],
     target_url: str,
     public_prefix: str,
+    hide_auth_challenge: bool = False,
 ) -> dict[str, str]:
     out: dict[str, str] = {}
     for key, value in headers.items():
         lowered = key.lower()
         if lowered in _HOP_BY_HOP:
+            continue
+        if lowered == "www-authenticate" and hide_auth_challenge:
+            # The renter has no desktop password to type; do not prompt.
             continue
         if lowered == "location":
             out[key] = rewrite_location(value, target_url, public_prefix)
@@ -144,6 +158,7 @@ async def proxy_http(
     public_prefix: str,
     client: httpx.AsyncClient,
     allow_loopback: bool,
+    upstream_authorization: str | None = None,
 ) -> Response:
     backend = join_backend(target_url, suffix, request.url.query)
     if backend is None or not target_is_allowed(
@@ -151,7 +166,7 @@ async def proxy_http(
     ):
         logger.warning("gateway proxy: refused backend join")
         return Response(status_code=400, content=b"")
-    headers = _forward_request_headers(request.headers, target_url)
+    headers = _forward_request_headers(request.headers, target_url, upstream_authorization)
     body = await request.body()
     try:
         upstream = await client.request(
@@ -165,7 +180,10 @@ async def proxy_http(
         return Response(status_code=502, content=b"")
 
     response_headers = _forward_response_headers(
-        upstream.headers, target_url, public_prefix
+        upstream.headers,
+        target_url,
+        public_prefix,
+        hide_auth_challenge=upstream_authorization is not None,
     )
     return Response(
         content=upstream.content,
@@ -180,7 +198,17 @@ async def proxy_websocket(
     target_url: str,
     suffix: str,
     query: str,
+    upstream_authorization: str | None = None,
 ) -> None:
+    """Relay a browser WebSocket to the guest.
+
+    The guest is dialled first, so the browser is offered exactly the
+    subprotocol the guest chose (the desktop client asks for `binary`), and a
+    guest that refuses the connection is reported before the browser's
+    handshake completes.
+    """
+    import asyncio
+
     import websockets
 
     backend = join_backend(target_url, suffix, query)
@@ -204,43 +232,99 @@ async def proxy_websocket(
         tls.check_hostname = False
         tls.verify_mode = ssl.CERT_NONE
 
-    await websocket.accept()
+    requested = [str(item) for item in websocket.scope.get("subprotocols") or []]
+    extra_headers: dict[str, str] = {}
+    if upstream_authorization is not None:
+        extra_headers["Authorization"] = upstream_authorization
+
+    # KasmVNC answers 404 to a WebSocket upgrade that carries no Origin. Send
+    # the guest's own origin (never the browser's: the guest only trusts
+    # itself, and the browser's Origin was already checked by the caller).
+    backend_origin = f"{parsed.scheme}://{parsed.netloc}"
+
     try:
-        async with websockets.connect(
+        backend_ws = await websockets.connect(
             ws_url,
             ssl=tls,
             open_timeout=10,
-        ) as backend_ws:
-            async def client_to_backend() -> None:
-                try:
-                    while True:
-                        message = await websocket.receive()
-                        if message["type"] == "websocket.disconnect":
-                            await backend_ws.close()
-                            return
-                        if "text" in message and message["text"] is not None:
-                            await backend_ws.send(message["text"])
-                        elif "bytes" in message and message["bytes"] is not None:
-                            await backend_ws.send(message["bytes"])
-                except WebSocketDisconnect:
-                    await backend_ws.close()
-
-            async def backend_to_client() -> None:
-                try:
-                    async for message in backend_ws:
-                        if isinstance(message, bytes):
-                            await websocket.send_bytes(message)
-                        else:
-                            await websocket.send_text(str(message))
-                except Exception:
-                    await websocket.close()
-
-            import asyncio
-
-            await asyncio.gather(client_to_backend(), backend_to_client())
-    except Exception:
-        logger.warning("gateway proxy: websocket backend unreachable")
+            subprotocols=requested or None,
+            additional_headers=extra_headers or None,
+            origin=backend_origin,
+            max_size=None,
+            # KasmVNC does not answer WebSocket pings: with the library's
+            # default keepalive (20 s ping, 20 s wait) every desktop dropped
+            # after ~41 s with 1006. The browser leg keeps its own keepalive.
+            ping_interval=None,
+        )
+    except Exception as error:
+        # Status code only: the exception text can echo request headers.
+        status_code = getattr(getattr(error, "response", None), "status_code", None)
+        logger.warning(
+            "gateway proxy: websocket backend unreachable (%s, status %s)",
+            type(error).__name__,
+            status_code,
+        )
         try:
             await websocket.close(code=1014)
+        except Exception:
+            pass
+        return
+
+    try:
+        await websocket.accept(subprotocol=backend_ws.subprotocol)
+
+        async def client_to_backend() -> None:
+            try:
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        return
+                    if "text" in message and message["text"] is not None:
+                        await backend_ws.send(message["text"])
+                    elif "bytes" in message and message["bytes"] is not None:
+                        await backend_ws.send(message["bytes"])
+            except (WebSocketDisconnect, RuntimeError):
+                return
+
+        async def backend_to_client() -> None:
+            async for message in backend_ws:
+                if isinstance(message, bytes):
+                    await websocket.send_bytes(message)
+                else:
+                    await websocket.send_text(str(message))
+
+        # Either side closing ends the relay; the other half is cancelled.
+        tasks = [
+            asyncio.create_task(client_to_backend()),
+            asyncio.create_task(backend_to_client()),
+        ]
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # Which side ended the desktop stream, and how. Codes and exception
+        # type only: never message bodies or headers.
+        first = "browser" if tasks[0] in done else "guest"
+        errors = [
+            type(task.exception()).__name__
+            for task in done
+            if not task.cancelled() and task.exception() is not None
+        ]
+        logger.warning(
+            "gateway proxy: websocket relay ended by %s (guest close %s %s, error %s)",
+            first,
+            getattr(backend_ws, "close_code", None),
+            (getattr(backend_ws, "close_reason", None) or "")[:80],
+            ",".join(errors) or "none",
+        )
+    except Exception:
+        logger.warning("gateway proxy: websocket relay failed")
+    finally:
+        try:
+            await backend_ws.close()
+        except Exception:
+            pass
+        try:
+            await websocket.close()
         except Exception:
             pass

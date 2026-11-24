@@ -125,3 +125,83 @@ export function listSessions(
     token,
   });
 }
+
+/** One session in its current state. Poll this while it is provisioning. */
+export function getSession(
+  token: string,
+  sessionId: string,
+): Promise<{ status: number; data: SessionResponse }> {
+  return request<SessionResponse>(`/v1/sessions/${sessionId}`, {
+    method: "GET",
+    token,
+  });
+}
+
+/** The session this user holds now (starting or ready), or null. */
+export async function currentSession(token: string): Promise<SessionResponse | null> {
+  try {
+    const result = await request<SessionResponse>("/v1/sessions/current", {
+      method: "GET",
+      token,
+    });
+    return result.data;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+export type HostKitOs = "windows" | "linux";
+
+export interface HostKitOffer {
+  os: HostKitOs;
+  available: boolean;
+}
+
+/** Which setup kits the server can make right now. */
+export function listHostKits(
+  token: string,
+): Promise<{ status: number; data: { kits: HostKitOffer[] } }> {
+  return request<{ kits: HostKitOffer[] }>("/v1/host-kits", { method: "GET", token });
+}
+
+/**
+ * Download a setup kit made for this user: the setup script plus a
+ * single-use registration code. Returns the zip and its file name.
+ */
+export async function downloadHostKit(
+  token: string,
+  os: HostKitOs,
+): Promise<{ blob: Blob; filename: string }> {
+  const base = matchmakerUrl();
+  if (!base) {
+    throw new ApiError(0, "VITE_MATCHMAKER_URL is required");
+  }
+  let response: Response;
+  try {
+    response = await fetch(`${base}/v1/host-kits`, {
+      method: "POST",
+      headers: {
+        Accept: "application/zip",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ os }),
+    });
+  } catch {
+    throw new ApiError(0, "Matchmaker is unreachable. Is it running?");
+  }
+  if (!response.ok) {
+    const body = await parseBody(response);
+    throw new ApiError(response.status, detailMessage(body, `Download failed (${response.status})`));
+  }
+  return { blob: await response.blob(), filename: kitFilename(response, os) };
+}
+
+export function kitFilename(response: Response, os: HostKitOs): string {
+  const header = response.headers.get("Content-Disposition") ?? "";
+  const match = /filename="([^"]+)"/.exec(header);
+  return match?.[1] ?? `dcl-host-setup-${os}.zip`;
+}

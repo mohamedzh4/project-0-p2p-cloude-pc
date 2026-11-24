@@ -1,3 +1,7 @@
+import { useState, type PointerEvent } from "react";
+
+import { PixelIcon, type PixelIconName } from "./PixelIcon";
+
 interface ResourceSliderProps {
   id: string;
   label: string;
@@ -7,9 +11,13 @@ interface ResourceSliderProps {
   step?: number;
   value: number;
   hint?: string;
+  icon?: PixelIconName;
   disabled?: boolean;
   onChange: (value: number) => void;
 }
+
+/** Above this many units the meter groups several units into one block. */
+const MAX_SEGMENTS = 16;
 
 export function ResourceSlider({
   id,
@@ -20,9 +28,12 @@ export function ResourceSlider({
   step = 1,
   value,
   hint,
+  icon,
   disabled = false,
   onChange,
 }: ResourceSliderProps) {
+  const [hover, setHover] = useState<number | null>(null);
+
   const clamp = (raw: number) => {
     if (Number.isNaN(raw)) {
       return min;
@@ -30,6 +41,17 @@ export function ResourceSlider({
 
     return Math.min(Math.max(raw, min), max);
   };
+
+  const segments = Math.max(1, Math.min(max - min, MAX_SEGMENTS));
+  const filled = max > min ? Math.round(((value - min) / (max - min)) * segments) : 0;
+
+  // While the mouse is over the meter, outline the blocks a click would fill.
+  function track(event: PointerEvent<HTMLDivElement>) {
+    if (disabled || event.pointerType === "touch") return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const ratio = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
+    setHover(Math.round(ratio * segments));
+  }
 
   return (
     <div className="field">
@@ -39,16 +61,39 @@ export function ResourceSlider({
       </div>
 
       <div className="slider-row">
-        <input
-          id={id}
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={value}
-          disabled={disabled}
-          onChange={(event) => onChange(clamp(Number(event.target.value)))}
-        />
+        {icon ? (
+          <span className="meter-plate" aria-hidden="true">
+            <PixelIcon name={icon} size={18} />
+          </span>
+        ) : null}
+        <div
+          className="meter"
+          data-disabled={disabled}
+          onPointerMove={track}
+          onPointerLeave={() => setHover(null)}
+        >
+          {/* The range input sits on top of the blocks, invisible, so mouse,
+              touch and keyboard all drive the real control. */}
+          <div className="meter-cells" aria-hidden="true">
+            {Array.from({ length: segments }, (_, index) => (
+              <span
+                key={index}
+                data-on={index < filled ? "true" : "false"}
+                data-preview={hover != null && index < hover && index >= filled ? "true" : undefined}
+              />
+            ))}
+          </div>
+          <input
+            id={id}
+            type="range"
+            min={min}
+            max={max}
+            step={step}
+            value={value}
+            disabled={disabled}
+            onChange={(event) => onChange(clamp(Number(event.target.value)))}
+          />
+        </div>
         <input
           type="number"
           aria-label={`${label} (exact value)`}

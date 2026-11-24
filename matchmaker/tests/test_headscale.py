@@ -15,8 +15,6 @@ from matchmaker.headscale import (
     GUEST_ACL_TAGS,
     HOST_ACL_TAG,
     HOST_ACL_TAGS,
-    USER_ACL_TAG,
-    USER_ACL_TAGS,
     HeadscaleError,
     HttpHeadscaleClient,
     PreauthGrant,
@@ -26,8 +24,6 @@ from matchmaker.mesh import (
     guest_hostname,
     guest_tailscale_up_args,
     mint_session_mesh,
-    user_hostname,
-    user_tailscale_up_args,
 )
 from tests.helpers import FakeHeadscale, auth_header, host_auth_header, inventory_payload, signup
 
@@ -61,7 +57,7 @@ def test_http_client_mints_preauth_against_mocked_headscale() -> None:
         assert body["reusable"] is False
         assert body["ephemeral"] is False
         assert body["aclTags"] == [HOST_ACL_TAG]
-        assert body["acl_tags"] == [HOST_ACL_TAG]
+        assert "acl_tags" not in body  # Headscale rejects both names together
         assert "expiration" in body
         return httpx.Response(
             200,
@@ -277,8 +273,9 @@ def test_acl_policy_is_default_deny_with_architecture_grants() -> None:
     assert ("tag:matchmaker", "tag:host") in pairs
     assert ("tag:guest", "tag:matchmaker") in pairs
     assert ("tag:matchmaker", "tag:guest") in pairs
-    assert ("tag:user", "tag:guest") in pairs
-    assert ("tag:guest", "tag:user") in pairs
+    # Issue 15: renters are not on the mesh. No rule may name tag:user.
+    assert not any("tag:user" in pair for pair in pairs)
+    assert "tag:user" not in policy["tagOwners"]
     assert ("tag:gateway", "tag:guest") in pairs
     assert ("tag:guest", "tag:gateway") in pairs
     assert (GATEWAY_ACL_TAG, GUEST_ACL_TAG) in pairs
@@ -298,8 +295,6 @@ def test_acl_policy_is_default_deny_with_architecture_grants() -> None:
     assert ("tag:host", "autogroup:internet") not in pairs
     assert ("tag:gateway", "tag:host") not in pairs
     assert ("tag:host", "tag:gateway") not in pairs
-    assert ("tag:gateway", "tag:user") not in pairs
-    assert ("tag:user", "tag:gateway") not in pairs
     assert ("tag:gateway", "tag:matchmaker") not in pairs
     assert ("tag:matchmaker", "tag:gateway") not in pairs
     assert ("tag:gateway", "tag:exit") not in pairs
@@ -310,7 +305,6 @@ def test_acl_policy_is_default_deny_with_architecture_grants() -> None:
     for tag in (
         "tag:host",
         "tag:guest",
-        "tag:user",
         "tag:matchmaker",
         "tag:exit",
         "tag:gateway",
@@ -356,15 +350,11 @@ def test_http_client_mints_ephemeral_guest_and_user_tags() -> None:
         transport=httpx.MockTransport(handler),
     )
     guest = client.mint_tagged_preauth(acl_tags=GUEST_ACL_TAGS, ephemeral=True)
-    user = client.mint_tagged_preauth(acl_tags=USER_ACL_TAGS, ephemeral=True)
 
     assert guest.ephemeral is True
-    assert user.ephemeral is True
     assert guest.acl_tags == GUEST_ACL_TAGS
-    assert user.acl_tags == USER_ACL_TAGS
     assert json.loads(recorded[0].content)["ephemeral"] is True
     assert json.loads(recorded[0].content)["aclTags"] == [GUEST_ACL_TAG]
-    assert json.loads(recorded[1].content)["aclTags"] == [USER_ACL_TAG]
     assert TEST_API_KEY not in guest.key
 
 
@@ -380,7 +370,7 @@ def test_http_client_expires_nodes_matching_session_hostnames() -> None:
                 json={
                     "nodes": [
                         {"id": "11", "givenName": guest_hostname(session_id)},
-                        {"id": "12", "name": user_hostname(session_id)},
+                        {"id": "12", "name": "dcl-extra-node"},
                         {"id": "99", "givenName": "other-node"},
                     ]
                 },
@@ -396,9 +386,7 @@ def test_http_client_expires_nodes_matching_session_hostnames() -> None:
         login_server="http://login.headscale.test.invalid",
         transport=httpx.MockTransport(handler),
     )
-    expired = client.expire_nodes_named(
-        (guest_hostname(session_id), user_hostname(session_id))
-    )
+    expired = client.expire_nodes_named((guest_hostname(session_id), "dcl-extra-node"))
     assert expired == 2
     paths = [request.url.path for request in recorded]
     assert "/api/v1/node" in paths
@@ -407,27 +395,20 @@ def test_http_client_expires_nodes_matching_session_hostnames() -> None:
     assert "/api/v1/node/99/expire" not in paths
 
 
-def test_guest_join_args_use_exit_node_user_and_host_do_not() -> None:
+def test_guest_join_args_use_exit_node_and_never_advertise() -> None:
     guest = guest_tailscale_up_args(
         login_server="http://headscale.test.invalid",
         auth_key="tskey-auth-test-guest",
         hostname="dcl-guest-example",
         exit_node=DEFAULT_EXIT_NODE,
     )
-    user = user_tailscale_up_args(
-        login_server="http://headscale.test.invalid",
-        auth_key="tskey-auth-test-user",
-        hostname="dcl-user-example",
-    )
     assert f"--exit-node={DEFAULT_EXIT_NODE}" in guest
     assert "--exit-node-allow-lan-access=false" in guest
-    assert not any(item == "--exit-node" or item.startswith("--exit-node=") for item in user)
     assert "--advertise-exit-node" not in " ".join(guest)
     assert "--advertise-tags" not in " ".join(guest)
-    assert "--advertise-exit-node" not in " ".join(user)
 
 
-def test_mint_session_mesh_tags_guest_and_user_ephemeral() -> None:
+def test_mint_session_mesh_mints_only_an_ephemeral_guest_key() -> None:
     fake = FakeHeadscale()
     session_id = uuid4()
     grant = mint_session_mesh(
@@ -436,49 +417,48 @@ def test_mint_session_mesh_tags_guest_and_user_ephemeral() -> None:
         login_server="http://headscale.test.invalid",
         exit_node=DEFAULT_EXIT_NODE,
     )
-    assert grant.exit_node_applied is True
     assert grant.guest.acl_tags == GUEST_ACL_TAGS
-    assert grant.user.acl_tags == USER_ACL_TAGS
     assert grant.guest.ephemeral is True
-    assert grant.user.ephemeral is True
     assert grant.guest.hostname == guest_hostname(session_id)
-    assert grant.user.hostname == user_hostname(session_id)
-    assert grant.guest.preauth_key != grant.user.preauth_key
     assert f"--exit-node={DEFAULT_EXIT_NODE}" in grant.guest.tailscale_up
-    assert not any(
-        item == "--exit-node" or item.startswith("--exit-node=")
-        for item in grant.user.tailscale_up
-    )
-    assert fake.tagged == [(GUEST_ACL_TAGS, True), (USER_ACL_TAGS, True)]
+    assert not hasattr(grant, "user")
+    assert fake.tagged == [(GUEST_ACL_TAGS, True)]
 
 
-def test_session_book_mints_guest_and_user_mesh_with_exit_node(
+def test_session_json_names_the_guest_but_carries_no_mesh_key(
     client: TestClient, seeded_host, fake_headscale: FakeHeadscale
 ) -> None:
+    """Issue 15: renters are not on the mesh, so they get no key at all."""
     token = signup(client)["accessToken"]
     response = client.post("/v1/sessions", headers=auth_header(token))
     assert response.status_code == 201
     mesh = response.json()["mesh"]
     session_id = UUID(response.json()["sessionId"])
-    assert mesh["loginServer"] == "http://headscale.test.invalid"
-    assert mesh["exitNode"] == DEFAULT_EXIT_NODE
-    assert mesh["exitNodeApplied"] is True
-    assert mesh["guest"]["aclTags"] == [GUEST_ACL_TAG]
-    assert mesh["user"]["aclTags"] == [USER_ACL_TAG]
-    assert mesh["guest"]["ephemeral"] is True
-    assert mesh["user"]["ephemeral"] is True
-    assert mesh["guest"]["hostname"] == guest_hostname(session_id)
-    assert mesh["user"]["hostname"] == user_hostname(session_id)
-    assert mesh["guest"]["preauthKey"].startswith("tskey-auth-test-")
-    assert mesh["guest"]["preauthKey"] != mesh["user"]["preauthKey"]
-    assert f"--exit-node={DEFAULT_EXIT_NODE}" in mesh["guest"]["tailscaleUp"]
-    assert "--advertise-exit-node" not in " ".join(mesh["guest"]["tailscaleUp"])
-    assert not any(
-        item == "--exit-node" or item.startswith("--exit-node=")
-        for item in mesh["user"]["tailscaleUp"]
-    )
-    assert (GUEST_ACL_TAGS, True) in fake_headscale.tagged
-    assert (USER_ACL_TAGS, True) in fake_headscale.tagged
+    assert mesh == {
+        "loginServer": "http://headscale.test.invalid",
+        "exitNode": DEFAULT_EXIT_NODE,
+        "exitNodeApplied": True,
+        "guestHostname": guest_hostname(session_id),
+    }
+    assert "tskey-auth" not in response.text
+    assert "preauth" not in response.text.lower()
+    assert fake_headscale.tagged == [(GUEST_ACL_TAGS, True)]
+    assert seeded_host.id
+
+
+def test_repeat_requests_do_not_mint_new_mesh_keys(
+    client: TestClient, seeded_host, fake_headscale: FakeHeadscale
+) -> None:
+    """Issue 5: asking again for the same session must not mint again."""
+    token = signup(client)["accessToken"]
+    first = client.post("/v1/sessions", headers=auth_header(token))
+    session_id = first.json()["sessionId"]
+    for _ in range(3):
+        again = client.post("/v1/sessions", headers=auth_header(token))
+        assert again.status_code == 200
+        assert again.json()["sessionId"] == session_id
+        assert client.get(f"/v1/sessions/{session_id}", headers=auth_header(token)).status_code == 200
+    assert fake_headscale.tagged == [(GUEST_ACL_TAGS, True)]
     assert seeded_host.id
 
 
@@ -501,7 +481,7 @@ def test_session_mesh_mint_failure_is_502_without_occupy(
     assert seeded_host.id
 
 
-def test_end_session_expires_guest_and_user_hostnames(
+def test_end_session_expires_the_guest_node(
     client: TestClient, seeded_host, fake_headscale: FakeHeadscale
 ) -> None:
     token = signup(client)["accessToken"]
@@ -512,7 +492,7 @@ def test_end_session_expires_guest_and_user_hostnames(
     )
     assert ended.status_code == 200
     assert guest_hostname(session_id) in fake_headscale.expired
-    assert user_hostname(session_id) in fake_headscale.expired
+    assert fake_headscale.expired == [guest_hostname(session_id)]
     assert seeded_host.id
 
 

@@ -32,6 +32,9 @@ headscale/run/
 # renterd consensus / metadata if bind-mounted instead of the named volume
 renterd/data/
 
+# Phase 4 USB kit copied back from the stick: signing key + multi-GB disk
+DCL-PHASE4/
+
 # Guest image build artifacts (multi-GB; never commit)
 guest-images/output/
 guest-images/cache/

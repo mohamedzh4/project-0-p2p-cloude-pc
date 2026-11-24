@@ -13,6 +13,7 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::config;
+use crate::host_secret;
 use crate::identity::{self, HostRegistration};
 use crate::models::{HardwareSnapshot, SharingConfig};
 
@@ -54,6 +55,8 @@ pub enum MatchmakerError {
     Config(#[from] config::ConfigError),
     #[error("could not persist the Matchmaker host id: {0}")]
     Identity(#[from] identity::IdentityError),
+    #[error("{0}")]
+    HostSecret(#[from] host_secret::HostSecretError),
     #[error("could not reach the Matchmaker: {0}")]
     Network(String),
     #[error("Matchmaker rejected host registration (HTTP {status}): {detail}")]
@@ -66,6 +69,8 @@ pub enum MatchmakerError {
 pub struct MatchmakerCredentials {
     pub base_url: String,
     bootstrap_token: String,
+    /// This machine's own secret (see `host_secret`). Sent on every call.
+    host_secret: Option<String>,
     pub display_name: String,
 }
 
@@ -74,6 +79,7 @@ impl fmt::Debug for MatchmakerCredentials {
         f.debug_struct("MatchmakerCredentials")
             .field("base_url", &self.base_url)
             .field("bootstrap_token", &"[redacted]")
+            .field("host_secret", &"[redacted]")
             .field("display_name", &self.display_name)
             .finish()
     }
@@ -94,8 +100,31 @@ impl MatchmakerCredentials {
         Ok(Self {
             base_url: normalize_base_url(&base_url)?,
             bootstrap_token,
+            host_secret: None,
             display_name: truncate_display_name(&display_name),
         })
+    }
+
+    /// Attach this machine's secret, creating it on first run.
+    pub fn with_host_secret(mut self, dir: &Path) -> Result<Self, MatchmakerError> {
+        self.host_secret = Some(host_secret::load_or_create(dir)?);
+        Ok(self)
+    }
+
+    /// A Matchmaker call carrying the shared Bearer and this host's secret.
+    pub(crate) fn request(
+        &self,
+        method: &'static str,
+        url: String,
+        body: serde_json::Value,
+    ) -> HttpRequest {
+        HttpRequest {
+            method,
+            url,
+            authorization: self.authorization_header(),
+            host_secret: self.host_secret.clone(),
+            body,
+        }
     }
 
     pub(crate) fn authorization_header(&self) -> String {
@@ -157,6 +186,7 @@ pub struct HttpRequest {
     pub method: &'static str,
     pub url: String,
     pub(crate) authorization: String,
+    pub(crate) host_secret: Option<String>,
     pub body: serde_json::Value,
 }
 
@@ -166,6 +196,10 @@ impl fmt::Debug for HttpRequest {
             .field("method", &self.method)
             .field("url", &self.url)
             .field("authorization", &"Bearer [redacted]")
+            .field(
+                "host_secret",
+                &self.host_secret.as_ref().map(|_| "[redacted]"),
+            )
             .field("body", &self.body)
             .finish()
     }
@@ -195,6 +229,7 @@ impl Transport for UreqTransport {
         let agent = ureq::AgentBuilder::new()
             .timeout(REQUEST_TIMEOUT)
             .redirects(0)
+            .resolver(crate::resolver::FallbackResolver)
             .build();
 
         let call = match request.method {
@@ -210,6 +245,10 @@ impl Transport for UreqTransport {
         .set("Authorization", request.authorization_header())
         .set("Accept", "application/json")
         .set("User-Agent", "host-agent/0.1");
+        let call = match request.host_secret.as_deref() {
+            Some(secret) => call.set(host_secret::HOST_SECRET_HEADER, secret),
+            None => call,
+        };
 
         let result = if request.method == "GET" {
             call.call()
@@ -250,7 +289,7 @@ pub fn register_declared_caps(
     transport: &impl Transport,
 ) -> Result<HostRegistration, MatchmakerError> {
     let config = config::load_for_hardware(dir, hardware)?;
-    let credentials = MatchmakerCredentials::from_lookup(&mut lookup)?;
+    let credentials = MatchmakerCredentials::from_lookup(&mut lookup)?.with_host_secret(dir)?;
     let agent_url = advertised_agent_url(&mut lookup)?;
     sync_inventory(transport, &credentials, dir, &config, hardware, agent_url)
 }
@@ -274,12 +313,7 @@ pub fn sync_inventory(
         None => ("POST", hosts_url(&credentials.base_url)),
     };
 
-    let request = HttpRequest {
-        method,
-        url,
-        authorization: credentials.authorization_header(),
-        body: payload,
-    };
+    let request = credentials.request(method, url, payload);
     let response = transport.send(&request)?;
     let registration = parse_registration(response.status, &response.body)?;
     identity::save(dir, &registration)?;
@@ -318,7 +352,7 @@ pub fn heartbeat_tick(
     let Some(identity) = identity::load(dir)? else {
         return Ok(HeartbeatOutcome::SkippedNotRegistered);
     };
-    let credentials = MatchmakerCredentials::from_lookup(lookup)?;
+    let credentials = MatchmakerCredentials::from_lookup(lookup)?.with_host_secret(dir)?;
     send_heartbeat(transport, &credentials, &identity.host_id)?;
     Ok(HeartbeatOutcome::Sent)
 }
@@ -328,12 +362,11 @@ fn send_heartbeat(
     credentials: &MatchmakerCredentials,
     host_id: &str,
 ) -> Result<(), MatchmakerError> {
-    let request = HttpRequest {
-        method: "POST",
-        url: heartbeat_url(&credentials.base_url, host_id),
-        authorization: credentials.authorization_header(),
-        body: serde_json::json!({}),
-    };
+    let request = credentials.request(
+        "POST",
+        heartbeat_url(&credentials.base_url, host_id),
+        serde_json::json!({}),
+    );
     let response = transport.send(&request)?;
     parse_heartbeat(response.status, &response.body)
 }
@@ -365,13 +398,12 @@ pub fn fetch_credits_accrued(
     let Some(identity) = identity::load(dir)? else {
         return Ok(0);
     };
-    let credentials = MatchmakerCredentials::from_lookup(lookup)?;
-    let request = HttpRequest {
-        method: "GET",
-        url: earnings_url(&credentials.base_url, &identity.host_id),
-        authorization: credentials.authorization_header(),
-        body: serde_json::Value::Null,
-    };
+    let credentials = MatchmakerCredentials::from_lookup(lookup)?.with_host_secret(dir)?;
+    let request = credentials.request(
+        "GET",
+        earnings_url(&credentials.base_url, &identity.host_id),
+        serde_json::Value::Null,
+    );
     let response = transport.send(&request)?;
     parse_earnings(response.status, &response.body)
 }
@@ -521,7 +553,7 @@ fn truncate_display_name(value: &str) -> String {
     trimmed.chars().take(DISPLAY_NAME_MAX).collect()
 }
 
-fn truncate_detail(body: &str) -> String {
+pub(crate) fn truncate_detail(body: &str) -> String {
     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.len() <= ERROR_BODY_MAX {
         compact
@@ -616,6 +648,7 @@ mod tests {
                 method: calls[0].method,
                 url: calls[0].url.clone(),
                 authorization: calls[0].authorization.clone(),
+                host_secret: calls[0].host_secret.clone(),
                 body: calls[0].body.clone(),
             }
         }
@@ -627,6 +660,7 @@ mod tests {
                 method: request.method,
                 url: request.url.clone(),
                 authorization: request.authorization.clone(),
+                host_secret: request.host_secret.clone(),
                 body: request.body.clone(),
             });
             Ok(HttpResponse {
@@ -1099,6 +1133,32 @@ mod tests {
 
         let outcome = heartbeat_tick(dir.path(), heartbeat_lookup, &PanicTransport).unwrap();
         assert_eq!(outcome, HeartbeatOutcome::SkippedNotRegistered);
+    }
+
+    #[test]
+    fn every_matchmaker_call_carries_this_machines_secret() {
+        let dir = tempdir().unwrap();
+        persist_registered_sharing(dir.path(), true);
+        let transport = RecordingTransport {
+            status: 200,
+            body: api_body(
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                4,
+                8 * BYTES_PER_GIB,
+                false,
+                None,
+            ),
+            calls: Mutex::new(Vec::new()),
+        };
+
+        heartbeat_tick(dir.path(), heartbeat_lookup, &transport).unwrap();
+
+        let request = transport.last();
+        let secret = crate::host_secret::load_or_create(dir.path()).unwrap();
+        assert_eq!(request.host_secret.as_deref(), Some(secret.as_str()));
+        // The secret is not the shared token and is never in Debug output.
+        assert_ne!(secret, TEST_BOOTSTRAP_TOKEN);
+        assert!(!format!("{request:?}").contains(&secret));
     }
 
     #[test]

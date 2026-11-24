@@ -8,7 +8,9 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/dcl-guest-join
 ExecStop=/usr/local/sbin/dcl-guest-join --flush
-TimeoutStartSec=180
+TimeoutStartSec=300
+# The stop step waits up to 75 s for rclone to finish uploading.
+TimeoutStopSec=85
 
 [Install]
 WantedBy=multi-user.target

@@ -10,8 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from matchmaker.config import get_settings
 from matchmaker.db import get_session_factory
-from matchmaker.deps import get_headscale_client, get_host_provisioner, get_host_selector
-from matchmaker.routers import auth, gateway, guest, hosts, images, sessions, storage
+from matchmaker.deps import (
+    get_headscale_client,
+    get_host_provisioner,
+    get_host_selector,
+    get_provision_scheduler,
+)
+from matchmaker.routers import auth, gateway, guest, host_kits, hosts, images, sessions, storage
 from matchmaker.silence import reclaim_stale_sessions
 
 logger = logging.getLogger(__name__)
@@ -27,6 +32,7 @@ def _sweep_stale_sessions_once() -> None:
             get_host_provisioner(),
             credits_per_minute=settings.credits_per_minute,
             headscale=get_headscale_client(),
+            scheduler=get_provision_scheduler(),
         )
     except Exception:
         db.rollback()
@@ -74,6 +80,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(auth.router, prefix="/v1/auth", tags=["auth"])
     app.include_router(hosts.router, prefix="/v1", tags=["hosts"])
+    app.include_router(host_kits.router, prefix="/v1", tags=["hosts"])
     app.include_router(images.router, prefix="/v1", tags=["images"])
     app.include_router(sessions.router, prefix="/v1", tags=["sessions"])
     app.include_router(guest.router, prefix="/v1", tags=["guest"])

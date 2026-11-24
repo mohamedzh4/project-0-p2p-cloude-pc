@@ -64,6 +64,30 @@ export IMAGE_SIGNING_PRIVATE_KEY="$HOME/dcl-dev-ed25519.pem"
 `packer init` pulls the HashiCorp QEMU plugin. The Standard image installs
 XFCE and KasmVNC but does not run nested Docker or pull workspace containers.
 
+## Build on a borrowed PC (USB kit)
+
+`friend-kit/` builds the Standard disk on someone else's Ubuntu/Debian or
+Arch PC and leaves that PC as it was.
+
+```bash
+# on your Mac, USB drive formatted exFAT
+bash guest-images/friend-kit/make-usb-kit.sh /Volumes/<USB>
+# on the borrowed PC
+sudo bash /media/$USER/<USB>/DCL-PHASE4/phase4.sh
+```
+
+- The signing key stays on the USB drive; the build reads it from there.
+- Tools are installed only if missing. If installing them would upgrade a
+  package the PC already has, it stops before changing anything.
+- Packer is a private download under `/var/tmp/dcl-phase4`, not installed.
+- The disk (compressed `rootfs.qcow2`) and `env.snippet` go to
+  `DCL-PHASE4/output/`. Then the build folder, the added packages and their
+  downloaded package files are removed, also after a failure or Ctrl-C.
+  `--cleanup-only` undoes a run cut short by a power loss.
+- Tested in Ubuntu 24.04 and Arch containers with `DCL_PHASE4_FAKE_BUILD=1`
+  (fake disk, real install, signing, saving and cleanup). Package lists were
+  identical before and after. A real Packer build was not part of that test.
+
 ## Outputs (gitignored)
 
 Under `output/<standard|pro>/`:

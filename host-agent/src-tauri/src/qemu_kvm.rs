@@ -1,8 +1,16 @@
 //! Linux Standard QEMU+KVM runtime.
 //!
-//! The signed Ubuntu image boots its own kernel and initramfs. SLIRP gives the
-//! guest outbound networking without a privileged TAP device; the guest then
-//! joins Headscale and exposes Kasm to the gateway over that mesh.
+//! The signed Ubuntu image boots its own kernel and initramfs. The guest gets
+//! outbound networking without a privileged TAP device, then joins Headscale
+//! and exposes Kasm to the gateway over that mesh.
+//!
+//! Network backend (behind the same virtio-net card):
+//! - **passt** when the `passt` binary is installed and QEMU has the `stream`
+//!   netdev (QEMU 7.2+). Much faster than SLIRP, no root. It is started with
+//!   `--no-map-gw`, so the guest cannot reach the host through the gateway
+//!   address, and with no inbound port forwards.
+//! - **SLIRP** otherwise, or when `HOST_AGENT_NET_BACKEND=slirp`, or when
+//!   passt does not come up. A failed passt never blocks a session.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -17,6 +25,11 @@ use crate::qemu_whpx::{self, MEMORY_ARG, SMP_ARG};
 pub const ENABLE_KVM: &str = "-enable-kvm";
 pub const MACHINE_Q35: &str = "q35";
 pub const QEMU_BIN_ENV: &str = "HOST_AGENT_QEMU_BIN";
+/// `slirp` forces the old backend. Anything else lets the agent pick.
+pub const NET_BACKEND_ENV: &str = "HOST_AGENT_NET_BACKEND";
+const PASST_PATHS: [&str; 2] = ["/usr/bin/passt", "/usr/local/bin/passt"];
+const PASST_SOCKET_WAIT_STEPS: u32 = 40;
+const PASST_SOCKET_STEP: std::time::Duration = std::time::Duration::from_millis(50);
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum QemuKvmError {
@@ -70,6 +83,21 @@ pub trait QemuKvmSpawner {
     fn spawn(&self, binary: &Path, args: &[String])
         -> Result<Box<dyn QemuKvmChild>, QemuKvmError>;
     fn detach(&self, child: Box<dyn QemuKvmChild>);
+
+    /// Where `passt` is, when this host should use it. None keeps SLIRP.
+    fn passt_binary(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// Whether this QEMU knows `-netdev stream` (needed to talk to passt).
+    fn qemu_supports_stream(&self, _qemu: &Path) -> bool {
+        true
+    }
+
+    /// Wait for passt's socket to appear. False when it never does.
+    fn wait_for_socket(&self, _socket: &Path) -> bool {
+        true
+    }
 }
 
 pub trait QemuKvmRuntime: Send + Sync {
@@ -113,6 +141,31 @@ impl QemuKvmSpawner for ProcessSpawner {
 
     fn detach(&self, child: Box<dyn QemuKvmChild>) {
         RUNNING.lock().expect("qemu kvm running mutex").push(child);
+    }
+
+    fn passt_binary(&self) -> Option<PathBuf> {
+        if cfg!(test) || std::env::var(NET_BACKEND_ENV).is_ok_and(|v| v.trim() == "slirp") {
+            return None;
+        }
+        PASST_PATHS.iter().map(PathBuf::from).find(|path| path.is_file())
+    }
+
+    fn qemu_supports_stream(&self, qemu: &Path) -> bool {
+        std::process::Command::new(qemu)
+            .args(["-netdev", "help"])
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).lines().any(|l| l.trim() == "stream"))
+            .unwrap_or(false)
+    }
+
+    fn wait_for_socket(&self, socket: &Path) -> bool {
+        for _ in 0..PASST_SOCKET_WAIT_STEPS {
+            if socket.exists() {
+                return true;
+            }
+            std::thread::sleep(PASST_SOCKET_STEP);
+        }
+        false
     }
 }
 
@@ -164,7 +217,74 @@ pub fn resolve_binary(
     Err(QemuKvmError::BinaryMissing)
 }
 
+/// Default arguments: SLIRP networking. Used by the Windows/Linux parity test.
+#[cfg(test)]
 pub fn argv(vcpu_count: u32, memory_mib: u64, disk: &Path) -> Vec<String> {
+    argv_with_net(vcpu_count, memory_mib, disk, qemu_whpx::net_argv())
+}
+
+/// `-netdev stream` to a running passt, plus the same virtio-net card.
+pub fn passt_net_argv(socket: &Path) -> Vec<String> {
+    vec![
+        qemu_whpx::NETDEV_ARG.to_string(),
+        format!(
+            "stream,id=net0,server=off,addr.type=unix,addr.path={}",
+            socket.display()
+        ),
+        qemu_whpx::DEVICE_ARG.to_string(),
+        qemu_whpx::VIRTIO_NET.to_string(),
+    ]
+}
+
+/// passt in the foreground, on `socket`, no inbound forwards, and the
+/// gateway address not mapped to the host.
+pub fn passt_args(socket: &Path) -> Vec<String> {
+    [
+        "-f",
+        "--no-map-gw",
+        "-t",
+        "none",
+        "-u",
+        "none",
+        "-s",
+    ]
+    .iter()
+    .map(|arg| arg.to_string())
+    .chain(std::iter::once(socket.display().to_string()))
+    .collect()
+}
+
+fn passt_socket_path() -> PathBuf {
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    base.join(format!("dcl-passt-{}.sock", std::process::id()))
+}
+
+/// Start passt and wait for its socket. None keeps SLIRP: no passt, QEMU too
+/// old, spawn failed, or the socket never appeared.
+fn start_passt(qemu: &Path, spawner: &dyn QemuKvmSpawner) -> Option<(PathBuf, Box<dyn QemuKvmChild>)> {
+    let passt = spawner.passt_binary()?;
+    if !spawner.qemu_supports_stream(qemu) {
+        return None;
+    }
+    let socket = passt_socket_path();
+    let _ = std::fs::remove_file(&socket);
+    let mut child = spawner.spawn(&passt, &passt_args(&socket)).ok()?;
+    if !spawner.wait_for_socket(&socket) {
+        child.kill();
+        return None;
+    }
+    Some((socket, child))
+}
+
+pub fn argv_with_net(
+    vcpu_count: u32,
+    memory_mib: u64,
+    disk: &Path,
+    net: Vec<String>,
+) -> Vec<String> {
     let mut args = vec![
         ENABLE_KVM.to_string(),
         qemu_whpx::MACHINE_ARG.to_string(),
@@ -176,10 +296,7 @@ pub fn argv(vcpu_count: u32, memory_mib: u64, disk: &Path) -> Vec<String> {
         MEMORY_ARG.to_string(),
         qemu_whpx::memory_flag(memory_mib),
         "-drive".to_string(),
-        format!(
-            "file={},if=virtio,format=raw",
-            disk.to_string_lossy()
-        ),
+        qemu_whpx::virtio_drive(&disk.to_string_lossy()),
         "-display".to_string(),
         "none".to_string(),
         "-monitor".to_string(),
@@ -188,7 +305,7 @@ pub fn argv(vcpu_count: u32, memory_mib: u64, disk: &Path) -> Vec<String> {
         "none".to_string(),
         "-no-reboot".to_string(),
     ];
-    args.extend(qemu_whpx::net_argv());
+    args.extend(net);
     args
 }
 
@@ -253,15 +370,34 @@ pub fn invoke(
         return Err(QemuKvmError::InvalidVcpu(request.vcpu_count));
     }
 
-    let mut args = argv(request.vcpu_count, request.memory_mib, request.disk);
+    let passt = start_passt(request.binary, spawner);
+    let net = match &passt {
+        Some((socket, _)) => passt_net_argv(socket),
+        None => qemu_whpx::net_argv(),
+    };
+    let mut args = argv_with_net(request.vcpu_count, request.memory_mib, request.disk, net);
     args.extend(crate::guest_bootstrap::qemu_bootstrap_argv(
         request.bootstrap_origin,
         request.bootstrap_token,
     ));
+    let (qga_port, guest_args) = crate::guest_power::prepare();
+    args.extend(guest_args);
     debug_assert!(!args.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));
     debug_assert!(!args.iter().any(|arg| arg.eq_ignore_ascii_case("whpx")));
-    let child = spawner.spawn(request.binary, &args)?;
+    let child = match spawner.spawn(request.binary, &args) {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some((_, mut passt_child)) = passt {
+                passt_child.kill();
+            }
+            return Err(error);
+        }
+    };
+    if let Some((_, passt_child)) = passt {
+        spawner.detach(passt_child);
+    }
     spawner.detach(child);
+    crate::guest_power::remember(qga_port);
     Ok(InvokeResult {
         hypervisor_invoked: true,
         argv: args,
@@ -448,5 +584,96 @@ mod tests {
             Err(QemuKvmError::LinuxOnly(HostOs::Windows))
         );
         assert!(recorder.calls.lock().unwrap().is_empty());
+    }
+
+    struct PasstSpawner {
+        socket_ready: bool,
+        calls: Mutex<Vec<(PathBuf, Vec<String>)>>,
+        killed: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    struct CountingChild(std::sync::Arc<std::sync::atomic::AtomicU32>);
+
+    impl QemuKvmChild for CountingChild {
+        fn kill(&mut self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl QemuKvmSpawner for PasstSpawner {
+        fn spawn(
+            &self,
+            binary: &Path,
+            args: &[String],
+        ) -> Result<Box<dyn QemuKvmChild>, QemuKvmError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((binary.to_path_buf(), args.to_vec()));
+            Ok(Box::new(CountingChild(self.killed.clone())))
+        }
+        fn detach(&self, _child: Box<dyn QemuKvmChild>) {}
+        fn passt_binary(&self) -> Option<PathBuf> {
+            Some(PathBuf::from("/usr/bin/passt"))
+        }
+        fn wait_for_socket(&self, _socket: &Path) -> bool {
+            self.socket_ready
+        }
+    }
+
+    fn run_with_passt(socket_ready: bool) -> (InvokeResult, Vec<(PathBuf, Vec<String>)>, u32) {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("qemu-system-x86_64");
+        let disk = dir.path().join("rootfs.img");
+        fs::write(&binary, b"qemu").unwrap();
+        fs::write(&disk, b"disk").unwrap();
+        let spawner = PasstSpawner {
+            socket_ready,
+            calls: Mutex::new(Vec::new()),
+            killed: Default::default(),
+        };
+        let result = invoke(
+            &InvokeRequest {
+                os: HostOs::Linux,
+                lab_tier: LabTier::Standard,
+                capabilities: &caps(),
+                binary: &binary,
+                disk: &disk,
+                vcpu_count: 2,
+                memory_mib: 4096,
+                arch: "x86_64",
+                bootstrap_origin: None,
+                bootstrap_token: None,
+            },
+            &spawner,
+        )
+        .unwrap();
+        let calls = spawner.calls.lock().unwrap().clone();
+        let killed = spawner.killed.load(std::sync::atomic::Ordering::SeqCst);
+        (result, calls, killed)
+    }
+
+    #[test]
+    fn passt_replaces_slirp_when_it_comes_up() {
+        let (result, calls, killed) = run_with_passt(true);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, PathBuf::from("/usr/bin/passt"));
+        let passt_args = &calls[0].1;
+        assert!(passt_args.contains(&"--no-map-gw".to_string()));
+        assert!(passt_args.windows(2).any(|p| p == ["-t", "none"]));
+        assert!(passt_args.windows(2).any(|p| p == ["-u", "none"]));
+        assert!(result.argv.iter().any(|a| a.starts_with("stream,id=net0,server=off,addr.type=unix")));
+        assert!(!result.argv.iter().any(|a| a == qemu_whpx::NETDEV_USER));
+        assert!(result.argv.iter().any(|a| a == qemu_whpx::VIRTIO_NET));
+        assert_eq!(killed, 0);
+    }
+
+    #[test]
+    fn a_passt_that_never_comes_up_falls_back_to_slirp_and_is_stopped() {
+        let (result, calls, killed) = run_with_passt(false);
+        assert_eq!(calls.len(), 2, "passt was tried, then QEMU started");
+        assert!(result.argv.iter().any(|a| a == qemu_whpx::NETDEV_USER));
+        assert!(!result.argv.iter().any(|a| a.starts_with("stream,")));
+        assert_eq!(killed, 1, "the failed passt process is killed");
     }
 }

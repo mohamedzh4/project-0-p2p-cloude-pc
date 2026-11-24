@@ -5,6 +5,7 @@ import {
   evaluateHostingOffers,
   getAgentStatus,
   getConfigFilePath,
+  getDiagnosticsReport,
   getGuestImageStatus,
   getHardwareInfo,
   getHostCapabilities,
@@ -19,6 +20,8 @@ import {
   setSharingEnabled,
 } from "./api";
 import { CapabilityPanel } from "./components/CapabilityPanel";
+import { PixelIcon } from "./components/PixelIcon";
+import { SkyCanvas } from "./components/SkyCanvas";
 import { HardwareCard } from "./components/HardwareCard";
 import { GpuShareField } from "./components/GpuShareField";
 import { ResourceSlider } from "./components/ResourceSlider";
@@ -54,6 +57,17 @@ export default function App() {
   const [savedConfig, setSavedConfig] = useState<SharingConfig | null>(null);
   const [configPath, setConfigPath] = useState("");
   const [registration, setRegistration] = useState<HostRegistration | null>(null);
+  const [reportState, setReportState] = useState<"idle" | "copied" | "failed">("idle");
+
+  async function handleCopyReport() {
+    try {
+      const report = await getDiagnosticsReport();
+      await navigator.clipboard.writeText(report);
+      setReportState("copied");
+    } catch {
+      setReportState("failed");
+    }
+  }
   const [status, setStatus] = useState<AgentStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ kind: "idle" });
@@ -277,12 +291,18 @@ export default function App() {
 
   return (
     <main className="app">
+      <SkyCanvas />
       <header className="header reveal" data-reveal={0}>
         <div>
+          <div className="brand-row">
+            <PixelIcon name="cloud" size={22} />
+            Blue Sky
+          </div>
           <h1>Host Agent</h1>
           <p>Choose how much of this machine you can spare while you keep using it. Pause at any time — that stops Matchmaker pings immediately.</p>
         </div>
         <span className="pill" data-presence={presence === "inSession" ? "in-session" : presence}>
+          <PixelIcon name={presence === "paused" ? "pause" : "server"} size={18} />
           {presenceLabel(presence)}
         </span>
       </header>
@@ -351,6 +371,7 @@ export default function App() {
         <h2>Detected hardware</h2>
         <div className="cards">
           <HardwareCard
+            icon="cpu"
             title="CPU"
             value={hardware.cpu.model}
             detail={
@@ -359,8 +380,9 @@ export default function App() {
                 : formatCores(hardware.cpu.logicalCores)
             }
           />
-          <HardwareCard title="Memory" value={formatGib(hardware.memory.totalBytes)} detail="Total installed RAM" />
+          <HardwareCard icon="memory" title="Memory" value={formatGib(hardware.memory.totalBytes)} detail="Total installed RAM" />
           <HardwareCard
+            icon="gpu"
             title="GPU"
             value={
               gpus.length === 0
@@ -372,7 +394,12 @@ export default function App() {
             detail={
               gpus.length === 0
                 ? hardware.gpuNote
-                : gpus.map((gpu) => formatGpuLabel(gpu.model, gpu.vramBytes)).join(" · ")
+                : gpus
+                    .map(
+                      (gpu) =>
+                        formatGpuLabel(gpu.model, gpu.vramBytes) + (gpu.integrated ? " (integrated)" : ""),
+                    )
+                    .join(" · ")
             }
             empty={gpus.length === 0}
           />
@@ -407,6 +434,7 @@ export default function App() {
 
         <ResourceSlider
           id="shared-cores"
+          icon="cpu"
           label="CPU cores"
           readout={`${config.sharedLogicalCores} of ${hardware.cpu.logicalCores}`}
           min={0}
@@ -418,6 +446,7 @@ export default function App() {
 
         <ResourceSlider
           id="shared-memory"
+          icon="memory"
           label="Memory"
           readout={`${sharedMemoryGib} of ${maxMemoryGib} GiB`}
           min={0}
@@ -432,7 +461,7 @@ export default function App() {
           gpus={gpus}
           shareGpu={config.shareGpu}
           sharedGpuId={config.sharedGpuId}
-          disabled={gpus.length === 0}
+          disabled={!gpus.some((gpu) => !gpu.integrated)}
           onShareChange={(shareGpu) => update({ shareGpu })}
           onGpuChange={(sharedGpuId) => update({ sharedGpuId })}
         />
@@ -503,6 +532,19 @@ export default function App() {
               Not registered with the Matchmaker yet. Save to declare these caps from Rust.
             </p>
           )}
+        </div>
+
+        <div className="registration">
+          <button type="button" className="secondary" onClick={() => void handleCopyReport()}>
+            Copy report
+          </button>
+          <p className="hint" role="status">
+            {reportState === "copied"
+              ? "Report copied. Paste it into your message to support."
+              : reportState === "failed"
+                ? "Could not copy the report. Try again."
+                : "If something fails, copy this report and send it. It contains versions, what this PC can host and the last provision error. It contains no passwords or tokens."}
+          </p>
         </div>
       </section>
     </main>

@@ -12,17 +12,23 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 import hashlib
 import secrets
+import string
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from matchmaker.ingress import TOKEN_RE
 from matchmaker.mesh import SessionMeshGrant, guest_mesh_hint, guest_tailscale_up_args
-from matchmaker.models import LabSession, SessionGuestBootstrap, SessionStatus
+from matchmaker.models import OCCUPYING_STATUSES, LabSession, SessionGuestBootstrap
 from matchmaker.schemas import GuestBootstrapResponse, GuestBootstrapStorage
 from matchmaker.storage import GuestStorageLocators, guest_rclone_args
+from matchmaker.storage_credentials import GuestStorageCredentials
 
 _TOKEN_BYTES = 32
+# KasmVNC basic-auth account inside the guest image.
+DESKTOP_USER = "ubuntu"
+_DESKTOP_PASSWORD_CHARS = string.ascii_letters + string.digits
+_DESKTOP_PASSWORD_LENGTH = 32
 
 
 def hash_bootstrap_token(token: str) -> str:
@@ -34,6 +40,23 @@ def new_bootstrap_token() -> str:
     if TOKEN_RE.fullmatch(token) is None:
         raise RuntimeError("generated guest bootstrap token failed format check")
     return token
+
+
+def new_desktop_password() -> str:
+    """Letters and digits only: it travels through shell and HTTP Basic auth."""
+    return "".join(
+        secrets.choice(_DESKTOP_PASSWORD_CHARS) for _ in range(_DESKTOP_PASSWORD_LENGTH)
+    )
+
+
+def desktop_credentials(db: Session, session_id: UUID) -> tuple[str, str] | None:
+    """(user, password) the gateway must present to this session's desktop."""
+    row = db.scalars(
+        select(SessionGuestBootstrap).where(SessionGuestBootstrap.session_id == session_id)
+    ).first()
+    if row is None or not row.desktop_password:
+        return None
+    return DESKTOP_USER, row.desktop_password
 
 
 def ensure_guest_bootstrap(
@@ -63,6 +86,7 @@ def ensure_guest_bootstrap(
         exit_node=grant.exit_node,
         acl_tags=",".join(grant.guest.acl_tags),
         guest_preauth_key=grant.guest.preauth_key,
+        desktop_password=new_desktop_password(),
         storage_endpoint=storage.endpoint,
         storage_bucket=storage.bucket,
         storage_prefix=storage.prefix,
@@ -96,7 +120,7 @@ def lookup_guest_bootstrap(
     if row.expires_at <= moment:
         return None
     session = db.get(LabSession, row.session_id)
-    if session is None or session.status != SessionStatus.ACTIVE:
+    if session is None or session.status not in OCCUPYING_STATUSES:
         return None
     if row.redeemed_at is None:
         row.redeemed_at = moment
@@ -137,8 +161,8 @@ def record_saved_as_of(
 def bootstrap_response(
     row: SessionGuestBootstrap,
     *,
-    access_key: str,
-    secret_key: str,
+    credentials: GuestStorageCredentials,
+    read_only: bool = False,
 ) -> GuestBootstrapResponse:
     tags = tuple(tag for tag in row.acl_tags.split(",") if tag)
     rclone = guest_rclone_args(
@@ -146,6 +170,7 @@ def bootstrap_response(
         prefix=row.storage_prefix,
         endpoint=row.storage_endpoint,
         region=row.storage_region,
+        read_only=read_only,
     )
     return GuestBootstrapResponse(
         login_server=row.login_server,
@@ -153,6 +178,8 @@ def bootstrap_response(
         hostname=row.hostname,
         exit_node=row.exit_node,
         acl_tags=list(tags),
+        desktop_user=DESKTOP_USER if row.desktop_password else None,
+        desktop_password=row.desktop_password,
         tailscale_up=list(
             guest_tailscale_up_args(
                 login_server=row.login_server,
@@ -168,8 +195,10 @@ def bootstrap_response(
             prefix=row.storage_prefix,
             rclone_args=rclone,
             env_auth=True,
-            access_key_id=access_key,
-            secret_access_key=secret_key,
+            access_key_id=credentials.access_key_id,
+            secret_access_key=credentials.secret_access_key,
+            session_token=credentials.session_token,
+            read_only=read_only,
         ),
     )
 

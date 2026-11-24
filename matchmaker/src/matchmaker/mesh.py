@@ -1,14 +1,12 @@
-"""Per-session Headscale guest/user grants (phase 17).
+"""Per-session Headscale guest grant.
 
-Headscale 0.26.1 can mint tagged, ephemeral preauth keys without Tailscale
-SaaS. Matchmaker uses that for `tag:guest` (the VM) and `tag:user` (the
-renter client) on each session. Host Agent join stays `tag:host` and never
-receives these keys.
+Each session mints one ephemeral `tag:guest` preauth key for the VM. The
+key is stored with the guest bootstrap row and reaches only the guest; it
+is never in session JSON and never sent to the Host Agent.
 
-Leftover: `acl.hujson` is still role-based. Headscale 0.26 has no policy API
-to insert pairwise `tag:session-<uuid>` owners, so every `tag:user` may still
-reach every `tag:guest`. Isolation beyond that is hostname + ephemeral keys,
-not a unique ACL tag per booking.
+Renters do not join the mesh. The public gateway is the only way to a
+guest desktop, and its per-session token is what scopes access. (Before,
+every renter got a `tag:user` key that could reach every guest.)
 """
 
 from __future__ import annotations
@@ -16,8 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from matchmaker.headscale import GUEST_ACL_TAGS, USER_ACL_TAGS, HeadscaleClient, PreauthGrant
-from matchmaker.schemas import MeshPeerInfo, SessionMeshInfo
+from matchmaker.headscale import GUEST_ACL_TAGS, HeadscaleClient, PreauthGrant
+from matchmaker.schemas import SessionMeshInfo
 
 _FORBIDDEN_JOIN_FLAGS = ("--advertise-exit-node", "--advertise-tags")
 
@@ -37,19 +35,11 @@ class SessionPeerGrant:
 
 @dataclass(frozen=True)
 class SessionMeshGrant:
-    """Guest + user join plans for one Lab session."""
+    """Guest join plan for one Lab session."""
 
     login_server: str
     exit_node: str | None
     guest: SessionPeerGrant
-    user: SessionPeerGrant
-
-    @property
-    def exit_node_applied(self) -> bool:
-        if not self.exit_node:
-            return False
-        needle = f"--exit-node={self.exit_node}"
-        return needle in self.guest.tailscale_up
 
 
 @dataclass(frozen=True)
@@ -71,10 +61,6 @@ class GuestMeshHint:
 
 def guest_hostname(session_id: UUID) -> str:
     return f"dcl-guest-{session_id}"
-
-
-def user_hostname(session_id: UUID) -> str:
-    return f"dcl-user-{session_id}"
 
 
 def guest_tailscale_up_args(
@@ -107,30 +93,6 @@ def guest_tailscale_up_args(
     return tuple(args)
 
 
-def user_tailscale_up_args(
-    *,
-    login_server: str,
-    auth_key: str,
-    hostname: str,
-) -> tuple[str, ...]:
-    """Renter-client join. No `--exit-node` — only the guest VM must hairpin egress."""
-    args = [
-        "up",
-        "--login-server",
-        login_server,
-        "--authkey",
-        auth_key,
-        "--hostname",
-        hostname,
-        "--accept-dns=true",
-        "--accept-routes=false",
-    ]
-    _reject_forbidden(args)
-    if any(item == "--exit-node" or item.startswith("--exit-node=") for item in args):
-        raise ValueError("user mesh join must not set --exit-node")
-    return tuple(args)
-
-
 def mint_session_mesh(
     client: HeadscaleClient,
     *,
@@ -138,11 +100,9 @@ def mint_session_mesh(
     login_server: str,
     exit_node: str | None,
 ) -> SessionMeshGrant:
-    """Mint ephemeral guest+user keys. Does not join a node and does not call Tailscale SaaS."""
+    """Mint the ephemeral guest key. Does not join a node."""
     guest_grant = client.mint_tagged_preauth(acl_tags=GUEST_ACL_TAGS, ephemeral=True)
-    user_grant = client.mint_tagged_preauth(acl_tags=USER_ACL_TAGS, ephemeral=True)
     guest_host = guest_hostname(session_id)
-    user_host = user_hostname(session_id)
     return SessionMeshGrant(
         login_server=login_server,
         exit_node=exit_node,
@@ -157,22 +117,12 @@ def mint_session_mesh(
                 exit_node=exit_node,
             ),
         ),
-        user=_peer(
-            grant=user_grant,
-            hostname=user_host,
-            acl_tags=USER_ACL_TAGS,
-            tailscale_up=user_tailscale_up_args(
-                login_server=login_server,
-                auth_key=user_grant.key,
-                hostname=user_host,
-            ),
-        ),
     )
 
 
 def expire_session_mesh(client: HeadscaleClient, *, session_id: UUID) -> int:
-    """Best-effort expire of nodes that joined with this session's hostnames."""
-    return client.expire_nodes_named((guest_hostname(session_id), user_hostname(session_id)))
+    """Best-effort expire of the guest node that joined for this session."""
+    return client.expire_nodes_named((guest_hostname(session_id),))
 
 
 def guest_mesh_hint(
@@ -191,25 +141,15 @@ def guest_mesh_hint(
     )
 
 
-def mesh_info_from_grant(grant: SessionMeshGrant) -> SessionMeshInfo:
+def session_mesh_info(
+    session_id: UUID, *, login_server: str, exit_node: str | None
+) -> SessionMeshInfo:
+    """What a renter may know about the guest's mesh identity. No keys."""
     return SessionMeshInfo(
-        login_server=grant.login_server,
-        exit_node=grant.exit_node,
-        exit_node_applied=grant.exit_node_applied,
-        guest=_peer_info(grant.guest),
-        user=_peer_info(grant.user),
-    )
-
-
-def _peer_info(peer: SessionPeerGrant) -> MeshPeerInfo:
-    return MeshPeerInfo(
-        hostname=peer.hostname,
-        acl_tags=list(peer.acl_tags),
-        preauth_key=peer.preauth_key,
-        ephemeral=peer.ephemeral,
-        reusable=peer.reusable,
-        expires_at=peer.expires_at,
-        tailscale_up=list(peer.tailscale_up),
+        login_server=login_server,
+        exit_node=exit_node,
+        exit_node_applied=bool(exit_node),
+        guest_hostname=guest_hostname(session_id),
     )
 
 

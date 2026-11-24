@@ -8,25 +8,28 @@ HostSelector.select call — ranking stays in the injected selector.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from matchmaker.guest_bootstrap import ensure_guest_bootstrap, expire_session_bootstrap
-from matchmaker.ingress import expire_session_ingress
+from matchmaker.booking import (
+    InlineScheduler,
+    ProvisionScheduler,
+    fail_stuck_provisioning,
+    occupying_session_for_user,
+    open_session,
+    provision_job_runner,
+    release_session_grants,
+)
+from matchmaker.config import get_settings
+from matchmaker.db import get_session_factory
+from matchmaker.headscale import HeadscaleClient, HeadscaleError
 from matchmaker.ledger import settle_ended_session
 from matchmaker.matching import HostSelector, heartbeat_freshness_cutoff
-from matchmaker.config import get_settings
-from matchmaker.headscale import HeadscaleClient, HeadscaleError
-from matchmaker.mesh import expire_session_mesh, guest_mesh_hint, mint_session_mesh
 from matchmaker.models import Host, LabSession, SessionStatus, UserStorage
-from matchmaker.provision import (
-    HostProvisioner,
-    provision_booked_host,
-    teardown_booked_host,
-)
+from matchmaker.provision import HostProvisioner, teardown_booked_host
 from matchmaker.storage import GuestStorageLocators
 
 
@@ -38,6 +41,7 @@ def reclaim_stale_sessions(
     credits_per_minute: int,
     now: datetime | None = None,
     headscale: HeadscaleClient | None = None,
+    scheduler: ProvisionScheduler | None = None,
 ) -> list[UUID]:
     """Interrupt stale occupied sessions, then try one rematch each.
 
@@ -46,6 +50,13 @@ def reclaim_stale_sessions(
     Returns ids of sessions this sweep closed as interrupted.
     """
     moment = _as_utc(now)
+    fail_stuck_provisioning(
+        db,
+        timeout_seconds=get_settings().provision_timeout_seconds,
+        headscale=headscale,
+        provisioner=provisioner,
+        now=moment,
+    )
     interrupted_ids: list[UUID] = []
     for session, lab_tier in _stale_active_rows(db, now=moment):
         session_id = session.id
@@ -60,13 +71,7 @@ def reclaim_stale_sessions(
             continue
         interrupted_ids.append(session_id)
         teardown_booked_host(provisioner, old_host)
-        if headscale is not None:
-            try:
-                expire_session_mesh(headscale, session_id=session_id)
-            except HeadscaleError:
-                pass
-        expire_session_ingress(db, session_id=session_id)
-        expire_session_bootstrap(db, session_id=session_id)
+        release_session_grants(db, session_id, headscale=headscale)
         _rematch_user(
             db,
             user_id=user_id,
@@ -74,6 +79,7 @@ def reclaim_stale_sessions(
             selector=selector,
             provisioner=provisioner,
             headscale=headscale,
+            scheduler=scheduler,
         )
     return interrupted_ids
 
@@ -131,8 +137,10 @@ def _rematch_user(
     selector: HostSelector,
     provisioner: HostProvisioner,
     headscale: HeadscaleClient | None = None,
+    scheduler: ProvisionScheduler | None = None,
 ) -> LabSession | None:
-    existing = _active_session_for_user(db, user_id)
+    """Book another host for an interrupted user. The boot runs on `scheduler`."""
+    existing = occupying_session_for_user(db, user_id)
     if existing is not None:
         return existing
 
@@ -140,77 +148,32 @@ def _rematch_user(
     if host is None:
         return None
 
-    session_id = uuid4()
-    settings = get_settings()
-    mesh = None
-    if headscale is not None:
-        try:
-            mesh = mint_session_mesh(
-                headscale,
-                session_id=session_id,
-                login_server=settings.headscale_login_server,
-                exit_node=settings.headscale_exit_node,
-            )
-        except HeadscaleError:
-            return None
-
-    session = LabSession(
-        id=session_id,
-        user_id=user_id,
-        host_id=host.id,
-        status=SessionStatus.ACTIVE,
-        started_at=datetime.now(timezone.utc),
-    )
-    db.add(session)
     try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        return _active_session_for_user(db, user_id)
-
-    db.refresh(session)
-    storage = _storage_locators_for_user(db, user_id)
-    session_id = session.id
-    guest_mesh = None
-    if mesh is not None and storage is not None:
-        settings = get_settings()
-        guest_mesh = ensure_guest_bootstrap(
+        opened = open_session(
             db,
-            session_id=session_id,
-            grant=mesh,
-            storage=storage,
-            ttl_seconds=settings.gateway_token_ttl_seconds,
-            public_origin=settings.matchmaker_public_origin,
+            user_id=user_id,
+            host=host,
+            lab_tier=lab_tier,
+            headscale=headscale,
+            storage=_storage_locators_for_user(db, user_id),
         )
-    elif mesh is not None:
-        guest_mesh = guest_mesh_hint(mesh)
-    if not provision_booked_host(
-        db,
-        host,
-        provisioner,
-        lab_tier=lab_tier,
-        storage=storage,
-        guest_mesh=guest_mesh,
-    ):
-        db.delete(session)
-        db.commit()
-        if headscale is not None:
-            try:
-                expire_session_mesh(headscale, session_id=session_id)
-            except HeadscaleError:
-                pass
-        expire_session_bootstrap(db, session_id=session_id)
+    except HeadscaleError:
+        return None
+    if opened is None:
+        return occupying_session_for_user(db, user_id)
+    session, job = opened
+    (scheduler or InlineScheduler()).submit(
+        provision_job_runner(
+            job,
+            provisioner=provisioner,
+            headscale=headscale,
+            session_factory=get_session_factory(),
+        )
+    )
+    db.refresh(session)
+    if session.status == SessionStatus.FAILED:
         return None
     return session
-
-
-def _active_session_for_user(db: Session, user_id: UUID) -> LabSession | None:
-    return db.scalars(
-        select(LabSession).where(
-            LabSession.user_id == user_id,
-            LabSession.status == SessionStatus.ACTIVE,
-        )
-    ).first()
 
 
 def _storage_locators_for_user(db: Session, user_id: UUID) -> GuestStorageLocators | None:

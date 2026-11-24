@@ -31,6 +31,17 @@ apt-get install -y --no-install-recommends \
   rclone \
   sudo
 
+# rclone mount calls `fusermount`; Ubuntu 24.04 ships only fusermount3.
+if ! command -v fusermount >/dev/null 2>&1 && command -v fusermount3 >/dev/null 2>&1; then
+  ln -s "$(command -v fusermount3)" /usr/local/bin/fusermount
+fi
+
+# Pasting several lines into a terminal over the browser desktop must not
+# wrap them in bracketed-paste markers (they break the first and last line).
+if ! grep -q 'enable-bracketed-paste' /etc/inputrc 2>/dev/null; then
+  printf '\nset enable-bracketed-paste off\n' >>/etc/inputrc
+fi
+
 # Official Tailscale client install (login-server is supplied at session start).
 # https://tailscale.com/kb/1031/install-linux
 if ! command -v tailscale >/dev/null 2>&1; then

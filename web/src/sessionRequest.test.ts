@@ -42,11 +42,11 @@ describe("interpretSessionError", () => {
   it("maps occupied/unavailable 409 to the occupied notice for Standard", () => {
     expect(interpretSessionError(new ApiError(409, "Host unavailable"))).toEqual({
       session: null,
-      notice: { kind: "occupied" },
+      notice: { kind: "noHost" },
     });
     expect(interpretSessionError(new ApiError(409, "Host unavailable"), "standard")).toEqual({
       session: null,
-      notice: { kind: "occupied" },
+      notice: { kind: "noHost" },
     });
   });
 

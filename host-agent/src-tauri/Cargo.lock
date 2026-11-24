@@ -1379,6 +1379,7 @@ dependencies = [
  "base64 0.22.1",
  "dotenvy",
  "ed25519-dalek",
+ "getrandom 0.2.17",
  "hex",
  "hostname",
  "nvml-wrapper",

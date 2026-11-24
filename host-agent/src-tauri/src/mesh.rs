@@ -19,7 +19,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::identity;
-use crate::matchmaker::{HttpRequest, MatchmakerCredentials, MatchmakerError, Transport};
+use crate::matchmaker::{MatchmakerCredentials, MatchmakerError, Transport};
 
 #[derive(Debug, Error)]
 pub enum MeshError {
@@ -154,17 +154,16 @@ pub fn prepare_join(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "tailscale".to_string());
-    let credentials = MatchmakerCredentials::from_lookup(&mut lookup)?;
+    let credentials = MatchmakerCredentials::from_lookup(&mut lookup)?.with_host_secret(dir)?;
     let Some(identity) = identity::load(dir)? else {
         return Err(MeshError::NotRegistered);
     };
 
-    let request = HttpRequest {
-        method: "POST",
-        url: preauth_url(&credentials.base_url, &identity.host_id),
-        authorization: credentials.authorization_header(),
-        body: serde_json::json!({}),
-    };
+    let request = credentials.request(
+        "POST",
+        preauth_url(&credentials.base_url, &identity.host_id),
+        serde_json::json!({}),
+    );
     let response = transport.send(&request)?;
     let grant = parse_preauth(response.status, &response.body)?;
 
@@ -295,6 +294,7 @@ mod tests {
                 method: request.method,
                 url: request.url.clone(),
                 authorization: request.authorization.clone(),
+                host_secret: request.host_secret.clone(),
                 body: request.body.clone(),
             });
             Ok(HttpResponse {

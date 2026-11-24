@@ -283,7 +283,10 @@ class SigningHelperTests(unittest.TestCase):
         self.assertEqual(manifest["digestAlgorithm"], "sha256")
         self.assertEqual(manifest["signature"], sig)
         self.assertEqual(len(manifest["digestSha256"]), 64)
+        size = self.image.stat().st_size
+        self.assertEqual(manifest["sizeBytes"], size)
         snippet = (self.dir / "env.snippet").read_text(encoding="utf-8")
+        self.assertIn(f"IMAGE_STANDARD_SIZE_BYTES={size}", snippet)
         self.assertIn("IMAGE_STANDARD_DIGEST=", snippet)
         self.assertIn("IMAGE_STANDARD_SIGNATURE=", snippet)
         self.assertIn("IMAGE_SIGNING_PUBLIC_KEY=", snippet)
@@ -394,3 +397,294 @@ class GuestJoinBootstrapSourceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GuestJoinStorageEnvTests(unittest.TestCase):
+    """Per-user storage keys are short-lived and come with a session token."""
+
+    def _rclone_env(self, storage: dict, ambient_token: str | None = None) -> dict:
+        import json
+
+        env = os.environ.copy()
+        env.pop("AWS_SESSION_TOKEN", None)
+        if ambient_token is not None:
+            env["AWS_SESSION_TOKEN"] = ambient_token
+        code = (
+            "import importlib.util, json, sys;"
+            "spec = importlib.util.spec_from_file_location('join', sys.argv[1]);"
+            "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod);"
+            "env = mod.rclone_env(json.loads(sys.argv[2]));"
+            "print(json.dumps({k: env.get(k) for k in "
+            "('AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN')}))"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", code, str(JOIN), json.dumps(storage)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        return json.loads(out)
+
+    def test_session_token_is_exported_for_rclone(self) -> None:
+        env = self._rclone_env(
+            {"accessKeyId": "temp-id", "secretAccessKey": "temp-secret", "sessionToken": "temp-token"}
+        )
+        self.assertEqual(env["AWS_ACCESS_KEY_ID"], "temp-id")
+        self.assertEqual(env["AWS_SECRET_ACCESS_KEY"], "temp-secret")
+        self.assertEqual(env["AWS_SESSION_TOKEN"], "temp-token")
+
+    def test_a_stale_session_token_is_not_reused_with_static_keys(self) -> None:
+        env = self._rclone_env(
+            {"accessKeyId": "static-id", "secretAccessKey": "static-secret"},
+            ambient_token="left-over",
+        )
+        self.assertIsNone(env["AWS_SESSION_TOKEN"])
+
+
+def _join_call(code: str, env_extra: dict[str, str] | None = None) -> dict:
+    """Load dcl-guest-join.py in a child process, run `code`, return its JSON."""
+    env = os.environ.copy()
+    env.update(env_extra or {})
+    loader = (
+        "import importlib.util, json, sys\n"
+        "spec = importlib.util.spec_from_file_location('join', sys.argv[1])\n"
+        "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", loader + code, str(JOIN)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return json.loads(out)
+
+
+class GuestShutdownFlushTests(unittest.TestCase):
+    """At shutdown the guest waits for rclone to upload ~/Persistent (issue 21)."""
+
+    def test_rclone_gets_a_loopback_remote_control_once(self) -> None:
+        result = _join_call(
+            "args = mod.rclone_argv({'rcloneArgs': ['mount', ':s3:b/p', '/mnt', '--s3-env-auth']})\n"
+            "again = mod.rclone_argv({'rcloneArgs': args[1:]})\n"
+            "print(json.dumps({'args': args, 'again': again}))\n"
+        )
+        args = result["args"]
+        self.assertEqual(args.count("--rc"), 1)
+        self.assertEqual(args[args.index("--rc-addr") + 1], "127.0.0.1:5572")
+        self.assertEqual(result["again"], args)
+
+    def test_waits_until_the_upload_queue_is_empty(self) -> None:
+        result = _join_call(
+            "answers = [{'diskCache': {'uploadsInProgress': 1, 'uploadsQueued': 2}},\n"
+            "           {'diskCache': {'uploadsInProgress': 1, 'uploadsQueued': 0}},\n"
+            "           {'diskCache': {'uploadsInProgress': 0, 'uploadsQueued': 0}}]\n"
+            "calls = []\n"
+            "def stats():\n"
+            "    calls.append(1)\n"
+            "    return answers[len(calls) - 1]\n"
+            "done = mod.wait_for_uploads(stats=stats, sleep=lambda s: None, clock=lambda: 0)\n"
+            "print(json.dumps({'done': done, 'calls': len(calls)}))\n"
+        )
+        self.assertEqual(result, {"done": True, "calls": 3})
+
+    def test_gives_up_at_the_deadline_and_skips_when_rclone_is_absent(self) -> None:
+        result = _join_call(
+            "now = [0]\n"
+            "def clock():\n"
+            "    now[0] += 10\n"
+            "    return now[0]\n"
+            "busy = lambda: {'diskCache': {'uploadsQueued': 1}}\n"
+            "late = mod.wait_for_uploads(stats=busy, sleep=lambda s: None, clock=clock)\n"
+            "absent = mod.wait_for_uploads(stats=lambda: None, sleep=lambda s: None)\n"
+            "print(json.dumps({'late': late, 'absent': absent,"
+            " 'odd': mod.pending_uploads({'diskCache': 'x'})}))\n"
+        )
+        self.assertEqual(result, {"late": False, "absent": True, "odd": 0})
+
+    def test_unit_gives_the_stop_step_time_to_upload(self) -> None:
+        unit = (ROOT / "scripts" / "dcl-guest-join.service").read_text(encoding="utf-8")
+        self.assertIn("ExecStop=/usr/local/sbin/dcl-guest-join --flush", unit)
+        self.assertIn("TimeoutStopSec=85", unit)
+
+
+class GuestDesktopPasswordTests(unittest.TestCase):
+    """The desktop password is stored before the mesh join, readable by root only."""
+
+    def test_password_file_is_private_and_single_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = _join_call(
+                "import os, stat\n"
+                "ok = mod.store_desktop_password({'desktopPassword': 'Abc123xyz'})\n"
+                "p = mod.DESKTOP_PASSWORD_PATH\n"
+                "print(json.dumps({'ok': ok, 'text': p.read_text(),"
+                " 'mode': stat.S_IMODE(os.stat(p).st_mode)}))\n",
+                {"DCL_RUN_DIR": tmp},
+            )
+        self.assertEqual(result, {"ok": True, "text": "Abc123xyz\n", "mode": 0o600})
+
+    def test_missing_or_multiline_password_is_not_stored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = _join_call(
+                "missing = mod.store_desktop_password({})\n"
+                "try:\n"
+                "    mod.store_desktop_password({'desktopPassword': 'a\\nb'})\n"
+                "    refused = False\n"
+                "except RuntimeError:\n"
+                "    refused = True\n"
+                "print(json.dumps({'missing': missing, 'refused': refused,"
+                " 'exists': mod.DESKTOP_PASSWORD_PATH.exists()}))\n",
+                {"DCL_RUN_DIR": tmp},
+            )
+        self.assertEqual(result, {"missing": False, "refused": True, "exists": False})
+
+    def test_bootstrap_is_retried_while_the_network_settles(self) -> None:
+        result = _join_call(
+            "import urllib.error\n"
+            "calls = []; sleeps = []\n"
+            "def post(url, token, timeout=None):\n"
+            "    calls.append(url)\n"
+            "    if len(calls) < 3:\n"
+            "        raise urllib.error.URLError('network down')\n"
+            "    return {'ok': True}\n"
+            "body = mod.redeem_bootstrap('https://mm.example', 't', sleep=sleeps.append, post=post)\n"
+            "print(json.dumps({'body': body, 'calls': len(calls), 'sleeps': sleeps,"
+            " 'url': calls[0]}))\n"
+        )
+        self.assertEqual(result["body"], {"ok": True})
+        self.assertEqual(result["calls"], 3)
+        self.assertEqual(result["sleeps"], [3, 5])
+        self.assertEqual(result["url"], "https://mm.example/v1/guest/bootstrap")
+
+    def test_a_refused_token_is_final_and_gives_up_eventually(self) -> None:
+        result = _join_call(
+            "import urllib.error\n"
+            "calls = []; sleeps = []\n"
+            "def refused(url, token, timeout=None):\n"
+            "    calls.append(1)\n"
+            "    raise urllib.error.HTTPError(url, 404, 'gone', None, None)\n"
+            "try:\n"
+            "    mod.redeem_bootstrap('https://mm.example', 't', sleep=sleeps.append, post=refused)\n"
+            "    first = 'returned'\n"
+            "except urllib.error.HTTPError:\n"
+            "    first = 'raised'\n"
+            "refused_calls = len(calls)\n"
+            "calls.clear()\n"
+            "def down(url, token, timeout=None):\n"
+            "    calls.append(1)\n"
+            "    raise urllib.error.URLError('down')\n"
+            "try:\n"
+            "    mod.redeem_bootstrap('https://mm.example', 't', sleep=sleeps.append, post=down)\n"
+            "    second = 'returned'\n"
+            "except urllib.error.URLError:\n"
+            "    second = 'raised'\n"
+            "print(json.dumps({'first': first, 'refused_calls': refused_calls,"
+            " 'second': second, 'down_calls': len(calls)}))\n"
+        )
+        self.assertEqual(
+            result,
+            {"first": "raised", "refused_calls": 1, "second": "raised", "down_calls": 7},
+        )
+
+    def test_mount_belongs_to_the_desktop_user(self) -> None:
+        import pwd
+
+        me = pwd.getpwuid(os.getuid())
+        result = _join_call(
+            "args = mod.rclone_argv({'rcloneArgs': ['mount', ':s3:b/p', '/mnt', '--s3-env-auth']})\n"
+            "again = mod.rclone_argv({'rcloneArgs': args[1:]})\n"
+            "print(json.dumps({'args': args, 'again': again,"
+            " 'unknown': mod.mount_owner_args('no-such-user-dcl')}))\n",
+            {"DCL_DESKTOP_USER": me.pw_name},
+        )
+        tail = ["--allow-other", "--uid", str(me.pw_uid), "--gid", str(me.pw_gid), "--umask", "077"]
+        self.assertEqual(result["args"][-7:], tail)
+        self.assertEqual(result["again"], result["args"])  # not added twice
+        self.assertEqual(result["unknown"], [])
+
+    def test_full_join_stores_the_password_before_tailscale_and_leaks_no_key(self) -> None:
+        """Run the real script against a local Matchmaker stand-in.
+
+        `tailscale` is a stub that records whether the password file already
+        existed, then fails; the error message must not contain the mesh key.
+        """
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+
+        body = {
+            "tailscaleUp": ["up", "--authkey", "tskey-auth-SECRETMESHKEY", "--hostname", "g"],
+            "desktopPassword": "SessionDesktopPw42",
+            "storage": {},
+        }
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                payload = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                run_dir = root / "run"
+                (root / "cmdline").write_text(
+                    f"dcl.matchmaker=http://127.0.0.1:{server.server_address[1]} "
+                    "dcl.bootstrap=bootstrap-token-value\n"
+                )
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                stub = bin_dir / "tailscale"
+                stub.write_text(
+                    "#!/bin/sh\n"
+                    f'[ -s "{run_dir}/desktop-password" ] && echo yes >"{root}/seen" '
+                    f'|| echo no >"{root}/seen"\n'
+                    "exit 1\n"
+                )
+                stub.chmod(0o755)
+                env = os.environ.copy()
+                env.update(
+                    {
+                        "DCL_CMDLINE_FILE": str(root / "cmdline"),
+                        "DCL_SMBIOS_DIR": str(root / "dmi"),
+                        "DCL_FWCFG_DIR": str(root / "fwcfg"),
+                        "DCL_RUN_DIR": str(run_dir),
+                        "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                    }
+                )
+                done = subprocess.run(
+                    [sys.executable, str(JOIN)], env=env, capture_output=True, text=True
+                )
+                self.assertEqual(done.returncode, 1)
+                self.assertEqual((root / "seen").read_text().strip(), "yes")
+                self.assertTrue((run_dir / "session-vm").exists())
+                self.assertEqual(
+                    (run_dir / "desktop-password").read_text(), "SessionDesktopPw42\n"
+                )
+                self.assertIn("tailscale exited with status 1", done.stderr)
+                self.assertNotIn("SECRETMESHKEY", done.stderr + done.stdout)
+                self.assertNotIn("SessionDesktopPw42", done.stderr + done.stdout)
+        finally:
+            server.shutdown()
+
+    def test_desktop_script_covers_session_locked_lan_and_open(self) -> None:
+        kasm = _read(KASM)
+        self.assertIn("SESSION_PASSWORD=/run/dcl/desktop-password", kasm)
+        self.assertIn("SESSION_MARK=/run/dcl/session-vm", kasm)
+        self.assertIn("mode=session", kasm)
+        self.assertIn("mode=locked", kasm)
+        self.assertIn('if [ "$mode" != open ]; then', kasm)
+        # The desktop starts after the join, which stores the password.
+        self.assertIn("After=network-online.target dcl-guest-join.service", kasm)
+
+    def test_base_image_has_fusermount_and_plain_paste(self) -> None:
+        base = _read(BASE)
+        self.assertIn("/usr/local/bin/fusermount", base)
+        self.assertIn("set enable-bracketed-paste off", base)

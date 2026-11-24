@@ -38,10 +38,10 @@ hash prefix only).
 
 - Pairwise `tag:session-<uuid>` ACLs. **Headscale 0.26 still cannot mint
   pairwise owners.** `tag:gateway` ↔ `tag:guest` is role-based: every
-  gateway node may reach every guest, same leftover as `tag:user`. The
+  gateway node may reach every guest, renters themselves are not on the mesh. The
   token mapping is what stops the gateway from proxying a session it was
   not scoped for. The process must only dial the resolved URL.
-- Grant `tag:gateway` → `tag:host`, `tag:user`, `tag:matchmaker`,
+- Grant `tag:gateway` → `tag:host`, `tag:matchmaker`,
   `tag:exit`, or `autogroup:internet`. Public HTTPS is the VPS NIC, not a
   mesh exit.
 - Moonlight (Pro native client). `sunshineUrl` is wrapped; `moonlight.host`

@@ -2,23 +2,32 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Annotated
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from matchmaker.booking import (
+    ProvisionScheduler,
+    occupying_session_for_user,
+    open_session,
+    provision_job_runner,
+    release_session_grants,
+)
 from matchmaker.config import get_settings
-from matchmaker.db import get_db
+from matchmaker.db import get_db, get_session_factory
 from matchmaker.deps import (
     get_current_user,
     get_headscale_client,
     get_host_provisioner,
     get_host_selector,
+    get_provision_scheduler,
     get_renterd_client,
 )
 from matchmaker.headscale import HeadscaleClient, HeadscaleError
+from matchmaker.ingress import connection_for_browser
 from matchmaker.ledger import (
     debit_amounts_for_sessions,
     duration_seconds,
@@ -26,19 +35,11 @@ from matchmaker.ledger import (
     user_credits_debited,
     user_debit_for_session,
 )
-from matchmaker.guest_bootstrap import ensure_guest_bootstrap, expire_session_bootstrap
 from matchmaker.matching import HostSelector
-from matchmaker.mesh import (
-    SessionMeshGrant,
-    expire_session_mesh,
-    mesh_info_from_grant,
-    mint_session_mesh,
-)
-from matchmaker.ingress import connection_for_browser, expire_session_ingress
-from matchmaker.models import Host, LabSession, SessionStatus, User
+from matchmaker.mesh import session_mesh_info
+from matchmaker.models import Host, LabSession, SessionStatus, User, UserStorage
 from matchmaker.provision import (
     HostProvisioner,
-    provision_booked_host,
     session_connection,
     teardown_booked_host,
 )
@@ -50,12 +51,13 @@ from matchmaker.schemas import (
     SessionRequest,
     SessionResponse,
 )
+from matchmaker.silence import reclaim_stale_sessions
 from matchmaker.storage import (
     ensure_user_storage,
     locators_from_grant,
     mount_info_from_grant,
+    storage_grant,
 )
-from matchmaker.silence import reclaim_stale_sessions
 
 router = APIRouter()
 
@@ -65,23 +67,32 @@ def _session_response(
     session: LabSession,
     host: Host,
     grant: StorageGrant,
-    mesh: SessionMeshGrant,
 ) -> SessionResponse:
     settings = get_settings()
-    return SessionResponse(
-        session_id=session.id,
-        host_id=host.id,
-        lab_tier=host.lab_tier,
-        started_at=session.started_at,
-        connection=connection_for_browser(
+    connection = None
+    if session.status == SessionStatus.ACTIVE:
+        connection = connection_for_browser(
             db,
             session,
             session_connection(host),
             public_origin=settings.gateway_public_origin,
             ttl_seconds=settings.gateway_token_ttl_seconds,
-        ),
+        )
+    return SessionResponse(
+        session_id=session.id,
+        host_id=host.id,
+        lab_tier=host.lab_tier,
+        status=session.status,
+        failure_reason=session.failure_reason,
+        started_at=session.started_at,
+        ended_at=session.ended_at,
+        connection=connection,
         storage=mount_info_from_grant(grant, saved_as_of=session.saved_as_of),
-        mesh=mesh_info_from_grant(mesh),
+        mesh=session_mesh_info(
+            session.id,
+            login_server=settings.headscale_login_server,
+            exit_node=settings.headscale_exit_node,
+        ),
     )
 
 
@@ -94,6 +105,7 @@ def _ensure_storage(db: Session, user: User, renterd: RenterdClient) -> StorageG
             renterd,
             endpoint=settings.renterd_s3_guest_endpoint,
             region=settings.renterd_s3_region,
+            shared_bucket=settings.storage_shared_bucket,
         )
     except RenterdError as exc:
         raise HTTPException(
@@ -102,20 +114,17 @@ def _ensure_storage(db: Session, user: User, renterd: RenterdClient) -> StorageG
         ) from exc
 
 
-def _mint_mesh(headscale: HeadscaleClient, session_id: UUID):
+def _recorded_storage(db: Session, user: User) -> StorageGrant:
+    """The user's storage locators from the database. No storage call."""
     settings = get_settings()
-    try:
-        return mint_session_mesh(
-            headscale,
-            session_id=session_id,
-            login_server=settings.headscale_login_server,
-            exit_node=settings.headscale_exit_node,
-        )
-    except HeadscaleError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Headscale session mesh mint failed",
-        ) from exc
+    row = db.get(UserStorage, user.id)
+    return storage_grant(
+        user_id=user.id,
+        endpoint=settings.renterd_s3_guest_endpoint,
+        region=settings.renterd_s3_region,
+        bucket=row.bucket if row is not None else None,
+        **({"prefix": row.prefix} if row is not None else {}),
+    )
 
 
 def _reclaim_stale(
@@ -123,6 +132,7 @@ def _reclaim_stale(
     selector: HostSelector,
     provisioner: HostProvisioner,
     headscale: HeadscaleClient,
+    scheduler: ProvisionScheduler,
 ) -> None:
     reclaim_stale_sessions(
         db,
@@ -130,16 +140,8 @@ def _reclaim_stale(
         provisioner,
         credits_per_minute=get_settings().credits_per_minute,
         headscale=headscale,
+        scheduler=scheduler,
     )
-
-
-def _active_session_for_user(db: Session, user_id: UUID) -> LabSession | None:
-    return db.scalars(
-        select(LabSession).where(
-            LabSession.user_id == user_id,
-            LabSession.status == SessionStatus.ACTIVE,
-        )
-    ).first()
 
 
 def _host_or_error(db: Session, host_id: UUID) -> Host:
@@ -152,33 +154,10 @@ def _host_or_error(db: Session, host_id: UUID) -> Host:
     return host
 
 
-def _guest_hint(db: Session, session_id: UUID, mesh: SessionMeshGrant, grant: StorageGrant):
-    settings = get_settings()
-    return ensure_guest_bootstrap(
-        db,
-        session_id=session_id,
-        grant=mesh,
-        storage=locators_from_grant(grant),
-        ttl_seconds=settings.gateway_token_ttl_seconds,
-        public_origin=settings.matchmaker_public_origin,
-    )
-
-
-def _abort_unprovisioned_session(
-    db: Session,
-    session: LabSession,
-    headscale: HeadscaleClient,
-) -> None:
-    """Release occupancy when provision did not yield a live locator."""
-    session_id = session.id
-    expire_session_ingress(db, session_id=session_id)
-    expire_session_bootstrap(db, session_id=session_id)
-    db.delete(session)
-    db.commit()
-    try:
-        expire_session_mesh(headscale, session_id=session_id)
-    except HeadscaleError:
-        pass
+def _status_code_for(session: LabSession) -> int:
+    if session.status == SessionStatus.PROVISIONING:
+        return status.HTTP_202_ACCEPTED
+    return status.HTTP_200_OK
 
 
 @router.post("/sessions", response_model=SessionResponse)
@@ -190,37 +169,29 @@ def request_session(
     provisioner: Annotated[HostProvisioner, Depends(get_host_provisioner)],
     renterd: Annotated[RenterdClient, Depends(get_renterd_client)],
     headscale: Annotated[HeadscaleClient, Depends(get_headscale_client)],
+    scheduler: Annotated[ProvisionScheduler, Depends(get_provision_scheduler)],
     payload: SessionRequest | None = None,
 ) -> SessionResponse:
-    req = payload or SessionRequest()
-    _reclaim_stale(db, selector, provisioner, headscale)
+    """Book a host. Returns at once; the desktop boots in the background.
 
-    existing = _active_session_for_user(db, user.id)
+    201: the desktop is ready (`connection` is set).
+    202: `provisioning`; poll `GET /v1/sessions/{id}`.
+    200: this user already has a session; it is returned as it is now.
+    409: no host is free. 502: the host failed before this call returned.
+    """
+    req = payload or SessionRequest()
+    _reclaim_stale(db, selector, provisioner, headscale, scheduler)
+
+    existing = occupying_session_for_user(db, user.id)
     if existing is not None:
-        response.status_code = status.HTTP_200_OK
-        grant = _ensure_storage(db, user, renterd)
-        mesh = _mint_mesh(headscale, existing.id)
+        response.status_code = _status_code_for(existing)
         return _session_response(
-            db, existing, _host_or_error(db, existing.host_id), grant, mesh
+            db, existing, _host_or_error(db, existing.host_id), _recorded_storage(db, user)
         )
 
-    # --- later plug-ins (do not implement here) ---
-    # 1. Matching: ranking lives in the HostSelector implementation (declared
-    #    caps today; latency/reliability when those can be measured). Do not
-    #    inline it here — swap the injected class.
-    # 2. Headscale: host join is POST /v1/hosts/{id}/mesh/preauth (tag:host).
-    #    This router mints ephemeral tag:guest + tag:user keys per session and
-    #    points the guest join plan at HEADSCALE_EXIT_NODE. ACLs stay the
-    #    Headscale policy file (role tags, not pairwise session tags). When
-    #    GATEWAY_PUBLIC_ORIGIN is set, connection locators are public gateway
-    #    URLs (token-scoped); the host row still stores the mesh locator.
-    # 3. renterd/rclone: ensure a per-user bucket *before* occupy. Mount
-    #    inside the guest. Never plaintext on the volunteer host disk.
-    #    Silence rematch does not call renterd — the same bucket follows
-    #    the user.
-    # 4. Billing: duration is metered at end or silence interrupt (startedAt →
-    #    endedAt) into ledger_entries. Occupancy start is the clock; no
-    #    payment processor. Stale occupied hosts are reclaimed in silence.py.
+    # Matching: ranking lives in the injected HostSelector. Storage: the
+    # user's bucket/prefix is ensured before the host is booked and follows
+    # the user across hosts. Billing: metered from desktop-ready to end.
     grant = _ensure_storage(db, user, renterd)
     host = selector.select(db, lab_tier=req.lab_tier)
     if host is None:
@@ -229,51 +200,81 @@ def request_session(
             detail="Host unavailable",
         )
 
-    session_id = uuid4()
-    mesh = _mint_mesh(headscale, session_id)
-    session = LabSession(
-        id=session_id,
-        user_id=user.id,
-        host_id=host.id,
-        status=SessionStatus.ACTIVE,
-        started_at=datetime.now(timezone.utc),
-    )
-    db.add(session)
     try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raced = _active_session_for_user(db, user.id)
+        opened = open_session(
+            db,
+            user_id=user.id,
+            host=host,
+            lab_tier=req.lab_tier,
+            headscale=headscale,
+            storage=locators_from_grant(grant),
+        )
+    except HeadscaleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Headscale session mesh mint failed",
+        ) from exc
+    if opened is None:
+        raced = occupying_session_for_user(db, user.id)
         if raced is not None:
-            response.status_code = status.HTTP_200_OK
-            raced_mesh = _mint_mesh(headscale, raced.id)
-            return _session_response(
-                db, raced, _host_or_error(db, raced.host_id), grant, raced_mesh
-            )
+            response.status_code = _status_code_for(raced)
+            return _session_response(db, raced, _host_or_error(db, raced.host_id), grant)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Host unavailable",
-        ) from None
+        )
 
+    session, job = opened
+    scheduler.submit(
+        provision_job_runner(
+            job,
+            provisioner=provisioner,
+            headscale=headscale,
+            session_factory=get_session_factory(),
+        )
+    )
     db.refresh(session)
-    # Occupancy is already held by the session row. Provision must return a
-    # live locator (not `.invalid`). If the agent is down while the host row
-    # is still a placeholder, abort so the host is not occupied with a seed.
-    if not provision_booked_host(
-        db,
-        host,
-        provisioner,
-        lab_tier=req.lab_tier,
-        storage=locators_from_grant(grant),
-        guest_mesh=_guest_hint(db, session.id, mesh, grant),
-    ):
-        _abort_unprovisioned_session(db, session, headscale)
+    db.refresh(host)
+    if session.status == SessionStatus.FAILED:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="host provision failed",
         )
-    response.status_code = status.HTTP_201_CREATED
-    return _session_response(db, session, host, grant, mesh)
+    response.status_code = (
+        status.HTTP_201_CREATED
+        if session.status == SessionStatus.ACTIVE
+        else status.HTTP_202_ACCEPTED
+    )
+    return _session_response(db, session, host, grant)
+
+
+@router.get("/sessions/current", response_model=SessionResponse)
+def current_session(
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> SessionResponse:
+    """The session this user holds now (booting or ready). 404 when none."""
+    session = occupying_session_for_user(db, user.id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    return _session_response(
+        db, session, _host_or_error(db, session.host_id), _recorded_storage(db, user)
+    )
+
+
+@router.get("/sessions/{session_id}", response_model=SessionResponse)
+def get_session(
+    session_id: UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> SessionResponse:
+    """One of this user's sessions, in its current state. Poll while provisioning."""
+    session = db.get(LabSession, session_id)
+    if session is None or session.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    return _session_response(
+        db, session, _host_or_error(db, session.host_id), _recorded_storage(db, user)
+    )
 
 
 @router.post("/sessions/{session_id}/end", response_model=EndSessionResponse)
@@ -288,14 +289,17 @@ def end_session(
     if session is None or session.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
-    if session.status == SessionStatus.ACTIVE:
+    if session.status in (SessionStatus.ACTIVE, SessionStatus.PROVISIONING):
+        was_active = session.status == SessionStatus.ACTIVE
         session.status = SessionStatus.ENDED
         session.ended_at = datetime.now(timezone.utc)
-        settle_ended_session(
-            db,
-            session,
-            credits_per_minute=get_settings().credits_per_minute,
-        )
+        if was_active:
+            # A desktop that never became ready is not billed.
+            settle_ended_session(
+                db,
+                session,
+                credits_per_minute=get_settings().credits_per_minute,
+            )
         try:
             db.commit()
         except IntegrityError:
@@ -309,14 +313,7 @@ def end_session(
             db.refresh(session)
         host = db.get(Host, session.host_id)
         teardown_booked_host(provisioner, host)
-        try:
-            expire_session_mesh(headscale, session_id=session.id)
-        except HeadscaleError:
-            # Occupancy is already released. Missing nodes are expected when
-            # no guest image joined.
-            pass
-        expire_session_ingress(db, session_id=session.id)
-        expire_session_bootstrap(db, session_id=session.id)
+        release_session_grants(db, session.id, headscale=headscale)
 
     if session.ended_at is None:
         raise HTTPException(
@@ -340,8 +337,9 @@ def list_sessions(
     selector: Annotated[HostSelector, Depends(get_host_selector)],
     provisioner: Annotated[HostProvisioner, Depends(get_host_provisioner)],
     headscale: Annotated[HeadscaleClient, Depends(get_headscale_client)],
+    scheduler: Annotated[ProvisionScheduler, Depends(get_provision_scheduler)],
 ) -> SessionHistoryResponse:
-    _reclaim_stale(db, selector, provisioner, headscale)
+    _reclaim_stale(db, selector, provisioner, headscale, scheduler)
     rows = db.scalars(
         select(LabSession)
         .where(LabSession.user_id == user.id)
@@ -358,6 +356,7 @@ def list_sessions(
                 host_id=row.host_id,
                 lab_tier=host.lab_tier,
                 status=row.status,
+                failure_reason=row.failure_reason,
                 started_at=row.started_at,
                 ended_at=ended_at,
                 duration_seconds=(

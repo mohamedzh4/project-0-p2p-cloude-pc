@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::agent_status::AgentStatus;
 use crate::config;
+use crate::diagnostics::{self, ReportInput};
 use crate::eligibility::{self, EligibilityReport, EligibilityRequest};
 use crate::gpu_bind::{self, GpuBindStatus, PciSysfs, SysfsBindOps};
 use crate::host_capabilities::HostCapabilities;
@@ -209,7 +210,7 @@ pub async fn register_declared_caps(
         let registration = matchmaker::register_from_env(&dir, &hardware, &UreqTransport)
             .map_err(|error| error.to_string())?;
         if let Err(error) = matchmaker::heartbeat_from_env(&dir, &UreqTransport) {
-            eprintln!("host-agent heartbeat after register: {error}");
+            crate::agent_log!("host-agent heartbeat after register: {error}");
         }
         if mesh::should_join(|key| std::env::var(key).ok()) {
             mesh::join_from_env(
@@ -224,6 +225,32 @@ pub async fn register_declared_caps(
     })
     .await
     .map_err(|error| format!("could not run host registration: {error}"))?
+}
+
+/// Plain-text report for support. Holds no token or secret.
+#[tauri::command]
+pub fn get_diagnostics_report(app: AppHandle, state: State<'_, AgentState>) -> String {
+    let dir = config_dir(&app).ok();
+    let registration = dir
+        .as_deref()
+        .and_then(|dir| identity::load(dir).ok().flatten());
+    let sharing_enabled = dir
+        .as_deref()
+        .and_then(|dir| config::load(dir).ok().flatten())
+        .map(|stored| stored.sharing_enabled);
+    let input = ReportInput {
+        agent_version: env!("CARGO_PKG_VERSION"),
+        os: std::env::consts::OS,
+        arch: std::env::consts::ARCH,
+        capabilities: &state.capabilities,
+        hypervisor: &state.hypervisor,
+        guest_image: &state.guest_image,
+        registration: registration.as_ref(),
+        sharing_enabled,
+        in_session: state.occupancy.is_in_session(),
+        log: state.provision_log.as_ref(),
+    };
+    diagnostics::build_report(&input, |key| std::env::var(key).ok())
 }
 
 fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {

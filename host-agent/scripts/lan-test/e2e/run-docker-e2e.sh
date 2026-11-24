@@ -24,7 +24,10 @@ out="$(tar cf - -C "$WORK" e2e | docker run -i --rm --platform linux/amd64 ubunt
 printf '%s\n' "$out" | sed -n '/=== case 1/,$p'
 if ! printf '%s\n' "$out" | grep -q "right pass   -> 200" ||
   ! printf '%s\n' "$out" | grep -q "wrong pass   -> 401" ||
-  ! printf '%s\n' "$out" | sed -n '/=== case 2/,$p' | grep -q "no auth      -> 200"; then
+  ! printf '%s\n' "$out" | sed -n '/=== case 2/,/=== case 3/p' | grep -q "no auth      -> 200" ||
+  ! printf '%s\n' "$out" | sed -n '/=== case 3/,/=== case 4/p' | grep -q "no auth      -> 401" ||
+  ! printf '%s\n' "$out" | sed -n '/=== case 3/,/=== case 4/p' | grep -q "right pass   -> 200" ||
+  ! printf '%s\n' "$out" | sed -n '/=== case 4/,$p' | grep -q "old pass     -> 401"; then
   echo "KasmVNC check FAILED"
   exit 1
 fi

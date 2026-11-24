@@ -374,7 +374,7 @@ def test_http_provisioner_uses_fallback_origin_when_host_has_none() -> None:
     assert result.connection_url == LIVE_KASM_URL
 
 
-def test_http_provisioner_treats_agent_errors_as_unavailable() -> None:
+def test_http_provisioner_reports_agent_errors_as_failed() -> None:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # noqa: A003
             return
@@ -394,7 +394,7 @@ def test_http_provisioner_treats_agent_errors_as_unavailable() -> None:
         server.shutdown()
         thread.join(timeout=2)
 
-    assert result is None
+    assert result is not None and result.failed
 
 
 def test_http_provisioner_rejects_a_placeholder_locator_even_after_invoke() -> None:
@@ -423,7 +423,7 @@ def test_http_provisioner_rejects_a_placeholder_locator_even_after_invoke() -> N
         server.shutdown()
         thread.join(timeout=2)
 
-    assert result is None
+    assert result is not None and result.failed
 
 
 def test_http_provisioner_accepts_a_live_locator_claimed_with_invoke() -> None:

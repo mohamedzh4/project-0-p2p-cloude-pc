@@ -4,9 +4,9 @@
 #   bash scripts/check.sh            # everything
 #   bash scripts/check.sh web agent  # only the named suites
 #
-# Suites: lint, matchmaker, gateway, scripts, web, agent
+# Suites: lint, matchmaker, gateway, scripts, web, agent, integration
 #
-# Matchmaker tests need Postgres. Start it with
+# Matchmaker and integration tests need Postgres. Start it with
 #   (cd matchmaker && docker compose up -d)
 # or point TEST_DATABASE_URL at any empty Postgres database. When the
 # database cannot be reached the suite is reported as SKIPPED, not passed.
@@ -16,7 +16,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-ALL=(lint matchmaker gateway scripts web agent)
+ALL=(lint matchmaker gateway scripts web agent integration)
 if [ "$#" -gt 0 ]; then SUITES=("$@"); else SUITES=("${ALL[@]}"); fi
 
 RESULTS=()
@@ -55,10 +55,10 @@ suite_lint() {
   fi
 }
 
-suite_matchmaker() {
+postgres_reachable() { # can the Matchmaker's Python reach TEST_DATABASE_URL?
   local py
   py="$(py_for matchmaker)"
-  if ! (cd matchmaker && "$py" - <<'PY'
+  (cd matchmaker && "$py" - <<'PY'
 import os, sys
 from pathlib import Path
 try:
@@ -72,11 +72,24 @@ try:
 except Exception:
     sys.exit(1)
 PY
-  ) >/dev/null 2>&1; then
+  ) >/dev/null 2>&1
+}
+
+suite_matchmaker() {
+  if ! postgres_reachable; then
     skip matchmaker "no Postgres at TEST_DATABASE_URL; see the top of scripts/check.sh"
     return
   fi
-  run matchmaker bash -c "cd matchmaker && '$py' -m pytest -q"
+  run matchmaker bash -c "cd matchmaker && '$(py_for matchmaker)' -m pytest -q"
+}
+
+# Real Matchmaker + gateway processes over HTTP; see scripts/integration/run.py.
+suite_integration() {
+  if ! postgres_reachable; then
+    skip integration "no Postgres at TEST_DATABASE_URL; see the top of scripts/check.sh"
+    return
+  fi
+  run integration "$(py_for matchmaker)" scripts/integration/run.py
 }
 
 suite_gateway() {
@@ -97,7 +110,7 @@ suite_agent() {
 
 for suite in "${SUITES[@]}"; do
   case "$suite" in
-    lint | matchmaker | gateway | scripts | web | agent) "suite_$suite" ;;
+    lint | matchmaker | gateway | scripts | web | agent | integration) "suite_$suite" ;;
     *)
       echo "unknown suite: $suite (choose from: ${ALL[*]})" >&2
       exit 2

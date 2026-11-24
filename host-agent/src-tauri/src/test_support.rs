@@ -25,5 +25,6 @@ pub fn nvidia_gpu_with(model: &str, id: &str, vram_gib: u64) -> GpuInfo {
         model: model.to_string(),
         vendor: GpuVendor::Nvidia,
         vram_bytes: Some(vram_gib * BYTES_PER_GIB),
+        integrated: false,
     }
 }

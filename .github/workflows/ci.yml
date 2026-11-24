@@ -19,7 +19,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff
+      # Pinned: a new ruff release adds rules and fails unchanged code.
+      - run: pip install ruff==0.12.3
       - run: ruff check matchmaker gateway guest-images host-agent/scripts
 
   matchmaker:
@@ -65,6 +66,34 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: python -m pytest -q
 
+  # Real Matchmaker and gateway processes over HTTP, with stand-ins for the
+  # Host Agent, Headscale and storage. See scripts/integration/run.py.
+  integration:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: matchmaker
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: matchmaker_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U matchmaker -d matchmaker_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      INTEGRATION_DATABASE_URL: postgresql+psycopg://matchmaker:ci-only@localhost:5432/matchmaker_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e "matchmaker[dev]" -e "gateway[dev]"
+      - run: python scripts/integration/run.py
+
   scripts:
     runs-on: ubuntu-24.04
     steps:
@@ -73,6 +102,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pytest
+      # pack-lan-test-kit.sh builds the cloud-init seed.iso with xorriso.
+      - run: sudo apt-get install -y --no-install-recommends xorriso
       - run: python -m pytest -q host-agent/scripts guest-images/tests
 
   web:

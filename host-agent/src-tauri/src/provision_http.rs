@@ -23,11 +23,9 @@ use thiserror::Error;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::agent_status::Occupancy;
+use crate::diagnostics::ProvisionLog;
 use crate::eligibility::{self, EligibilityRequest};
 use crate::gpu_bind::{self, GpuBindError, HyperVGpuOps, PciBindOps, PciSysfs};
-use crate::qemu_whpx::{self, QemuError, QemuRuntime};
-use crate::qemu_kvm::{self, QemuKvmError, QemuKvmRuntime};
-use crate::qemu_vfio::{self, LinuxQemuError, LinuxQemuRuntime};
 use crate::host_capabilities::HostCapabilities;
 use crate::image::{
     trust_from_env, verify_image, GuestImageStatus, ImageError, ImageManifest, ImageTrust,
@@ -36,10 +34,13 @@ use crate::launch::{self, LaunchError, LaunchRequest};
 use crate::locator::{self, LiveLocator, LocatorError, StreamerKind, StreamerWait};
 use crate::models::{HardwareSnapshot, SharingConfig};
 use crate::provision::{plan, HostOs, LabTier, ProvisionError, ProvisionPlan, ProvisionRequest};
+use crate::qemu_kvm::{self, QemuKvmError, QemuKvmRuntime};
+use crate::qemu_vfio::{self, LinuxQemuError, LinuxQemuRuntime};
+use crate::qemu_whpx::{self, QemuError, QemuRuntime};
 use crate::storage::GuestRcloneMount;
 
-const PROVISION_PATH: &str = "/v1/provision";
-const TEARDOWN_PATH: &str = "/v1/teardown";
+pub(crate) const PROVISION_PATH: &str = "/v1/provision";
+pub(crate) const TEARDOWN_PATH: &str = "/v1/teardown";
 const BODY_MAX: usize = 16 * 1024;
 const STREAMER_KASM: &str = "kasm";
 const STREAMER_SUNSHINE: &str = "sunshine";
@@ -87,7 +88,12 @@ pub enum PlanHttpError {
 pub struct ProvisionGate {
     pub capabilities: HostCapabilities,
     pub hardware: HardwareSnapshot,
+    /// Sliders read when the gate was built. Used only when `config_dir` is
+    /// unset or its file cannot be read: see [`sharing_for_gate`].
     pub sharing: Option<SharingConfig>,
+    /// Where the owner's saved sliders live. Read again for every command,
+    /// so a change saved after start-up applies to the next boot.
+    pub config_dir: Option<PathBuf>,
     pub spare_disk_bytes: Option<u64>,
     /// When set on Linux Standard, QEMU+KVM runs with SLIRP user networking
     /// (or provision fails).
@@ -261,6 +267,13 @@ pub struct ListenConfig {
 }
 
 impl ListenConfig {
+    /// Accept only this machine's command token (see `host_secret`) instead
+    /// of the bootstrap token every host shares.
+    pub fn with_command_token(mut self, token: impl Into<String>) -> Self {
+        self.token = token.into();
+        self
+    }
+
     pub fn new(addr: impl Into<String>, token: impl Into<String>, image_trust: ImageTrust) -> Self {
         Self {
             addr: addr.into(),
@@ -720,7 +733,14 @@ fn refuse_unoffered_tier(
 }
 
 fn sharing_for_gate(gate: &ProvisionGate, request: &ProvisionHttpRequest) -> SharingConfig {
-    gate.sharing.clone().unwrap_or_else(|| SharingConfig {
+    // The owner may change the sliders after the agent started; the
+    // Matchmaker already has the new values, so boot with them too. A copy
+    // taken at start-up made the agent refuse a host the server had matched.
+    let saved = gate
+        .config_dir
+        .as_deref()
+        .and_then(|dir| crate::config::load_for_hardware(dir, &gate.hardware).ok());
+    saved.or_else(|| gate.sharing.clone()).unwrap_or_else(|| SharingConfig {
         version: crate::models::CONFIG_VERSION,
         sharing_enabled: true,
         shared_logical_cores: gate.hardware.cpu.logical_cores,
@@ -963,6 +983,8 @@ pub fn respond_and_track_with_gate(
 }
 
 fn teardown_session(occupancy: &Occupancy, gate: Option<&ProvisionGate>) {
+    // Let the guest upload ~/Persistent and power off before QEMU is killed.
+    crate::guest_power::shut_down_own_guests();
     qemu_whpx::kill_running();
     qemu_kvm::kill_running();
     qemu_vfio::kill_running();
@@ -1009,6 +1031,17 @@ pub fn serve(
     occupancy: &Occupancy,
     gate: Option<ProvisionGate>,
 ) -> Result<(), ProvisionListenError> {
+    serve_with_log(config, os, occupancy, gate, None)
+}
+
+/// Like [`serve`], and records each outcome for the diagnostics report.
+pub fn serve_with_log(
+    config: &ListenConfig,
+    os: HostOs,
+    occupancy: &Occupancy,
+    gate: Option<ProvisionGate>,
+    log: Option<&ProvisionLog>,
+) -> Result<(), ProvisionListenError> {
     let server = Server::http(&config.addr).map_err(|error| ProvisionListenError::Bind {
         addr: config.addr.clone(),
         detail: error.to_string(),
@@ -1021,6 +1054,7 @@ pub fn serve(
             occupancy,
             &config.image_trust,
             gate.as_ref(),
+            log,
         );
     }
     Ok(())
@@ -1033,6 +1067,7 @@ fn dispatch(
     occupancy: &Occupancy,
     image_trust: &ImageTrust,
     gate: Option<&ProvisionGate>,
+    log: Option<&ProvisionLog>,
 ) -> std::io::Result<()> {
     let method = method_name(request.method());
     let url = request.url().to_string();
@@ -1054,6 +1089,13 @@ fn dispatch(
         image_trust,
         gate,
     );
+    // 401s are not recorded: anyone can send one, and they would bury the
+    // last real outcome.
+    if let Some(log) = log {
+        if output.status != 401 {
+            log.record(&url, output.status, &output.body);
+        }
+    }
     let mut response =
         Response::from_string(output.body).with_status_code(StatusCode(output.status));
     if let Ok(header) = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]) {
@@ -1370,6 +1412,46 @@ mod tests {
     }
 
     #[test]
+    fn listener_with_a_command_token_refuses_the_shared_bootstrap_token() {
+        let (trust, body) = signed_standard();
+        let secret = "a".repeat(43);
+        let command = crate::host_secret::command_token(&secret);
+        let config =
+            ListenConfig::new("127.0.0.1:7842", TOKEN, trust.clone()).with_command_token(&command);
+        assert_eq!(config.token, command);
+
+        for bearer in [
+            format!("Bearer {TOKEN}"),
+            format!("Bearer {secret}"),
+            format!(
+                "Bearer {}",
+                crate::host_secret::command_token("another-hosts-secret-value-000000000")
+            ),
+        ] {
+            let refused = respond(
+                "POST",
+                "/v1/provision",
+                Some(&bearer),
+                &body,
+                &config.token,
+                HostOs::Linux,
+                &trust,
+            );
+            assert_eq!(refused.status, 401, "{bearer} must be refused");
+        }
+        let accepted = respond(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {command}")),
+            &body,
+            &config.token,
+            HostOs::Linux,
+            &trust,
+        );
+        assert_ne!(accepted.status, 401);
+    }
+
+    #[test]
     fn other_paths_are_not_found() {
         let (trust, body) = signed_standard();
         let output = respond(
@@ -1448,6 +1530,7 @@ mod tests {
                 HostOs::Linux,
                 &occupancy,
                 &trust_for_server,
+                None,
                 None,
             )
             .unwrap();
@@ -1665,6 +1748,7 @@ mod tests {
             }),
             hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
             sharing: None,
+            config_dir: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             qemu_kvm: None,
             qemu: None,
@@ -1697,6 +1781,7 @@ mod tests {
             }),
             hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
             sharing: None,
+            config_dir: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             qemu_kvm: None,
             qemu: None,
@@ -1761,6 +1846,70 @@ mod tests {
         assert_eq!(output.status, 400);
         assert!(output.body.contains("needs at least 4 GiB"));
         assert!(!occupancy.is_in_session());
+    }
+
+    fn sliders(memory_gib: u64) -> SharingConfig {
+        use crate::models::{BYTES_PER_GIB, CONFIG_VERSION};
+        SharingConfig {
+            version: CONFIG_VERSION,
+            sharing_enabled: true,
+            shared_logical_cores: 4,
+            shared_memory_bytes: memory_gib * BYTES_PER_GIB,
+            share_gpu: false,
+            shared_gpu_id: None,
+        }
+    }
+
+    fn provision_on(gate: &ProvisionGate) -> (u16, String) {
+        let (trust, body) = signed_standard();
+        let occupancy = Occupancy::new();
+        let output = respond_and_track_with_gate(
+            "POST",
+            "/v1/provision",
+            Some(&format!("Bearer {TOKEN}")),
+            &body,
+            TOKEN,
+            HostOs::Linux,
+            &occupancy,
+            &trust,
+            Some(gate),
+        );
+        (output.status, output.body)
+    }
+
+    // Issue 31: the owner raised RAM to 4 GiB after the agent started. The
+    // Matchmaker matched the host on 4 GiB; the agent must not refuse with
+    // the 2 GiB it read at start-up.
+    #[test]
+    fn sliders_saved_after_start_up_apply_to_the_next_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::config::save(dir.path(), &sliders(2)).unwrap();
+        let mut gate = linux_kvm_gate();
+        gate.sharing = Some(sliders(2)); // what start-up read
+        gate.config_dir = Some(dir.path().to_path_buf());
+
+        let (status, body) = provision_on(&gate);
+        assert_eq!(status, 400, "{body}");
+
+        crate::config::save(dir.path(), &sliders(8)).unwrap();
+        let (status, body) = provision_on(&gate);
+        assert!(!body.contains("needs at least"), "{body}");
+        assert_ne!(status, 400, "{body}");
+    }
+
+    // The other direction: an owner who lowers what they lend is obeyed at
+    // once, not after a restart.
+    #[test]
+    fn lowering_the_sliders_after_start_up_is_obeyed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut gate = linux_kvm_gate();
+        gate.sharing = Some(sliders(8));
+        gate.config_dir = Some(dir.path().to_path_buf());
+        crate::config::save(dir.path(), &sliders(2)).unwrap();
+
+        let (status, body) = provision_on(&gate);
+        assert_eq!(status, 400);
+        assert!(body.contains("needs at least 4 GiB"), "{body}");
     }
 
     #[test]
@@ -1890,7 +2039,7 @@ mod tests {
         assert!(args.contains(&"cores=16".to_string()));
         assert!(args.contains(&"32G".to_string()));
         assert!(args.contains(&format!(
-            "file={},if=virtio,format=raw",
+            "file={},if=virtio,format=raw,snapshot=on",
             rootfs.to_string_lossy()
         )));
         assert!(!args.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));
@@ -1949,7 +2098,11 @@ mod tests {
             Some(&gate),
         );
         assert_eq!(output.status, 400);
-        assert!(output.body.contains("guest image is not present"), "{}", output.body);
+        assert!(
+            output.body.contains("guest image is not present"),
+            "{}",
+            output.body
+        );
         assert!(!output.body.contains("connectionUrl"));
         assert!(!occupancy.is_in_session());
         assert!(recorder.spawn_calls().is_empty());
@@ -2006,6 +2159,7 @@ mod tests {
             }),
             hardware: snapshot(16, 32 * BYTES_PER_GIB, gpus.to_vec()),
             sharing: None,
+            config_dir: None,
             spare_disk_bytes: Some(64 * BYTES_PER_GIB),
             qemu_kvm: None,
             qemu: None,
@@ -2042,7 +2196,9 @@ mod tests {
 
     #[test]
     fn windows_standard_with_boot_inputs_invokes_whpx_and_returns_the_live_locator() {
-        use crate::qemu_whpx::{virtio_drive, RecordingQemu, ACCEL_ARG, ACCEL_WHPX, DRIVE_ARG, MACHINE_PC};
+        use crate::qemu_whpx::{
+            virtio_drive, RecordingQemu, ACCEL_ARG, ACCEL_WHPX, DRIVE_ARG, MACHINE_PC,
+        };
         use std::sync::Arc;
 
         let live_url = spawn_live_streamer();
@@ -2090,7 +2246,10 @@ mod tests {
         assert_eq!(spawns[0].1[7], "32G");
         assert_eq!(spawns[0].1[12], DRIVE_ARG);
         assert_eq!(spawns[0].1[13], virtio_drive(&rootfs.to_string_lossy()));
-        assert!(!spawns[0].1.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")));
+        assert!(!spawns[0]
+            .1
+            .iter()
+            .any(|arg| arg.eq_ignore_ascii_case("tcg")));
     }
 
     #[test]
@@ -2293,8 +2452,7 @@ mod tests {
         }
 
         fn write_bind(&self, bind_path: &std::path::Path, bdf: &str) -> Result<(), GpuBindError> {
-            self.binds
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.binds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if bind_path
                 .parent()
                 .and_then(|parent| parent.file_name())
@@ -2654,9 +2812,8 @@ mod tests {
         use std::sync::Arc;
 
         let (trust, body) = signed_pro();
-        let runner = Arc::new(
-            crate::gpu_bind::RecordingHyperV::dda().fail_on("Add-VMAssignableDevice"),
-        );
+        let runner =
+            Arc::new(crate::gpu_bind::RecordingHyperV::dda().fail_on("Add-VMAssignableDevice"));
         let mut gate = windows_whpx_gate();
         gate.hyperv = Some(HyperVAssign {
             ops: runner.clone(),

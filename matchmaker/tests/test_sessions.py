@@ -511,7 +511,10 @@ def test_placeholder_provision_fails_the_book_and_does_not_occupy(
         assert booked.status_code == 502
         assert booked.json()["detail"] == "host provision failed"
         db.expire_all()
-        assert db.scalars(select(LabSession)).all() == []
+        rows = db.scalars(select(LabSession)).all()
+        assert [row.status for row in rows] == ["failed"]
+        assert rows[0].failure_reason
+        assert rows[0].ended_at is not None
     finally:
         app.dependency_overrides.pop(get_host_provisioner, None)
 
@@ -573,6 +576,9 @@ def test_agent_timeout_with_placeholder_seed_fails_the_book(
 
     assert booked.status_code == 502
     db.expire_all()
-    assert db.scalars(select(LabSession)).all() == []
+    rows = db.scalars(select(LabSession)).all()
+    assert [row.status for row in rows] == ["failed"]
+    assert rows[0].failure_reason
+    assert rows[0].ended_at is not None
     db.refresh(host)
     assert host.kasm_url == "https://example.invalid/kasm"

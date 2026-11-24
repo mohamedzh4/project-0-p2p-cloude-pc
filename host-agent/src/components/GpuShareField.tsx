@@ -18,7 +18,9 @@ export function GpuShareField({
   onShareChange,
   onGpuChange,
 }: GpuShareFieldProps) {
-  const selected = gpus.find((gpu) => gpu.id === sharedGpuId) ?? gpus[0] ?? null;
+  // The iGPU keeps the owner's screen; only other cards can be dedicated.
+  const dedicatable = gpus.filter((gpu) => !gpu.integrated);
+  const selected = dedicatable.find((gpu) => gpu.id === sharedGpuId) ?? dedicatable[0] ?? null;
 
   return (
     <div className="field">
@@ -30,7 +32,9 @@ export function GpuShareField({
           onChange={(event) => onShareChange(event.target.checked)}
         />
         {disabled
-          ? "Dedicate a GPU — unavailable, no GPU detected"
+          ? gpus.length > 0
+            ? "Dedicate a GPU — unavailable, only an integrated GPU was found"
+            : "Dedicate a GPU — unavailable, no GPU detected"
           : "Dedicate a GPU to guest sessions"}
       </label>
 
@@ -40,7 +44,7 @@ export function GpuShareField({
         apps cannot use it. Keep an iGPU or a second card for yourself, or leave this off.
       </p>
 
-      {gpus.length > 1 ? (
+      {dedicatable.length > 1 ? (
         <div className="gpu-picker">
           <label htmlFor="shared-gpu">GPU to dedicate</label>
           <select
@@ -49,7 +53,7 @@ export function GpuShareField({
             disabled={disabled}
             onChange={(event) => onGpuChange(event.target.value)}
           >
-            {gpus.map((gpu) => (
+            {dedicatable.map((gpu) => (
               <option key={gpu.id} value={gpu.id}>
                 {formatGpuLabel(gpu.model, gpu.vramBytes)}
               </option>
@@ -58,7 +62,7 @@ export function GpuShareField({
         </div>
       ) : selected ? (
         <p className="hint">
-          This machine has one supported GPU: {formatGpuLabel(selected.model, selected.vramBytes)}.
+          The GPU you can dedicate: {formatGpuLabel(selected.model, selected.vramBytes)}.
         </p>
       ) : null}
     </div>

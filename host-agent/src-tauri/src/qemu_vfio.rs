@@ -211,7 +211,7 @@ pub fn argv(arch: &str, vcpu_count: u32, memory_mib: u64, disk: &Path, pci_addre
         MEMORY_ARG.to_string(),
         memory,
         "-drive".to_string(),
-        format!("file={disk},if=virtio,format=raw"),
+        qemu_whpx::virtio_drive(&disk),
         DEVICE_ARG.to_string(),
         vfio_device_arg(pci_address),
     ];
@@ -336,6 +336,8 @@ pub fn invoke(
         request.bootstrap_origin,
         request.bootstrap_token,
     ));
+    let (qga_port, guest_args) = crate::guest_power::prepare();
+    args.extend(guest_args);
     debug_assert!(
         !args.iter().any(|arg| arg.eq_ignore_ascii_case("tcg")),
         "Linux Pro must not pass TCG"
@@ -346,6 +348,7 @@ pub fn invoke(
     );
     let child = spawner.spawn(request.binary, &args)?;
     spawner.detach(child);
+    crate::guest_power::remember(qga_port);
     Ok(InvokeResult {
         hypervisor_invoked: true,
         argv: args,

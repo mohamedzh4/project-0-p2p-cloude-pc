@@ -15,10 +15,19 @@ from matchmaker.ingress import (
     expire_session_ingress,
     hash_ingress_token,
     lookup_ingress_token,
+    mint_desktop_link,
     new_ingress_token,
+    redeem_desktop_link,
     public_locator_url,
 )
-from matchmaker.models import Host, LabSession, SessionIngressToken, SessionStatus, User
+from matchmaker.models import (
+    Host,
+    LabSession,
+    SessionDesktopLink,
+    SessionIngressToken,
+    SessionStatus,
+    User,
+)
 from tests.helpers import (
     KASM_URL,
     LIVE_KASM_URL,
@@ -144,15 +153,23 @@ def test_session_json_returns_public_gateway_url_when_configured(
         assert kasm_url.endswith("/")
         assert LIVE_KASM_URL not in kasm_url
         assert KASM_URL not in kasm_url
-        grant_token = kasm_url[len(f"{GATEWAY_ORIGIN}/s/") :].rstrip("/")
-        target = lookup_ingress_token(db, grant_token)
-        assert target is not None
-        assert target.target_url == KASM_URL
-        assert target.session_id == UUID(created.json()["sessionId"])
+        link = kasm_url[len(f"{GATEWAY_ORIGIN}/s/") :].rstrip("/")
+        # The URL holds a single-use link, never the session's own token.
+        assert lookup_ingress_token(db, link) is None
+        redeemed = redeem_desktop_link(db, link)
+        assert redeemed is not None
+        assert redeemed.target.target_url == KASM_URL
+        assert redeemed.target.session_id == UUID(created.json()["sessionId"])
+        assert redeemed.cookie_token != link
 
         again = client.post("/v1/sessions", headers=auth_header(token))
         assert again.status_code == 200
-        assert again.json()["connection"]["kasmUrl"] == kasm_url
+        # Each answer carries a fresh link to the same session.
+        fresh = again.json()["connection"]["kasmUrl"]
+        assert fresh.startswith(f"{GATEWAY_ORIGIN}/s/") and fresh != kasm_url
+        assert redeem_desktop_link(db, fresh.split("/s/")[1].rstrip("/")).cookie_token == (
+            redeemed.cookie_token
+        )
     finally:
         _disable_gateway(monkeypatch)
 
@@ -193,7 +210,18 @@ def test_resolve_endpoint_is_scoped_and_fail_closed(
     try:
         user_token = signup(client)["accessToken"]
         created = client.post("/v1/sessions", headers=auth_header(user_token))
-        grant_token = created.json()["connection"]["kasmUrl"].split("/s/")[1].rstrip("/")
+        link = created.json()["connection"]["kasmUrl"].split("/s/")[1].rstrip("/")
+        assert client.post(
+            "/v1/gateway/redeem", json={"token": link}
+        ).status_code == 401
+        redeemed = client.post(
+            "/v1/gateway/redeem",
+            json={"token": link},
+            headers={"Authorization": f"Bearer {GATEWAY_RESOLVE}"},
+        )
+        assert redeemed.status_code == 200
+        assert redeemed.json()["targetUrl"] == KASM_URL
+        grant_token = redeemed.json()["cookieToken"]
 
         denied = client.post("/v1/gateway/resolve", json={"token": grant_token})
         assert denied.status_code == 401
@@ -239,7 +267,8 @@ def test_end_session_invalidates_gateway_token(
         user_token = signup(client)["accessToken"]
         created = client.post("/v1/sessions", headers=auth_header(user_token))
         session_id = created.json()["sessionId"]
-        grant_token = created.json()["connection"]["kasmUrl"].split("/s/")[1].rstrip("/")
+        link = created.json()["connection"]["kasmUrl"].split("/s/")[1].rstrip("/")
+        grant_token = redeem_desktop_link(db, link).cookie_token
         ended = client.post(
             f"/v1/sessions/{session_id}/end", headers=auth_header(user_token)
         )
@@ -267,3 +296,54 @@ def test_expire_session_ingress_is_idempotent(db: Session, seeded_host: Host) ->
     session_id = uuid4()
     assert expire_session_ingress(db, session_id=session_id) == 0
     assert seeded_host.id
+
+
+def _active_grant(db: Session, seeded_host: Host) -> SessionIngressToken:
+    user = User(email=f"link-{uuid4()}@example.com", password_hash=hash_password("pw-12345678"))
+    db.add(user)
+    db.commit()
+    session = LabSession(
+        user_id=user.id,
+        host_id=seeded_host.id,
+        status=SessionStatus.ACTIVE,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(session)
+    db.commit()
+    return ensure_session_ingress(
+        db, session_id=session.id, target_url=LIVE_KASM_URL, streamer="kasm", ttl_seconds=3600
+    )
+
+
+def test_a_desktop_link_works_once_except_for_the_browser_that_used_it(
+    db: Session, seeded_host: Host
+) -> None:
+    """Issue 29: a copied link is no use on another device."""
+    grant = _active_grant(db, seeded_host)
+    link = mint_desktop_link(db, session_id=grant.session_id)
+    first = redeem_desktop_link(db, link)
+    assert first is not None and first.cookie_token == grant.token
+    # Someone else with the same link (no cookie, or another session's cookie).
+    assert redeem_desktop_link(db, link) is None
+    assert redeem_desktop_link(db, link, browser_cookie=new_ingress_token()) is None
+    # The same browser again (second tab, double click).
+    again = redeem_desktop_link(db, link, browser_cookie=first.cookie_token)
+    assert again is not None and again.target.session_id == grant.session_id
+
+
+def test_a_desktop_link_expires_and_dead_links_are_dropped(
+    db: Session, seeded_host: Host
+) -> None:
+    grant = _active_grant(db, seeded_host)
+    past = datetime.now(timezone.utc) - timedelta(minutes=10)
+    old = mint_desktop_link(db, session_id=grant.session_id, now=past)
+    assert redeem_desktop_link(db, old) is None
+    mint_desktop_link(db, session_id=grant.session_id)
+    remaining = db.scalars(
+        select(SessionDesktopLink).where(SessionDesktopLink.session_id == grant.session_id)
+    ).all()
+    assert len(remaining) == 1
+    expire_session_ingress(db, session_id=grant.session_id)
+    assert db.scalars(
+        select(SessionDesktopLink).where(SessionDesktopLink.session_id == grant.session_id)
+    ).all() == []

@@ -181,7 +181,9 @@ class LanTestKitTests(unittest.TestCase):
             (state / "installed-packages").write_text("qemu-base\ncurl\n")
             (state / "added-to-kvm-group").write_text("")
             env = dict(os.environ, PATH=f"{bin_dir}:/usr/bin:/bin", XDG_CACHE_HOME=str(tmp / "cache"),
-                       USER="friend", TMPDIR=str(tmp))
+                       USER="friend", TMPDIR=str(tmp),
+                       # Without this an Ubuntu machine would run its real apt-get.
+                       LAN_TEST_PKG_MANAGER="pacman")
             out = subprocess.run(["bash", str(SH), "--cleanup", "--yes"], env=env,
                                  capture_output=True, text=True)
             self.assertEqual(out.returncode, 0, out.stdout + out.stderr)

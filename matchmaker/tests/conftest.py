@@ -69,6 +69,14 @@ os.environ.pop("S3_ENDPOINT", None)
 os.environ.pop("S3_ACCESS_KEY", None)
 os.environ.pop("S3_SECRET_KEY", None)
 os.environ.pop("S3_BUCKET", None)
+os.environ.pop("R2_API_BASE", None)
+os.environ.pop("HEARTBEAT_STALE_SECONDS", None)
+os.environ.pop("PROVISION_TIMEOUT_SECONDS", None)
+os.environ.pop("STORAGE_CREDENTIAL_TTL_SECONDS", None)
+os.environ.pop("STORAGE_QUOTA_GB", None)
+os.environ.pop("R2_API_TOKEN", None)
+os.environ.pop("R2_ACCOUNT_ID", None)
+os.environ.pop("STORAGE_CREDENTIALS", None)
 # Public gateway is opt-in. A local .env must not wrap session locators in pytest.
 os.environ.pop("GATEWAY_PUBLIC_ORIGIN", None)
 os.environ.pop("GATEWAY_RESOLVE_TOKEN", None)
@@ -76,7 +84,13 @@ os.environ.pop("GATEWAY_TOKEN_TTL_SECONDS", None)
 os.environ.pop("MATCHMAKER_PUBLIC_ORIGIN", None)
 
 from matchmaker.db import get_engine, get_session_factory  # noqa: E402
-from matchmaker.deps import get_headscale_client, get_host_provisioner, get_renterd_client  # noqa: E402
+from matchmaker.booking import InlineScheduler  # noqa: E402
+from matchmaker.deps import (  # noqa: E402
+    get_headscale_client,
+    get_host_provisioner,
+    get_provision_scheduler,
+    get_renterd_client,
+)
 from matchmaker.main import app  # noqa: E402
 from matchmaker.models import Host, HostStatus, LabTier  # noqa: E402
 from tests.helpers import (  # noqa: E402
@@ -119,7 +133,7 @@ def clean_tables() -> Generator[None, None, None]:
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE TABLE session_guest_bootstrap, session_ingress_tokens, user_storage, ledger_entries, sessions, hosts, users "
+                "TRUNCATE TABLE host_commands, session_guest_bootstrap, session_ingress_tokens, user_storage, ledger_entries, sessions, hosts, users "
 
                 "RESTART IDENTITY CASCADE"
             )
@@ -154,6 +168,16 @@ def fake_headscale() -> Generator[FakeHeadscale, None, None]:
         yield fake
     finally:
         app.dependency_overrides.pop(get_headscale_client, None)
+
+
+@pytest.fixture(autouse=True)
+def inline_scheduler() -> Generator[None, None, None]:
+    """Run the provision job inside the request so tests see the outcome."""
+    app.dependency_overrides[get_provision_scheduler] = lambda: InlineScheduler()
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_provision_scheduler, None)
 
 
 @pytest.fixture

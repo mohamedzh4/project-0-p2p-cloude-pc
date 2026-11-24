@@ -18,7 +18,7 @@ rate-limit failed lookups; join the tailnet as `tag:gateway`.
 - Invent a public domain. You supply DNS.
 - Pairwise per-session ACLs. Headscale 0.26 still cannot mint
   `tag:session-<uuid>` owners. `tag:gateway` may reach every `tag:guest`
-  (same leftover as `tag:user`). The token mapping is the session scope.
+  (renters themselves are not on the mesh). The token mapping is the session scope.
 - Reach `tag:host` (no ACL grant). The process must only dial the resolved URL.
 - Switch Sia to mainnet.
 - Prove guest networking on **metal**. Phase 34 is a software contract

@@ -19,15 +19,18 @@ import hashlib
 import re
 import secrets
 
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
-from matchmaker.models import LabSession, SessionIngressToken, SessionStatus
+from matchmaker.models import LabSession, SessionDesktopLink, SessionIngressToken, SessionStatus
 from matchmaker.provision import STREAMER_KASM, STREAMER_SUNSHINE, locator_is_placeholder
 from matchmaker.schemas import ConnectionInfo
 
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,64}$")
 _TOKEN_BYTES = 32
+# A desktop link works once, within this time. The web app asks for the
+# session every 10 s while it is active, so the link it shows stays fresh.
+DESKTOP_LINK_TTL_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -133,9 +136,95 @@ def expire_session_ingress(db: Session, *, session_id: UUID) -> int:
     count = len(rows)
     for row in rows:
         db.delete(row)
-    if count:
+    links = db.execute(
+        delete(SessionDesktopLink).where(SessionDesktopLink.session_id == session_id)
+    ).rowcount
+    if count or links:
         db.commit()
     return count
+
+
+def mint_desktop_link(
+    db: Session,
+    *,
+    session_id: UUID,
+    ttl_seconds: int = DESKTOP_LINK_TTL_SECONDS,
+    now: datetime | None = None,
+) -> str:
+    """A new single-use link token for this session. Drops its dead links."""
+    moment = _as_utc(now)
+    db.execute(
+        delete(SessionDesktopLink).where(
+            SessionDesktopLink.session_id == session_id,
+            or_(
+                SessionDesktopLink.expires_at <= moment,
+                SessionDesktopLink.used_at.is_not(None),
+            ),
+        )
+    )
+    token = new_ingress_token()
+    db.add(
+        SessionDesktopLink(
+            session_id=session_id,
+            token_hash=hash_ingress_token(token),
+            expires_at=moment + timedelta(seconds=ttl_seconds),
+        )
+    )
+    db.commit()
+    return token
+
+
+@dataclass(frozen=True)
+class RedeemedLink:
+    target: IngressTarget
+    # The session's ingress token, for the gateway to set as an HttpOnly cookie.
+    cookie_token: str
+
+
+def redeem_desktop_link(
+    db: Session,
+    link_token: str,
+    *,
+    browser_cookie: str | None = None,
+    now: datetime | None = None,
+) -> RedeemedLink | None:
+    """Trade a desktop link for the session's cookie token, once.
+
+    A used link still works for the browser that used it (a second tab, a
+    double click): that browser already holds this session's cookie. Anyone
+    else gets nothing.
+    """
+    if TOKEN_RE.fullmatch(link_token) is None:
+        return None
+    moment = _as_utc(now)
+    link = db.scalars(
+        select(SessionDesktopLink)
+        .where(SessionDesktopLink.token_hash == hash_ingress_token(link_token))
+        .with_for_update()
+    ).first()
+    if link is None or link.expires_at <= moment:
+        db.rollback()
+        return None
+    grant = db.scalars(
+        select(SessionIngressToken).where(SessionIngressToken.session_id == link.session_id)
+    ).first()
+    if grant is None:
+        db.rollback()
+        return None
+    if link.used_at is not None:
+        same_browser = browser_cookie is not None and secrets.compare_digest(
+            hash_ingress_token(browser_cookie), grant.token_hash
+        )
+        if not same_browser:
+            db.rollback()
+            return None
+    else:
+        link.used_at = moment
+        db.commit()
+    target = lookup_ingress_token(db, grant.token, now=moment)
+    if target is None:
+        return None
+    return RedeemedLink(target=target, cookie_token=grant.token)
 
 
 def connection_for_browser(
@@ -163,7 +252,9 @@ def connection_for_browser(
         streamer=inner.streamer,
         ttl_seconds=ttl_seconds,
     )
-    public = public_locator_url(public_origin, grant.token)
+    # The URL carries a single-use link, never the session's own token.
+    link = mint_desktop_link(db, session_id=grant.session_id)
+    public = public_locator_url(public_origin, link)
     if inner.streamer == STREAMER_SUNSHINE:
         return inner.model_copy(update={"sunshine_url": public})
     if inner.streamer == STREAMER_KASM:

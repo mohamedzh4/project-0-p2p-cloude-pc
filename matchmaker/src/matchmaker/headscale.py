@@ -5,7 +5,7 @@ the mesh. This module talks to a self-hosted Headscale instance (no Tailscale
 SaaS).
 
 Host Agent mint stays `tag:host` (non-ephemeral). Session book mints
-ephemeral `tag:guest` and `tag:user` keys (Headscale 0.26 `/api/v1/preauthkey`
+an ephemeral `tag:guest` key (Headscale 0.26 `/api/v1/preauthkey`
 `aclTags`). Volunteer hosts must not become exit nodes — see
 `docs/runbooks/headscale.md`.
 """
@@ -26,11 +26,9 @@ _SESSION_PREAUTH_TTL = timedelta(hours=4)
 
 HOST_ACL_TAG = "tag:host"
 GUEST_ACL_TAG = "tag:guest"
-USER_ACL_TAG = "tag:user"
 GATEWAY_ACL_TAG = "tag:gateway"
 HOST_ACL_TAGS = (HOST_ACL_TAG,)
 GUEST_ACL_TAGS = (GUEST_ACL_TAG,)
-USER_ACL_TAGS = (USER_ACL_TAG,)
 GATEWAY_ACL_TAGS = (GATEWAY_ACL_TAG,)
 DEFAULT_EXIT_NODE = "dcl-platform-exit"
 
@@ -104,9 +102,9 @@ class HttpHeadscaleClient:
             "reusable": False,
             "ephemeral": ephemeral,
             "expiration": expiration,
-            # Headscale 0.26 proto JSON uses acl_tags; HTTP uses aclTags.
+            # Headscale 0.26 HTTP (grpc-gateway) accepts aclTags OR acl_tags;
+            # sending both is rejected as "duplicate field" (HTTP 400).
             "aclTags": tags,
-            "acl_tags": tags,
         }
         body = self._request_json("POST", _PREAUTH_PATH, json_body=payload)
         key = _extract_preauth_key(body)

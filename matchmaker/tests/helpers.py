@@ -74,6 +74,7 @@ class FakeRenterd:
     objects: list[tuple[str, str]] = field(default_factory=list)
     error: RenterdError | None = None
     existing_buckets: set[str] = field(default_factory=set)
+    usage: dict[tuple[str, str], int] = field(default_factory=dict)
 
     def create_bucket(self, name: str) -> bool:
         if self.error is not None:
@@ -93,6 +94,11 @@ class FakeRenterd:
         if self.error is not None:
             raise self.error
         return [key for stored_bucket, key in self.objects if stored_bucket == bucket and key.startswith(prefix)]
+
+    def usage_bytes(self, bucket: str, prefix: str, *, stop_at: int | None = None) -> int:
+        if self.error is not None:
+            raise self.error
+        return self.usage.get((bucket, prefix), 0)
 
 
 @dataclass

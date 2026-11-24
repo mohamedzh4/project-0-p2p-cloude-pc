@@ -28,20 +28,26 @@ pub struct MemoryInfo {
 #[serde(rename_all = "lowercase")]
 pub enum GpuVendor {
     Nvidia,
+    Amd,
+    Intel,
     Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GpuInfo {
-    /// Stable identity for this card (NVML UUID, or `nvidia:{index}` if the
-    /// driver did not report one). Stored in the config so a later availability
-    /// schedule can name the same GPU without another schema break.
+    /// Stable identity for this card, stored in the config. Linux: NVML UUID
+    /// for NVIDIA cards (or `nvidia:{index}`), PCI address for the rest.
+    /// Windows: PnP instance ID (what Hyper-V looks up). See `gpu.rs`.
     pub id: String,
     pub model: String,
     pub vendor: GpuVendor,
     /// `None` when the driver reports a device but not its memory size.
     pub vram_bytes: Option<u64>,
+    /// An iGPU sharing the CPU package. It keeps the owner's screen, so it
+    /// counts as a second display path and is never offered for dedication.
+    #[serde(default)]
+    pub integrated: bool,
 }
 
 /// Result of a GPU probe. `note` explains an empty `gpus` list so the UI can
@@ -86,8 +92,21 @@ impl HardwareSnapshot {
         self.gpus.iter().any(|gpu| gpu.id == id)
     }
 
+    /// GPUs the owner may dedicate to a guest (not an iGPU).
+    pub fn dedicatable_gpus(&self) -> impl Iterator<Item = &GpuInfo> {
+        self.gpus.iter().filter(|gpu| !gpu.integrated)
+    }
+
+    pub fn has_dedicatable_gpu(&self) -> bool {
+        self.dedicatable_gpus().next().is_some()
+    }
+
+    pub fn dedicatable_gpu_id_exists(&self, id: &str) -> bool {
+        self.dedicatable_gpus().any(|gpu| gpu.id == id)
+    }
+
     pub fn first_gpu_id(&self) -> Option<String> {
-        self.gpus.first().map(|gpu| gpu.id.clone())
+        self.dedicatable_gpus().next().map(|gpu| gpu.id.clone())
     }
 }
 
@@ -135,7 +154,7 @@ impl SharingConfig {
     /// to match the current hardware.
     pub fn clamped_to(&self, hardware: &HardwareSnapshot) -> Self {
         let shared_gpu_id = match &self.shared_gpu_id {
-            Some(id) if hardware.gpu_id_exists(id) => Some(id.clone()),
+            Some(id) if hardware.dedicatable_gpu_id_exists(id) => Some(id.clone()),
             _ => hardware.first_gpu_id(),
         };
 
@@ -144,7 +163,7 @@ impl SharingConfig {
             sharing_enabled: self.sharing_enabled,
             shared_logical_cores: self.shared_logical_cores.min(hardware.cpu.logical_cores),
             shared_memory_bytes: self.shared_memory_bytes.min(hardware.memory.total_bytes),
-            share_gpu: self.share_gpu && hardware.has_gpu(),
+            share_gpu: self.share_gpu && hardware.has_dedicatable_gpu(),
             shared_gpu_id,
         }
     }
@@ -161,6 +180,47 @@ mod tests {
 
     fn second_gpu() -> GpuInfo {
         nvidia_gpu_with("NVIDIA GeForce RTX 3060", "GPU-TEST-3060", 12)
+    }
+
+    fn igpu() -> GpuInfo {
+        GpuInfo {
+            id: "0000:00:02.0".to_string(),
+            model: "Intel UHD Graphics 770".to_string(),
+            vendor: GpuVendor::Intel,
+            vram_bytes: None,
+            integrated: true,
+        }
+    }
+
+    // Issue 35: now that iGPUs are listed, the default and any saved pick
+    // must never be the owner's own screen.
+    #[test]
+    fn an_igpu_is_never_picked_for_dedication() {
+        let hardware = snapshot(16, 32 * BYTES_PER_GIB, vec![igpu(), nvidia_gpu()]);
+        assert_eq!(
+            SharingConfig::recommended_for(&hardware).shared_gpu_id.as_deref(),
+            Some("GPU-TEST-4070")
+        );
+
+        let mut saved = SharingConfig::recommended_for(&hardware);
+        saved.share_gpu = true;
+        saved.shared_gpu_id = Some("0000:00:02.0".to_string());
+        let clamped = saved.clamped_to(&hardware);
+        assert_eq!(clamped.shared_gpu_id.as_deref(), Some("GPU-TEST-4070"));
+
+        let igpu_only = snapshot(16, 32 * BYTES_PER_GIB, vec![igpu()]);
+        let clamped = saved.clamped_to(&igpu_only);
+        assert!(!clamped.share_gpu);
+        assert_eq!(clamped.shared_gpu_id, None);
+    }
+
+    #[test]
+    fn old_config_and_hardware_json_without_integrated_still_load() {
+        let gpu: GpuInfo = serde_json::from_str(
+            r#"{"id":"GPU-1","model":"NVIDIA GeForce RTX 4070","vendor":"nvidia","vramBytes":null}"#,
+        )
+        .unwrap();
+        assert!(!gpu.integrated);
     }
 
     #[test]
