@@ -161,6 +161,20 @@ download_package() {
   printf '%s\n' "$dir/$name"
 }
 
+# A PC an older kit set up keeps running that Host Agent, which would not
+# read the new settings and would run next to the new one.
+stop_running_agent() {
+  local stopped=0
+  pkill -x host-agent 2>/dev/null && stopped=1
+  pkill -f -- "$HOME/.local/bin/dcl-host-agent.AppImage" 2>/dev/null && stopped=1
+  if [[ "$stopped" == 1 ]]; then
+    echo "Closed the running Host Agent so it can be updated."
+    sleep 3
+  fi
+  return 0
+}
+stop_running_agent
+
 if [[ "$DISTRO" == debian ]]; then
   deb="$(find "$HERE" -maxdepth 1 -type f -name '*.deb' -print -quit)"
   if [[ -z "$deb" && -n "${HOST_AGENT_DEB_URL:-}" ]]; then
@@ -170,7 +184,9 @@ if [[ "$DISTRO" == debian ]]; then
     echo "Host Agent .deb is missing from the kit." >&2
     exit 1
   }
-  sudo apt-get install -y "$deb"
+  # Every build is version 0.1.0 so far: --reinstall makes apt replace an
+  # older install instead of keeping it as "already the newest version".
+  sudo apt-get install -y --reinstall --allow-downgrades "$deb"
 
   agent_bin="$(command -v host-agent || true)"
   [[ -n "$agent_bin" ]] || {
@@ -291,5 +307,6 @@ Terminal=false
 X-GNOME-Autostart-enabled=true
 EOF
 
-nohup "$agent_bin" >"$APP_DIR/host-agent.log" 2>&1 &
+# The agent writes its own host-agent.log in $APP_DIR.
+nohup "$agent_bin" >/dev/null 2>&1 &
 echo "Linux host setup complete. Open Host Agent, choose resources, enable sharing, then approve the host in Matchmaker."

@@ -646,3 +646,23 @@ GPU-P was also designed around Windows guests that reuse the host's driver;
 whether a Linux guest running Sunshine gets a usable GPU through it is not
 known. Confirm on the Windows PC with `pro-gpu-check.ps1`, then try DDA
 and fall back to GPU-P on failure, or pick by edition.
+
+## 37. A new kit could not update a PC an older kit set up (correctness, medium)
+
+Fixed in code 2026-11-24, not yet seen on hardware. Two things stopped a
+kit downloaded from the website from working on a PC that already ran an
+older kit: `windows-host-setup.ps1` returned early when Host Agent was
+installed, so the old app stayed; and the PC kept its old host id, so the
+server refused the new, unused registration code ("Host credential does not
+match this host"). Setup now always runs the kit's installer, closing a
+running Host Agent first (it keeps the installed one only if the download
+fails). `linux-host-setup.sh` had the same problem in another form: a
+running Host Agent kept going next to the new one, and `apt-get install`
+kept an installed .deb of the same version (every build is 0.1.0), so it
+now stops the running agent and installs with `--reinstall
+--allow-downgrades`; its launch no longer truncates the agent's own
+`host-agent.log`. The server lets an unused code claim an existing PC when the request
+carries that PC's own secret and no other account owns it; the PC keeps its
+status, so an approved PC stays approved. Tests:
+`test_a_new_kit_on_a_pc_an_old_kit_set_up_claims_that_pc`,
+`test_an_older_host_agent_is_updated_not_kept` (Windows and Linux).

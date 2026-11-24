@@ -411,16 +411,41 @@ function Find-InstalledHostAgent {
     return $null
 }
 
+function Stop-RunningHostAgent {
+    $running = @(Get-Process -Name "Host Agent", "host-agent" -ErrorAction SilentlyContinue)
+    if ($running.Count -eq 0) {
+        return
+    }
+    Write-Host "Closing the running Host Agent so it can be updated..."
+    $running | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
+}
+
 function Install-HostAgentApp {
     $found = Find-InstalledHostAgent
-    if ($found) {
-        return $found
+    # A kit always carries (or links) the Host Agent it was made for, so an
+    # older install on this PC is updated rather than kept.
+    $setup = $null
+    try {
+        $setup = Find-HostAgentInstaller
     }
-    $setup = Find-HostAgentInstaller
+    catch {
+        if (-not $found) { throw }
+        Write-Warning "Could not download the new Host Agent ($($_.Exception.Message)). Keeping the installed one."
+    }
     if (-not $setup) {
+        if ($found) {
+            return $found
+        }
         throw "Host Agent installer is missing. The person who sent you this folder must include host-agent-setup.exe (built on Windows, or a GitHub Actions NSIS artifact)."
     }
-    Write-Host "Installing Host Agent. Click Yes if UAC appears..."
+    if ($found) {
+        Stop-RunningHostAgent
+        Write-Host "Updating Host Agent. Click Yes if UAC appears..."
+    }
+    else {
+        Write-Host "Installing Host Agent. Click Yes if UAC appears..."
+    }
     $script:ManualSteps.Add("Click Yes if Windows asks to allow Host Agent setup.")
     $setupPath = $setup -replace '/', '\'
     Start-Process -FilePath $setupPath -ArgumentList "/S" -Wait

@@ -63,6 +63,14 @@ class WindowsHostSetupTests(unittest.TestCase):
         self.assertIn("ExecutionPolicy Bypass", cmd)
         self.assertIn("windows-host-setup.ps1", cmd)
 
+    def test_an_older_host_agent_is_updated_not_kept(self) -> None:
+        text = PS1.read_text(encoding="utf-8")
+        body = text.split("function Install-HostAgentApp {", 1)[1].split("\nfunction ", 1)[0]
+        # The installer is looked for before an existing install can return.
+        self.assertLess(body.index("Find-HostAgentInstaller"), body.index("return $found"))
+        self.assertIn("Stop-RunningHostAgent", body)
+        self.assertIn("Updating Host Agent", body)
+
 
 if __name__ == "__main__":
     unittest.main()

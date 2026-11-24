@@ -12,8 +12,8 @@ from matchmaker.db import get_db
 from matchmaker.booking import ProvisionScheduler
 from matchmaker.deps import (
     HostBearer,
+    adopt_or_check_enrollment_code,
     bind_enrollment_code,
-    check_enrollment_code,
     get_provision_scheduler,
     check_host_secret,
     claim_host_secret,
@@ -89,7 +89,7 @@ def update_host(
         response.status_code = status.HTTP_201_CREATED
         return host_response(host)
 
-    check_enrollment_code(bearer, existing)
+    adopt_or_check_enrollment_code(bearer, existing, secret)
     check_host_secret(existing, secret)
     claim_host_secret(existing, secret)
     apply_declared_caps(

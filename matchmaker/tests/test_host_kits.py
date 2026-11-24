@@ -156,3 +156,47 @@ def test_a_user_holds_only_a_few_unused_codes(client: TestClient, db: Session, k
     assert len(rows) == MAX_UNUSED_CODES
     assert _register(client, codes[0]).status_code == 401  # dropped
     assert _register(client, codes[-1]).status_code == 201
+
+
+def test_a_new_kit_on_a_pc_an_old_kit_set_up_claims_that_pc(
+    client: TestClient, db: Session, kits
+) -> None:
+    shared = get_settings().host_bootstrap_token
+    old = client.post(
+        "/v1/hosts",
+        json=inventory_payload(),
+        headers={"Authorization": f"Bearer {shared}", HOST_SECRET_HEADER: SECRET_A},
+    ).json()
+    host_id = old["hostId"]
+    assert db.get(Host, host_id).owner_user_id is None
+
+    token = signup(client, email="upgrader@example.com")["accessToken"]
+    code = _env(_kit_files(_download(client, token)))["HOST_BOOTSTRAP_TOKEN"]
+
+    # Another machine that only knows the id cannot claim it.
+    wrong = client.put(
+        f"/v1/hosts/{host_id}",
+        json=inventory_payload(),
+        headers={"Authorization": f"Bearer {code}", HOST_SECRET_HEADER: SECRET_B},
+    )
+    assert wrong.status_code == 403
+
+    # The PC itself, keeping its id and secret, can.
+    headers = {"Authorization": f"Bearer {code}", HOST_SECRET_HEADER: SECRET_A}
+    claimed = client.put(f"/v1/hosts/{host_id}", json=inventory_payload(), headers=headers)
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["status"] == old["status"]
+    db.expire_all()
+    owner = db.scalars(select(User).where(User.email == "upgrader@example.com")).one()
+    assert db.get(Host, host_id).owner_user_id == owner.id
+    assert client.post(f"/v1/hosts/{host_id}/heartbeat", headers=headers).status_code == 200
+
+    # A PC that belongs to someone else cannot be claimed with your code.
+    other_token = signup(client, email="someone@example.com")["accessToken"]
+    other_code = _env(_kit_files(_download(client, other_token)))["HOST_BOOTSTRAP_TOKEN"]
+    taken = client.put(
+        f"/v1/hosts/{host_id}",
+        json=inventory_payload(),
+        headers={"Authorization": f"Bearer {other_code}", HOST_SECRET_HEADER: SECRET_A},
+    )
+    assert taken.status_code == 403

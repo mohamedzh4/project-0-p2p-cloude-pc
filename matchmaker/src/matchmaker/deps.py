@@ -203,6 +203,31 @@ def check_enrollment_code(bearer: HostBearer, host: Host) -> None:
         )
 
 
+def adopt_or_check_enrollment_code(bearer: HostBearer, host: Host, secret: str | None) -> None:
+    """Registering a PC that already exists on the server.
+
+    An unused code may claim it: that is a newer kit run on a PC an older
+    kit set up, which keeps its host id. Only the PC itself can do that (it
+    must send the host's own secret), and never for a PC another account
+    owns. Every other case is the usual check.
+    """
+    code = bearer.code
+    if code is None or code.host_id is not None:
+        check_enrollment_code(bearer, host)
+        return
+    if host.secret_hash is None or secret is None or not secret_matches(secret, host.secret_hash):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Host credential does not match this host",
+        )
+    if host.owner_user_id is not None and host.owner_user_id != code.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This PC is registered to another account",
+        )
+    bind_enrollment_code(bearer, host)
+
+
 def host_secret_header(
     secret: Annotated[str | None, Header(alias=HOST_SECRET_HEADER)] = None,
 ) -> str | None:
