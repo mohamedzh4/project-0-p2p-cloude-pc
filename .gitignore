@@ -49,3 +49,9 @@ Thumbs.db
 # Python build output
 gateway/build/
 matchmaker/build/
+
+# DCL Stream Linux check build
+stream/target-linux/
+
+# Pro image build copy of stream/
+guest-images/.stream-src/

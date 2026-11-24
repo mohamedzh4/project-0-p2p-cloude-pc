@@ -79,6 +79,24 @@ variable "sunshine_deb_url" {
   default = ""
 }
 
+variable "nvidia_driver_package" {
+  type        = string
+  description = "Pro: e.g. nvidia-driver-580. Empty picks the newest in the archive."
+  default     = ""
+}
+
+variable "rust_toolchain" {
+  type        = string
+  description = "Pro: Rust version that builds dcl-stream-server inside the image."
+  default     = "1.95.0"
+}
+
+variable "stream_source_dir" {
+  type        = string
+  description = "Pro: path to the stream/ workspace (Cargo.lock included, no target/)."
+  default     = ""
+}
+
 variable "headless" {
   type    = bool
   default = true
@@ -89,6 +107,19 @@ locals {
   checksum        = "sha256:${trimprefix(var.cloud_image_checksum, "sha256:")}"
   streamer_script = var.lab_tier == "standard" ? "${path.root}/../scripts/provision-kasm.sh" : "${path.root}/../scripts/provision-sunshine.sh"
   vm_name         = "rootfs.qcow2"
+  is_pro          = var.lab_tier == "pro"
+  skip            = "${path.root}/../scripts/provision-pro-skip.sh"
+  pro_files = local.is_pro ? [
+    "${path.root}/../scripts/make_edid.py",
+    "${path.root}/../scripts/dcl-display-setup.py",
+    "${path.root}/../scripts/dcl-stream-wait",
+    "${path.root}/../scripts/dcl-stream.service",
+  ] : [local.skip]
+  stream_source = local.is_pro ? "${var.stream_source_dir}/" : local.skip
+  pro_scripts = local.is_pro ? [
+    "${path.root}/../scripts/provision-gaming.sh",
+    "${path.root}/../scripts/provision-stream.sh",
+  ] : [local.skip]
 }
 
 source "qemu" "ubuntu" {
@@ -158,6 +189,29 @@ build {
       "KASM_VNC_DEB_URL=${var.kasm_vnc_deb_url}",
       "KASM_VNC_DEB_SHA256=${var.kasm_vnc_deb_sha256}",
       "SUNSHINE_DEB_URL=${var.sunshine_deb_url}",
+    ]
+  }
+
+  # Pro only: gaming stack and our streamer (docs/streaming-protocol-design.md).
+  # Standard uploads and runs a no-op instead (see locals).
+  provisioner "file" {
+    sources     = local.pro_files
+    destination = "/tmp/"
+  }
+
+  provisioner "file" {
+    source      = local.stream_source
+    destination = "/tmp/dcl-stream"
+  }
+
+  provisioner "shell" {
+    scripts         = local.pro_scripts
+    execute_command = "chmod +x {{ .Path }}; sudo -n {{ .Vars }} {{ .Path }}"
+    timeout         = "3h"
+    environment_vars = [
+      "LAB_TIER=${var.lab_tier}",
+      "NVIDIA_DRIVER_PACKAGE=${var.nvidia_driver_package}",
+      "RUST_TOOLCHAIN=${var.rust_toolchain}",
     ]
   }
 }

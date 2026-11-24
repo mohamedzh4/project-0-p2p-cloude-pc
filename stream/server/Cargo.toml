@@ -1,0 +1,30 @@
+[package]
+name = "dcl-stream-server"
+description = "DCL Stream server: runs in the Pro guest, captures, encodes and streams"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Real capture and encode through FFmpeg (x11grab/kmsgrab, pulse, NVENC/VAAPI/x264, libopus).
+ffmpeg = ["dep:ffmpeg-next"]
+# Virtual keyboard, mouse and gamepads through /dev/uinput (Linux).
+uinput = ["dep:evdev"]
+
+[dependencies]
+dcl-stream-proto = { workspace = true, features = ["net"] }
+anyhow.workspace = true
+tokio.workspace = true
+quinn.workspace = true
+bytes.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+hex.workspace = true
+ffmpeg-next = { version = "7", optional = true, default-features = false, features = ["codec", "device", "format", "software-scaling"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = { version = "0.12", optional = true }

@@ -36,6 +36,8 @@ DRY_RUN = os.environ.get("DCL_GUEST_DRY_RUN", "") == "1"
 # Read by dcl-kasmvnc-auth (root) before the desktop starts.
 RUN_DIR = Path(os.environ.get("DCL_RUN_DIR", "/run/dcl"))
 DESKTOP_PASSWORD_PATH = RUN_DIR / "desktop-password"
+# Read by dcl-stream-server (runs as the desktop user) on Pro guests.
+STREAM_TOKEN_PATH = RUN_DIR / "stream-token"
 SESSION_MARK_PATH = RUN_DIR / "session-vm"
 DESKTOP_USER = os.environ.get("DCL_DESKTOP_USER", "ubuntu")
 # The network can still be settling when the unit starts. Seconds to wait
@@ -194,6 +196,45 @@ def store_desktop_password(body: dict) -> bool:
     return True
 
 
+def _valid_stream_token(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    v = value.strip().lower()
+    if len(v) == 64 and all(c in "0123456789abcdef" for c in v):
+        return v
+    return None
+
+
+def read_manual_stream_token() -> str | None:
+    """dcl.stream_token from the kernel command line or SMBIOS, for a LAN
+    test without a Matchmaker (see docs/runbooks/stream-lan-test.md)."""
+    cmdline = _read_text(Path(CMDLINE_FILE)) or ""
+    value = _cmdline_value(cmdline, "dcl.stream_token")
+    if not value:
+        value = _oem_value(_smbios_oem_strings(), "dcl.stream_token")
+    return _valid_stream_token(value)
+
+
+def store_stream_token(value: object, user: str | None = None) -> bool:
+    """Write the session's stream token where only the desktop user can read it."""
+    token = _valid_stream_token(value)
+    if token is None:
+        if value not in (None, ""):
+            raise RuntimeError("stream token must be 64 hex characters")
+        return False
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(STREAM_TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(token + "\n")
+    os.chmod(STREAM_TOKEN_PATH, 0o600)
+    try:
+        entry = pwd.getpwnam(user or DESKTOP_USER)
+        os.chown(STREAM_TOKEN_PATH, entry.pw_uid, entry.pw_gid)
+    except (KeyError, PermissionError):
+        pass
+    return True
+
+
 def mount_owner_args(user: str | None = None) -> list[str]:
     """Flags that give the mount to the desktop user.
 
@@ -332,6 +373,10 @@ def _run(argv: list[str], env: dict[str, str] | None = None) -> None:
 
 def main(argv: list[str]) -> int:
     flush_only = "--flush" in argv
+    if not flush_only and not DRY_RUN:
+        manual = read_manual_stream_token()
+        if manual:
+            store_stream_token(manual)
     origin, token = read_bootstrap()
     if not origin or not token:
         # Image can boot without a session (packer, Hyper-V leftover).
@@ -353,6 +398,8 @@ def main(argv: list[str]) -> int:
         # Before the mesh join: the desktop must never be reachable without it.
         if not DRY_RUN:
             store_desktop_password(body)
+            # Pro: the streamer's session token (Matchmaker side: phase 5).
+            store_stream_token(body.get("streamToken"))
         _run(join_from_bootstrap(body))
         storage = body.get("storage")
         if not isinstance(storage, dict):

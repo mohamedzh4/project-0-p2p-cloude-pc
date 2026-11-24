@@ -1,0 +1,13 @@
+#!/bin/sh
+# Waits (up to 10 minutes) for what dcl-stream-server needs: the session
+# token from dcl-guest-join, the X display and the sound server.
+i=0
+while [ $i -lt 600 ]; do
+  if [ -s /run/dcl/stream-token ] && [ -S /tmp/.X11-unix/X0 ] && [ -S "${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native" ]; then
+    exit 0
+  fi
+  i=$((i + 1))
+  sleep 1
+done
+echo "dcl-stream-wait: token, X or sound server not ready after 10 minutes" >&2
+exit 1

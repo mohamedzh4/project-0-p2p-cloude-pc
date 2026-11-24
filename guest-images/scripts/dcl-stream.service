@@ -1,0 +1,22 @@
+[Unit]
+Description=DCL Stream server (Pro game streaming)
+After=display-manager.service dcl-guest-join.service
+Wants=display-manager.service
+
+[Service]
+User=ubuntu
+Group=ubuntu
+SupplementaryGroups=input
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/ubuntu/.Xauthority
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DCL_STREAM_AUDIO=dcl_game.monitor
+Environment=DCL_STREAM_FINGERPRINT_FILE=/run/user/1000/dcl-stream-fingerprint
+ExecStartPre=/usr/local/libexec/dcl-stream-wait
+ExecStart=/usr/local/bin/dcl-stream-server --source ffmpeg
+Restart=always
+RestartSec=2
+TimeoutStartSec=660
+
+[Install]
+WantedBy=graphical.target
