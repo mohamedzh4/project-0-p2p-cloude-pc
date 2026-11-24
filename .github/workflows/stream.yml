@@ -1,0 +1,87 @@
+# DCL Stream (stream/): protocol tests everywhere, a real capture -> encode ->
+# stream -> decode check on Linux, and the client window built for Windows and
+# macOS. The Windows client is kept as a build artifact.
+
+name: Stream
+
+on:
+  push:
+    branches: [main]
+    paths: ["stream/**", ".github/workflows/stream.yml"]
+  pull_request:
+    paths: ["stream/**", ".github/workflows/stream.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: stream-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: stream
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: stream
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config clang libclang-dev \
+            libavcodec-dev libavformat-dev libavdevice-dev libavutil-dev libavfilter-dev \
+            libswscale-dev libswresample-dev libasound2-dev libudev-dev libxkbcommon-dev \
+            libwayland-dev xvfb x11-utils xterm pulseaudio
+      # Builds every feature, runs all tests, then streams a real X screen
+      # through FFmpeg capture and x264 to the headless client.
+      - run: bash scripts/linux-check.sh
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: stream
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: stream
+      - run: cargo test --workspace
+      - name: FFmpeg 7.1 (shared, for the client window)
+        run: |
+          # Pinned dated build: "latest" moved on to FFmpeg 8+, which ffmpeg-next 7 does not target.
+          curl -fsSL -o ffmpeg.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2025-02-28-13-02/ffmpeg-n7.1-214-g71889a8437-win64-gpl-shared-7.1.zip
+          7z x -y ffmpeg.zip > /dev/null
+          echo "FFMPEG_DIR=$(cygpath -w "$PWD/$(ls -d ffmpeg-n7.1-*-shared-7.1)")" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+      - run: cargo build --release -p dcl-stream-client --features player
+      - name: Package the client with its FFmpeg DLLs
+        run: |
+          mkdir -p dist
+          cp target/release/dcl-stream-client.exe dist/
+          cp "$(cygpath -u "$FFMPEG_DIR")"/bin/*.dll dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dcl-stream-client-windows
+          path: stream/dist
+
+  macos:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: stream
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: stream
+      - run: brew install ffmpeg@7 pkg-config
+      - run: cargo test --workspace
+      - run: |
+          export PKG_CONFIG_PATH="$(brew --prefix ffmpeg@7)/lib/pkgconfig"
+          cargo build --release -p dcl-stream-client --features player

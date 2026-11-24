@@ -1,0 +1,34 @@
+[package]
+name = "dcl-stream-client"
+description = "DCL Stream client: connects to a Pro guest, plays video and audio, sends input"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# The window: FFmpeg hardware decode, winit + softbuffer, cpal audio, gilrs gamepads.
+player = ["dep:ffmpeg-next", "dep:winit", "dep:softbuffer", "dep:cpal", "dep:gilrs"]
+
+[dependencies]
+dcl-stream-proto = { workspace = true, features = ["net"] }
+anyhow.workspace = true
+tokio.workspace = true
+quinn.workspace = true
+bytes.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+ffmpeg-next = { version = "7", optional = true, default-features = false, features = ["codec", "format", "software-scaling", "software-resampling"] }
+winit = { version = "0.30", optional = true }
+softbuffer = { version = "0.4", optional = true }
+cpal = { version = "0.15", optional = true }
+gilrs = { version = "0.11", optional = true }
+
+[dev-dependencies]
+dcl-stream-server = { path = "../server" }

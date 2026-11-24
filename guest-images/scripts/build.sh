@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a signed Standard (Kasm) or Pro (Sunshine) guest disk.
+# Build a signed Standard (Kasm) or Pro (gaming: Sunshine + DCL Stream) guest disk.
 # Does not start a guest or a live session; the Host Agent boots the result.
 set -euo pipefail
 
@@ -25,6 +25,13 @@ Optional:
   KASM_VNC_DEB_URL / KASM_VNC_DEB_SHA256
       Override the pinned Standard KasmVNC package.
   SUNSHINE_DEB_URL  override the official latest Ubuntu 24.04 .deb
+  NVIDIA_DRIVER_PACKAGE  Pro: e.g. nvidia-driver-580 (default: newest in the archive)
+  RUST_TOOLCHAIN    Pro: Rust used to build dcl-stream-server in the image
+
+Pro image = Standard base + Sunshine + gaming stack (NVIDIA/Mesa drivers,
+Steam with Proton, Wine, Lutris, GameMode, MangoHud, virtual monitor and
+sound card) + dcl-stream-server built from ../stream. Build it on a Linux
+PC with KVM: PACKER_ACCELERATOR=kvm ./scripts/build.sh pro
 
 Outputs (under output/<tier>/, not in git):
   rootfs.qcow2           QEMU/WHPX/VFIO disk
@@ -103,6 +110,15 @@ OUT="$ROOT/output/$LAB_TIER"
 rm -rf "$OUT"
 mkdir -p "$(dirname "$OUT")"
 
+# Pro: a clean copy of the stream/ workspace (no build output) for the
+# image to compile dcl-stream-server against its own FFmpeg.
+STREAM_SRC="$ROOT/.stream-src"
+rm -rf "$STREAM_SRC"
+if [[ "$LAB_TIER" == "pro" ]]; then
+  mkdir -p "$STREAM_SRC"
+  (cd "$ROOT/../stream" && tar --exclude=./target --exclude=./target-linux -cf - .) | tar -xf - -C "$STREAM_SRC"
+fi
+
 export PACKER_LOG="${PACKER_LOG:-0}"
 packer init "$ROOT/packer"
 packer build \
@@ -118,6 +134,9 @@ packer build \
   -var "kasm_vnc_deb_url=${KASM_VNC_DEB_URL:-}" \
   -var "kasm_vnc_deb_sha256=${KASM_VNC_DEB_SHA256:-}" \
   -var "sunshine_deb_url=${SUNSHINE_DEB_URL:-}" \
+  -var "nvidia_driver_package=${NVIDIA_DRIVER_PACKAGE:-}" \
+  -var "rust_toolchain=${RUST_TOOLCHAIN:?pinned RUST_TOOLCHAIN missing}" \
+  -var "stream_source_dir=$STREAM_SRC" \
   "$ROOT/packer"
 
 QCOW="$OUT/rootfs.qcow2"
