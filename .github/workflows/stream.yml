@@ -53,7 +53,8 @@ jobs:
       - run: cargo test --workspace
       - name: FFmpeg 7.1 (shared, for the client window)
         run: |
-          curl -fsSL -o ffmpeg.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-shared-7.1.zip
+          # Pinned dated build: "latest" moved on to FFmpeg 8+, which ffmpeg-next 7 does not target.
+          curl -fsSL -o ffmpeg.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2025-02-28-13-02/ffmpeg-n7.1-214-g71889a8437-win64-gpl-shared-7.1.zip
           7z x -y ffmpeg.zip > /dev/null
           echo "FFMPEG_DIR=$(cygpath -w "$PWD/$(ls -d ffmpeg-n7.1-*-shared-7.1)")" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
